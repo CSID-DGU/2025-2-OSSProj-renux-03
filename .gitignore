@@ -1,5 +1,5 @@
 .vs/
-RenuexServer.csproj*
-RenuexServer.sln
+RenuxServer.csproj*
+RenuxServer.sln
 **/bin/
 **/obj/
