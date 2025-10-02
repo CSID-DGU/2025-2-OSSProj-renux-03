@@ -1,2 +1,5 @@
-RenuexServer.csproj*
-RenuexServer.sln
+.vs/
+RenuxServer.csproj*
+RenuxServer.sln
+**/bin/
+**/obj/
