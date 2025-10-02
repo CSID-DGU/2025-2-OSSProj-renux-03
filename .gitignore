@@ -1,3 +1,5 @@
 .vs/
 RenuexServer.csproj*
 RenuexServer.sln
+RenuexServer/bin/
+RenuexServer/obj/
