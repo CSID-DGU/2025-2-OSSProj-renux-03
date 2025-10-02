@@ -1,6 +1,6 @@
-﻿using RenuexServer.Models;
+﻿using RenuxServer.Models;
 
-namespace RenuexServer.Dtos.AuthDtos;
+namespace RenuxServer.Dtos.AuthDtos;
 
 public class SignupUserDto
 {

@@ -2,28 +2,38 @@ using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using FluentValidation;
 
-using RenuexServer.DbContexts;
-using RenuexServer.Dtos.AuthDtos;
-using RenuexServer.Middlewares;
-using RenuexServer.Validators;
+using RenuxServer.DbContexts;
+using RenuxServer.Dtos.AuthDtos;
+using RenuxServer.Middlewares;
+using RenuxServer.Validators;
+using RenuxServer.Apis.Auth;
+
 using Microsoft.IdentityModel.Tokens;
-using System.IdentityModel.Tokens.Jwt;
-using RenuexServer.Apis.Auth;
 
 var builder = WebApplication.CreateBuilder();
 
 builder.Configuration.AddUserSecrets<Program>();
+
+// DbContext Setting
 builder.Services.AddDbContext<ServerDbContext>(options =>
 {
     options.UseNpgsql(builder.Configuration.GetConnectionString("RenuxServer"));
 });
+
+
+// AutoMapper Setting
 builder.Services.AddAutoMapper(options =>
 {
     options.CreateMap<SignupUserDto, Profile>();
 });
+
+
+// Validator Setting
 builder.Services.AddValidatorsFromAssemblyContaining<SignupUserValidator>();
 builder.Services.AddValidatorsFromAssemblyContaining<SigninUserValidator>();
 
+
+// Auth Setting
 builder.Services.AddAuthentication()
     .AddJwtBearer(options =>
     {

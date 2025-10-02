@@ -1,7 +1,7 @@
 ﻿using System.Net;
 using System.Text.Json;
 
-namespace RenuexServer.Middlewares;
+namespace RenuxServer.Middlewares;
 
 public class GlobalExceptionHandlerMiddleware
 {

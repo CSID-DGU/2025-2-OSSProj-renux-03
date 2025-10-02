@@ -1,7 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
-using System.ComponentModel.DataAnnotations.Schema;
 
-namespace RenuexServer.Models;
+namespace RenuxServer.Models;
 
 public class ChatKind
 {
