@@ -1,7 +1,7 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
-namespace RenuexServer.Pages
+namespace RenuxServer.Pages
 {
     public class PrivacyModel : PageModel
     {
