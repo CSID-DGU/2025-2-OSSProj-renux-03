@@ -1,7 +1,7 @@
 ﻿using FluentValidation;
-using RenuexServer.Dtos.AuthDtos;
+using RenuxServer.Dtos.AuthDtos;
 
-namespace RenuexServer.Validators;
+namespace RenuxServer.Validators;
 
 public class SignupUserValidator : AbstractValidator<SignupUserDto>
 {

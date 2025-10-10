@@ -3,13 +3,13 @@ using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 
-using RenuexServer.DbContexts;
-using RenuexServer.Dtos.AuthDtos;
-using RenuexServer.Models;
+using RenuxServer.DbContexts;
+using RenuxServer.Dtos.AuthDtos;
+using RenuxServer.Models;
 using System.Security.Claims;
 using System.IdentityModel.Tokens.Jwt;
 
-namespace RenuexServer.Apis.Auth;
+namespace RenuxServer.Apis.Auth;
 
 static public class AuthenticationApis
 {

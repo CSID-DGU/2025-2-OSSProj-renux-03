@@ -1,0 +1,56 @@
+﻿<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 챗봇</title>
+    <link rel="stylesheet" href="/css/index.css">
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <h1>AI 챗봇</h1>
+            <nav id="auth-nav">
+                <div id="guest-view">
+                    <button id="login-btn" class="auth-btn">로그인</button>
+                    <button id="signup-btn" class="auth-btn">회원가입</button>
+                </div>
+                <div id="user-view" class="hidden">
+                    <span id="welcome-message"></span>
+                    <button id="logout-btn" class="auth-btn">로그아웃</button>
+                </div>
+            </nav>
+        </header>
+
+        <main>
+            <aside class="chat-list-container">
+                <section class="new-chat-section">
+                    <h2>새로운 채팅 시작</h2>
+                    <ul id="new-chat-list">
+                    </ul>
+                </section>
+
+                <section id="active-chat-section" class="hidden">
+                    <h2>최근 채팅</h2>
+                    <ul id="active-chat-list">
+                    </ul>
+                </section>
+            </aside>
+            <section class="chatbot-container">
+                <div class="chat-window">
+                    <div class="chat-messages">
+                        <div class="message bot">
+                            <p>안녕하세요! 무엇을 도와드릴까요?</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="chat-input-area">
+                    <input type="text" id="chat-input" placeholder="메시지를 입력하세요...">
+                    <button id="send-btn">전송</button>
+                </div>
+            </section>
+        </main>
+    </div>
+    <script src="/js/index.js"></script>
+</body>
+</html>

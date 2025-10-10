@@ -1,7 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
-using RenuexServer.Models;
+using RenuxServer.Models;
 
-namespace RenuexServer.DbContexts;
+namespace RenuxServer.DbContexts;
 
 public class ServerDbContext : DbContext
 {

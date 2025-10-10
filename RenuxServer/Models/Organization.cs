@@ -1,6 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 
-namespace RenuexServer.Models;
+namespace RenuxServer.Models;
 
 public class Organization
 {
