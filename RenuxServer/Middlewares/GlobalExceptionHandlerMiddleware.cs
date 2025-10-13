@@ -20,6 +20,7 @@ public class GlobalExceptionHandlerMiddleware
         }
         catch(Exception e)
         {
+            Console.WriteLine(e.Message);
             await HandleException(context, e);
         }
     }

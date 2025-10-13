@@ -14,7 +14,7 @@ public class Organization
     [Required]
     public bool IsActive { get; set; } = false;
     [Required]
-    public DateTime CreatedTime { get; init; } = DateTime.Now;
+    public long CreatedTime { get; init; } = DateTime.Now.Ticks;
     [Required]
-    public DateTime UpdatedTime { get; set; } = DateTime.Now;
+    public long UpdatedTime { get; set; } = DateTime.Now.Ticks;
 }

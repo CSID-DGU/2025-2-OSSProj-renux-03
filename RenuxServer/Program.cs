@@ -9,6 +9,10 @@ using RenuxServer.Validators;
 using RenuxServer.Apis.Auth;
 
 using Microsoft.IdentityModel.Tokens;
+using RenuxServer.Models;
+using RenuxServer.Dtos.ChatDtos;
+using RenuxServer.Dtos.EtcDtos;
+using RenuxServer.Apis;
 
 var builder = WebApplication.CreateBuilder();
 
@@ -24,7 +28,13 @@ builder.Services.AddDbContext<ServerDbContext>(options =>
 // AutoMapper Setting
 builder.Services.AddAutoMapper(options =>
 {
-    options.CreateMap<SignupUserDto, Profile>();
+    options.CreateMap<SignupUserDto, User>();
+    options.CreateMap<ActiveChat, ActiveChatDto>();
+    options.CreateMap<ChatMessage, ChatMessageDto>();
+    options.CreateMap<ChatMessageDto, ChatMessage>();
+    options.CreateMap<Major, MajorDto>();
+    options.CreateMap<Role, RoleDto>();
+    options.CreateMap<Organization, OrganizationDto>();
 });
 
 
@@ -64,6 +74,15 @@ app.UseMiddleware<GlobalExceptionHandlerMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 
+app.UseStaticFiles();
+
 app.AddAuthApis();
+app.AddEtcApis();
+
+app.MapGet("/", async (HttpContext context) =>
+{
+    context.Response.ContentType = "text/html";
+    await context.Response.SendFileAsync("wwwroot/index.html");
+});
 
 app.Run();
