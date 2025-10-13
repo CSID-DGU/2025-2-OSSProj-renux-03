@@ -20,9 +20,9 @@ public class User
     public Role? Role { get; set; }             // 외래키
     [Required]
     public Guid RoleId { get; set; }
-    
+
     [Required]
-    public DateTime CreatedTime { get; init; } 
+    public long CreatedTime { get; init; } = DateTime.Now.Ticks;
     [Required]
-    public DateTime UpdatedTime { get; set; }
+    public long UpdatedTime { get; set; }
 }

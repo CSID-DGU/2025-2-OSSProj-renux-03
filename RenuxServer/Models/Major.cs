@@ -7,5 +7,5 @@ public class Major
     [Key]
     public Guid Id { get; init; } 
     [Required]
-    public string DepartmentName { get; set; } = null!;
+    public string Majorname { get; set; } = null!;
 }
