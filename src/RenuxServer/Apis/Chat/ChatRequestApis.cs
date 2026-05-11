@@ -1,6 +1,8 @@
 ﻿using AutoMapper;
 using Microsoft.EntityFrameworkCore;
+using System.Net.Http.Json;
 using System.Security.Claims;
+using System.Text.Json;
 
 using RenuxServer.DbContexts;
 using RenuxServer.Dtos.ChatDtos;
@@ -11,11 +13,12 @@ namespace RenuxServer.Apis.Chat;
 
 public record StartChat(OrganizationDto Org, string Title);
 public record LoadChat(Guid ChatId, DateTime LastTime);
-public record ToRag(string SessionId, string Question);
-public record Reply(string Answer);
+public record ToRag(string SessionId, string Question, string? Major = null);
 
 static public class ChatRequestApis
 {
+    private const string DefaultFallbackAnswer = "죄송합니다. 답변을 생성할 수 없습니다.";
+
     static public void AddChatApis(this WebApplication application)
     {
         var app = application.MapGroup("/chat");
@@ -96,11 +99,12 @@ static public class ChatRequestApis
                 UpdatedTime = time
             };
 
-            ChatMessage startChat = new()
+                ChatMessage startChat = new()
             {
                 ChatId = chat.Id,
                 IsAsk = false,
-                                            Content = "안녕하세요. 동똑이입니다. 무엇을 도와드릴까요?",                CreatedTime = time
+                Content = "안녕하세요. 동똑이입니다. 무엇을 도와드릴까요?",
+                CreatedTime = time
             };
 
             await db.Chats.AddAsync(chat);
@@ -120,23 +124,16 @@ static public class ChatRequestApis
             {
                 // Guest Flow: Do NOT save to DB
                 ToRag toRag = new(askDto.ChatId.ToString(), askDto.Content);
-                var client = httpClientFactory.CreateClient();
-                var ragUrl = configuration["RagServiceUrl"] ?? "http://rag-service:8000";
-                
-                // Call RAG
-                var res = await client.PostAsJsonAsync($"{ragUrl}/ask", toRag);
-                string replyContent = "죄송합니다. 답변을 생성할 수 없습니다.";
-                if (res.IsSuccessStatusCode)
-                {
-                    var replyObj = await res.Content.ReadFromJsonAsync<Reply>();
-                    if (replyObj != null) replyContent = replyObj.Answer;
-                }
-                logger.LogInformation("Guest AI Reply: {ReplyContent}", replyContent);
+                RagReplyDto replyObj = await AskRagAsync(httpClientFactory, configuration, logger, toRag);
+                logger.LogInformation("Guest AI Reply: {ReplyContent}", replyObj.Answer);
 
                 ChatMessageDto replyDto = new()
                 {
                     ChatId = askDto.ChatId,
-                    Content = replyContent,
+                    Content = replyObj.Answer,
+                    Citations = replyObj.Citations,
+                    Route = replyObj.Route,
+                    Sources = replyObj.Sources,
                     IsAsk = false,
                     CreatedTime = DateTime.Now.ToUniversalTime()
                 };
@@ -144,26 +141,35 @@ static public class ChatRequestApis
             }
 
             // Authenticated Flow
+            if (!TryGetUserId(context, out var currentUserId))
+            {
+                return Results.Unauthorized();
+            }
+
+            var chat = await db.Chats
+                .Include(c => c.Organization)
+                .ThenInclude(o => o!.Major)
+                .FirstOrDefaultAsync(c => c.Id == askDto.ChatId && c.UserId == currentUserId);
+            if (chat is null)
+            {
+                return Results.NotFound();
+            }
+
             ChatMessage ask = mapper.Map<ChatMessage>(askDto);
             await db.ChatMessages.AddAsync(ask);
 
-            ToRag authToRag = new(askDto.ChatId.ToString(), askDto.Content);
-            var authClient = httpClientFactory.CreateClient();
-            var authRagUrl = configuration["RagServiceUrl"] ?? "http://rag-service:8000";
-            
-            var authRes = await authClient.PostAsJsonAsync($"{authRagUrl}/ask", authToRag);
-            string authReply = "죄송합니다. 답변을 생성할 수 없습니다.";
-            if (authRes.IsSuccessStatusCode)
-            {
-                var replyObj = await authRes.Content.ReadFromJsonAsync<Reply>();
-                if (replyObj != null) authReply = replyObj.Answer;
-            }
-            logger.LogInformation("Authenticated AI Reply: {Reply}", authReply);
+            string? majorName = chat?.Organization?.Major?.Majorname;
+            ToRag authToRag = new(askDto.ChatId.ToString(), askDto.Content, majorName);
+            RagReplyDto ragReply = await AskRagAsync(httpClientFactory, configuration, logger, authToRag);
+            logger.LogInformation("Authenticated AI Reply: {Reply}", ragReply.Answer);
 
             ChatMessage apply = new()
             {
                 ChatId = ask.ChatId,
-                Content = authReply,
+                Content = ragReply.Answer,
+                Citations = ragReply.Citations,
+                RouteData = SerializeOptional(ragReply.Route),
+                SourcesData = SerializeOptional(ragReply.Sources),
                 IsAsk = false,
                 CreatedTime = DateTime.Now.ToUniversalTime()
             };
@@ -171,7 +177,7 @@ static public class ChatRequestApis
             await db.ChatMessages.AddAsync(apply);
             await db.SaveChangesAsync();
 
-            ChatMessageDto applyDto = mapper.Map<ChatMessageDto>(apply);
+            ChatMessageDto applyDto = ToChatMessageDto(apply);
             return Results.Ok(applyDto);
         });
 
@@ -181,6 +187,17 @@ static public class ChatRequestApis
             if (!context.Request.Cookies.ContainsKey("renux-server-token"))
             {
                 return Results.Ok(new List<ChatMessageDto>());
+            }
+
+            if (!TryGetUserId(context, out var userId))
+            {
+                return Results.Unauthorized();
+            }
+
+            bool ownsChat = await db.Chats.AnyAsync(c => c.Id == load.ChatId && c.UserId == userId);
+            if (!ownsChat)
+            {
+                return Results.NotFound();
             }
 
             List<ChatMessageDto> chatMessages = await MessagesToList(db, mapper, load.LastTime, load.ChatId);
@@ -218,12 +235,100 @@ static public class ChatRequestApis
 
     static public async Task<List<ChatMessageDto>> MessagesToList(ServerDbContext db, IMapper mapper, DateTime lastTime, Guid chatId)
     {
-        List<ChatMessageDto> chatMessages = mapper.Map<List<ChatMessageDto>>(
-                await db.ChatMessages.Where(cm => Equals(cm.ChatId, chatId) && cm.CreatedTime < lastTime)
-                .OrderByDescending(cm => cm.CreatedTime)
-                .Take(20)
-                .ToListAsync());
+        List<ChatMessage> messages = await db.ChatMessages
+            .Where(cm => Equals(cm.ChatId, chatId) && cm.CreatedTime < lastTime)
+            .OrderByDescending(cm => cm.CreatedTime)
+            .Take(20)
+            .ToListAsync();
 
-        return chatMessages;
+        return messages.Select(ToChatMessageDto).ToList();
+    }
+
+    static private bool TryGetUserId(HttpContext context, out Guid userId)
+    {
+        var userIdStr = context.User.FindFirstValue(Microsoft.IdentityModel.JsonWebTokens.JwtRegisteredClaimNames.Sub);
+        return Guid.TryParse(userIdStr, out userId);
+    }
+
+    static private ChatMessageDto ToChatMessageDto(ChatMessage message)
+    {
+        return new ChatMessageDto
+        {
+            Id = message.Id,
+            ChatId = message.ChatId,
+            IsAsk = message.IsAsk,
+            Content = message.Content,
+            Citations = message.Citations,
+            Route = DeserializeOptional<List<string>>(message.RouteData),
+            Sources = DeserializeOptional<List<SourceChunkDto>>(message.SourcesData),
+            CreatedTime = message.CreatedTime
+        };
+    }
+
+    static private string? SerializeOptional<T>(T value)
+    {
+        return value is null ? null : JsonSerializer.Serialize(value);
+    }
+
+    static private async Task<RagReplyDto> AskRagAsync(
+        IHttpClientFactory httpClientFactory,
+        IConfiguration configuration,
+        ILogger logger,
+        ToRag payload)
+    {
+        var client = httpClientFactory.CreateClient();
+        client.Timeout = TimeSpan.FromSeconds(configuration.GetValue("RagServiceTimeoutSeconds", 120));
+        var ragUrl = (configuration["RagServiceUrl"] ?? "http://rag-service:8000").TrimEnd('/');
+
+        try
+        {
+            using var res = await client.PostAsJsonAsync($"{ragUrl}/ask", payload);
+            if (!res.IsSuccessStatusCode)
+            {
+                logger.LogWarning("RAG request failed with status {StatusCode}", res.StatusCode);
+                return new RagReplyDto { Answer = DefaultFallbackAnswer };
+            }
+
+            var reply = await res.Content.ReadFromJsonAsync<RagReplyDto>();
+            if (reply is null || string.IsNullOrWhiteSpace(reply.Answer))
+            {
+                logger.LogWarning("RAG returned an empty response.");
+                return new RagReplyDto { Answer = DefaultFallbackAnswer };
+            }
+
+            return reply;
+        }
+        catch (TaskCanceledException exc)
+        {
+            logger.LogWarning(exc, "RAG request timed out.");
+            return new RagReplyDto { Answer = DefaultFallbackAnswer };
+        }
+        catch (HttpRequestException exc)
+        {
+            logger.LogWarning(exc, "RAG request failed.");
+            return new RagReplyDto { Answer = DefaultFallbackAnswer };
+        }
+        catch (JsonException exc)
+        {
+            logger.LogWarning(exc, "RAG response JSON parsing failed.");
+            return new RagReplyDto { Answer = DefaultFallbackAnswer };
+        }
+    }
+
+    static private T? DeserializeOptional<T>(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return default;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<T>(value);
+        }
+        catch
+        {
+            return default;
+        }
     }
 }

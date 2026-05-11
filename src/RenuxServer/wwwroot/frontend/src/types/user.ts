@@ -1,12 +1,12 @@
 export interface MajorOption {
-  id?: number
-  majorId?: number
+  id?: string
+  majorId?: string
   majorname?: string | null
 }
 
 export interface RoleOption {
-  id?: number
-  roleId?: number
+  id?: string
+  roleId?: string
   rolename?: string | null
 }
 

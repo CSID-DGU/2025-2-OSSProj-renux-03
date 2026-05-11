@@ -4,33 +4,14 @@ import ReactMarkdown from 'react-markdown'
 import rehypeExternalLinks from 'rehype-external-links'
 import remarkGfm from 'remark-gfm'
 import { apiFetch } from '../../api/client'
-import type { ActiveChat } from '../../types/chat'
-
-interface ChatPageMessage {
-  id: string
-  chatId: string
-  isAsk: boolean
-  content: string
-  createdTime: string | number
-}
-
-const epochTicks = 621355968000000000 // .NET DateTime epoch ticks
-const ticksToDate = (ticks: number) => new Date((ticks - epochTicks) / 10000)
-
-const formatMessageTime = (value?: string | number) => {
-  if (!value) return ''
-  const date = typeof value === 'number' ? ticksToDate(value) : new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  return new Intl.DateTimeFormat('ko-KR', {
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(date)
-}
+import ChatSources from '../../components/chat/ChatSources'
+import type { ActiveChat, ChatMessage } from '../../types/chat'
+import { formatChatTime } from '../../utils/date'
 
 const ChatPage = () => {
   const navigate = useNavigate()
   const { chatId } = useParams<{ chatId: string }>()
-  const [messages, setMessages] = useState<ChatPageMessage[]>([])
+  const [messages, setMessages] = useState<ChatMessage[]>([])
   const [activeChat, setActiveChat] = useState<ActiveChat | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -47,7 +28,7 @@ const ChatPage = () => {
     const loadInitialData = async () => {
       try {
         setLoading(true)// 로딩 시작
-        const messageData = await apiFetch<ChatPageMessage[]>('/chat/load', {
+        const messageData = await apiFetch<ChatMessage[]>('/chat/load', {
           method: 'POST',
           json: { chatId, lastTime: new Date().toISOString() },
         })
@@ -91,7 +72,7 @@ const ChatPage = () => {
 
     setSendError(null)
 
-    const newMessage: ChatPageMessage = {
+    const newMessage: ChatMessage = {
       id: typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
       chatId,
       isAsk: true,
@@ -106,7 +87,7 @@ const ChatPage = () => {
 
     try {
       const { id, chatId, content, createdTime } = newMessage
-      await apiFetch('/chat/msg', {
+      const reply = await apiFetch<ChatMessage>('/chat/msg', {
         method: 'POST',
         json: {
           id,
@@ -118,15 +99,8 @@ const ChatPage = () => {
       })
 
 
-      // 새 답변까지 반영하려면 최신 메시지를 다시 불러옵니다. (추후에는 전용 최신 로딩 API로 최적화 가능)
-      const refreshed = await apiFetch<ChatPageMessage[]>('/chat/load', {
-        method: 'POST',
-        json: { chatId, lastTime: new Date().toISOString() },
-      })
-
-
-      if (Array.isArray(refreshed)) {
-        setMessages(refreshed.reverse())
+      if (reply) {
+        setMessages((prev) => [...prev, reply])
       }
     } catch (sendErr) {
       console.error('Failed to send message', sendErr)
@@ -182,7 +156,7 @@ const ChatPage = () => {
           ) : (
             <ul className="chat-bubbles">
               {messages.map((message) => {
-                const messageTime = formatMessageTime(message.createdTime)
+                const messageTime = formatChatTime(message.createdTime)
                 return (
                   <li
                     key={message.id}
@@ -206,6 +180,7 @@ const ChatPage = () => {
                     >
                       {message.content}
                     </ReactMarkdown>
+                    {!message.isAsk && <ChatSources sources={message.sources} citations={message.citations} />}
                     {messageTime && <time className="chat-bubble__time">{messageTime}</time>}
                   </li>
                 )

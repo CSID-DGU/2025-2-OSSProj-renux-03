@@ -1,11 +1,21 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { apiFetch, type ApiError } from '../../api/client'
-import type { MajorOption, RoleOption, ApiMessageResponse } from '../../types/user'
+import { apiFetch } from '../../api/client'
+import type { MajorOption, RoleOption } from '../../types/user'
+import { getApiErrorMessage } from '../../utils/apiError'
 
 type IdStatus = 'available' | 'unavailable' | null
 
 type PasswordStatus = 'match' | 'mismatch' | null
+
+const userIdMinLength = 8
+const userIdMaxLength = 30
+const passwordMinLength = 10
+const passwordMaxLength = 30
+const usernameMinLength = 2
+const usernameMaxLength = 10
+
+const isLengthInRange = (value: string, min: number, max: number) => value.length >= min && value.length <= max
 
 const SignUpPage = () => {
   const navigate = useNavigate()
@@ -82,6 +92,13 @@ const SignUpPage = () => {
       return
     }
 
+    if (!isLengthInRange(userId, userIdMinLength, userIdMaxLength)) {
+      setIdStatus('unavailable')
+      setIdMessage(`${userIdMinLength}글자 이상 ${userIdMaxLength}글자 이하로 입력해주세요.`)
+      setIsIdAvailable(false)
+      return
+    }
+
     try {
       setIsCheckingId(true)
       const isDuplicate = await apiFetch<boolean>('/auth/idcheck', {
@@ -110,6 +127,21 @@ const SignUpPage = () => {
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setSubmitError(null)
+
+    if (!isLengthInRange(userId, userIdMinLength, userIdMaxLength)) {
+      setSubmitError(`아이디: ${userIdMinLength}글자 이상 ${userIdMaxLength}글자 이하`)
+      return
+    }
+
+    if (!isLengthInRange(password, passwordMinLength, passwordMaxLength)) {
+      setSubmitError(`비밀번호: ${passwordMinLength}글자 이상 ${passwordMaxLength}글자 이하`)
+      return
+    }
+
+    if (!isLengthInRange(username, usernameMinLength, usernameMaxLength)) {
+      setSubmitError(`이름: ${usernameMinLength}글자 이상 ${usernameMaxLength}글자 이하`)
+      return
+    }
 
     if (!isIdAvailable) {
       setSubmitError('아이디 중복 확인을 완료해주세요.')
@@ -145,18 +177,7 @@ const SignUpPage = () => {
       navigate('/auth/in')
     } catch (submitError) {
       console.error('회원가입 실패:', submitError)
-      if (submitError && typeof submitError === 'object' && 'status' in submitError) {
-        const apiError = submitError as ApiError
-        const messageFromDetails =
-          typeof apiError.details === 'object' && apiError.details && 'message' in apiError.details
-            ? String((apiError.details as ApiMessageResponse).message)
-            : undefined
-        setSubmitError(messageFromDetails ?? apiError.message ?? '회원가입 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.')
-      } else {
-        setSubmitError(
-          submitError instanceof Error ? submitError.message : '회원가입 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
-        )
-      }
+      setSubmitError(getApiErrorMessage(submitError, '회원가입 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.'))
     } finally {
       setIsSubmitting(false)
     }
@@ -177,9 +198,12 @@ const SignUpPage = () => {
               onChange={(event) => setUserId(event.target.value)}
               onBlur={handleIdBlur}
               autoComplete="off"
+              minLength={userIdMinLength}
+              maxLength={userIdMaxLength}
               disabled={isSubmitting}
               required
             />
+            <span className="auth-hint">아이디는 {userIdMinLength}~{userIdMaxLength}글자입니다.</span>
             <span className={`auth-field-message${idStatus ? ` ${idStatus}` : ''}`}>{idMessage}</span>
           </div>
 
@@ -192,9 +216,12 @@ const SignUpPage = () => {
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               autoComplete="new-password"
+              minLength={passwordMinLength}
+              maxLength={passwordMaxLength}
               disabled={isSubmitting}
               required
             />
+            <span className="auth-hint">비밀번호는 {passwordMinLength}~{passwordMaxLength}글자입니다.</span>
           </div>
 
           <div className="form-group">
@@ -206,6 +233,8 @@ const SignUpPage = () => {
               value={passwordConfirm}
               onChange={(event) => setPasswordConfirm(event.target.value)}
               autoComplete="new-password"
+              minLength={passwordMinLength}
+              maxLength={passwordMaxLength}
               disabled={isSubmitting}
               required
             />
@@ -223,9 +252,12 @@ const SignUpPage = () => {
               value={username}
               onChange={(event) => setUsername(event.target.value)}
               autoComplete="name"
+              minLength={usernameMinLength}
+              maxLength={usernameMaxLength}
               disabled={isSubmitting}
               required
             />
+            <span className="auth-hint">이름은 {usernameMinLength}~{usernameMaxLength}글자입니다.</span>
           </div>
 
           <div className="form-group">

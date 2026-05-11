@@ -86,8 +86,17 @@ static public class AuthenticationApis
             }
 
             var jwt = config.GetSection("Jwt");
+            var jwtKey = jwt["Key"];
+            if (string.IsNullOrWhiteSpace(jwtKey))
+            {
+                jwtKey = config["JWT_KEY"];
+            }
+            if (string.IsNullOrWhiteSpace(jwtKey))
+            {
+                throw new InvalidOperationException("JWT signing key is not configured. Set Jwt:Key or JWT_KEY.");
+            }
 
-            SigningCredentials credential = new(new SymmetricSecurityKey(Convert.FromBase64String(jwt["Key"]!)),
+            SigningCredentials credential = new(new SymmetricSecurityKey(Convert.FromBase64String(jwtKey)),
                 SecurityAlgorithms.HmacSha512);
 
             Claim[] claims_ =

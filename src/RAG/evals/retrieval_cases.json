@@ -1,0 +1,352 @@
+[
+  {
+    "name": "food_generic",
+    "query": "학식 메뉴 뭐야",
+    "top_k": 5,
+    "expected_intent": "food",
+    "expected": {
+      "document_type": ["food"],
+      "category": ["식단표"]
+    }
+  },
+  {
+    "name": "food_namsan_dorm",
+    "query": "남산학사 식단 알려줘",
+    "top_k": 5,
+    "expected_intent": "food",
+    "expected": {
+      "document_type": ["food"],
+      "sub_category": ["남산학사"],
+      "title_contains": ["남산학사"]
+    }
+  },
+  {
+    "name": "food_dflex",
+    "query": "D-Flex 학식 뭐야",
+    "top_k": 5,
+    "expected_intent": "food",
+    "expected": {
+      "document_type": ["food"],
+      "sub_category": ["D-Flex"],
+      "title_contains": ["D-Flex"]
+    }
+  },
+  {
+    "name": "food_sangrokwon",
+    "query": "상록원 학식 알려줘",
+    "top_k": 5,
+    "expected_intent": "food",
+    "expected": {
+      "document_type": ["food"],
+      "sub_category": ["상록원"],
+      "title_contains": ["상록원"]
+    }
+  },
+  {
+    "name": "library_hours",
+    "query": "도서관 이용시간 알려줘",
+    "top_k": 5,
+    "expected_intent": "library",
+    "expected": {
+      "document_type": ["library"],
+      "category": ["도서관"],
+      "title_contains": ["중앙도서관"]
+    }
+  },
+  {
+    "name": "library_loan_extension",
+    "query": "중앙도서관 대출 연장 방법 알려줘",
+    "top_k": 5,
+    "expected_intent": "library",
+    "expected": {
+      "document_type": ["library"],
+      "title_contains": ["대출/연장/예약"]
+    }
+  },
+  {
+    "name": "library_reservation",
+    "query": "도서관 예약 방법 알려줘",
+    "top_k": 5,
+    "expected_intent": "library",
+    "expected": {
+      "document_type": ["library"],
+      "title_contains": ["대출/연장/예약"]
+    }
+  },
+  {
+    "name": "department_phone",
+    "query": "학사지원팀 전화번호 알려줘",
+    "top_k": 5,
+    "expected_intent": "department",
+    "expected": {
+      "document_type": ["department"],
+      "category": ["부서/학과 전화번호"],
+      "title_contains": ["학사지원팀"]
+    }
+  },
+  {
+    "name": "department_contact",
+    "query": "학사지원팀 연락처 알려줘",
+    "top_k": 5,
+    "expected_intent": "department",
+    "expected": {
+      "document_type": ["department"],
+      "category": ["부서/학과 전화번호"],
+      "title_contains": ["학사지원팀"]
+    }
+  },
+  {
+    "name": "department_alias_gyomucheo",
+    "query": "교무처 전화번호 알려줘",
+    "top_k": 5,
+    "expected_intent": "department",
+    "expected": {
+      "document_type": ["department"],
+      "title_contains": ["학사지원팀"]
+    }
+  },
+  {
+    "name": "course_registration_policy",
+    "query": "수강신청 기준 알려줘",
+    "top_k": 5,
+    "expected_intent": "course_registration",
+    "expected": {
+      "document_type": ["academic"],
+      "url_contains": ["https://www.dongguk.edu/page/150"]
+    }
+  },
+  {
+    "name": "course_registration_period",
+    "query": "수강신청 정정 기간 알려줘",
+    "top_k": 5,
+    "expected_intent": "course_registration",
+    "expected": {
+      "category": ["학사공지"],
+      "title_contains": ["정정"]
+    }
+  },
+  {
+    "name": "course_registration_period_short",
+    "query": "수강신청 정정 언제야",
+    "top_k": 5,
+    "expected_intent": "course_registration",
+    "expected": {
+      "category": ["학사공지"],
+      "title_contains": ["정정"]
+    }
+  },
+  {
+    "name": "course_registration_cancel_method",
+    "query": "수강신청 취소 방법 알려줘",
+    "top_k": 5,
+    "expected_intent": "course_registration",
+    "expected": {
+      "document_type": ["academic"],
+      "url_contains": ["https://www.dongguk.edu/page/150"],
+      "title_contains": ["수강신청/정정/취소"]
+    }
+  },
+  {
+    "name": "course_registration_shopping_cart",
+    "query": "수강신청 쇼핑카트 안내",
+    "top_k": 5,
+    "expected_intent": "course_registration",
+    "expected": {
+      "document_type": ["academic"],
+      "url_contains": ["https://www.dongguk.edu/page/150"]
+    }
+  },
+  {
+    "name": "summer_session_application",
+    "query": "계절학기 신청 기간 알려줘",
+    "top_k": 5,
+    "expected_intent": "course_registration",
+    "expected": {
+      "category": ["학사공지"],
+      "title_contains": ["계절학기", "희망강의 신청"]
+    }
+  },
+  {
+    "name": "course_cancel_notice",
+    "query": "수강과목 취소 안내",
+    "top_k": 5,
+    "expected": {
+      "document_type": ["notice"],
+      "category": ["학사공지"],
+      "title_contains": ["수강과목 취소 시행 안내"]
+    }
+  },
+  {
+    "name": "exchange_scholarship",
+    "query": "교환학생 장학금 뭐 있어",
+    "top_k": 5,
+    "expected_intent": "international",
+    "expected": {
+      "document_type": ["notice"],
+      "category": ["국제교류공지"],
+      "title_contains": ["오도행", "교환학생"]
+    }
+  },
+  {
+    "name": "exchange_selection_notice",
+    "query": "교환학생 선발 공고",
+    "top_k": 5,
+    "expected_intent": "international",
+    "expected": {
+      "document_type": ["notice"],
+      "category": ["국제교류공지"],
+      "title_contains": ["교환학생", "선발"]
+    }
+  },
+  {
+    "name": "exchange_support_policy",
+    "query": "교환학생 장학 기준 알려줘",
+    "top_k": 5,
+    "expected_intent": "international",
+    "expected": {
+      "document_type": ["notice"],
+      "category": ["국제교류공지"],
+      "title_contains": ["교환학생"]
+    }
+  },
+  {
+    "name": "international_dorm",
+    "query": "유학생 기숙사 신청 안내",
+    "top_k": 5,
+    "expected_intent": "international",
+    "expected": {
+      "document_type": ["notice"],
+      "title_contains": ["기숙사 신청 안내"]
+    }
+  },
+  {
+    "name": "international_notice_feed",
+    "query": "유학생 공지 알려줘",
+    "top_k": 5,
+    "expected_intent": "international",
+    "expected": {
+      "document_type": ["notice"],
+      "category": ["국제공지"],
+      "title_contains": ["유학생"]
+    }
+  },
+  {
+    "name": "international_topik_notice",
+    "query": "TOPIK 성적표 제출 안내",
+    "top_k": 5,
+    "expected": {
+      "document_type": ["notice"],
+      "title_contains": ["TOPIK 성적표 제출 안내"]
+    }
+  },
+  {
+    "name": "scholarship_work_study",
+    "query": "국가근로장학 기준 알려줘",
+    "top_k": 5,
+    "expected_intent": "scholarship",
+    "expected": {
+      "document_type": ["notice"],
+      "category": ["장학공지"],
+      "title_contains": ["국가근로"]
+    }
+  },
+  {
+    "name": "scholarship_odohaeng_notice",
+    "query": "오도행장학 장학생 선발 안내",
+    "top_k": 5,
+    "expected_intent": "scholarship",
+    "expected": {
+      "document_type": ["notice"],
+      "title_contains": ["오도행장학"]
+    }
+  },
+  {
+    "name": "statistics_major_courses",
+    "query": "통계학과 전공과목 뭐 있어",
+    "top_k": 5,
+    "expected_intent": "course",
+    "expected": {
+      "document_type": ["course"],
+      "category": ["교육과정"]
+    }
+  },
+  {
+    "name": "statistics_open_courses",
+    "query": "통계학과 개설과목 알려줘",
+    "top_k": 5,
+    "expected_intent": "course",
+    "expected": {
+      "document_type": ["course"],
+      "category": ["교육과정"]
+    }
+  },
+  {
+    "name": "course_code_lookup",
+    "query": "학수번호 STA2021 뭐야",
+    "top_k": 5,
+    "expected": {
+      "document_type": ["course"],
+      "title_contains": ["STA2021"]
+    }
+  },
+  {
+    "name": "course_topic_lookup",
+    "query": "프로그래밍 및 실습2 뭐 배우나",
+    "top_k": 5,
+    "expected": {
+      "document_type": ["course"],
+      "title_contains": ["프로그래밍 및 실습2", "프로그래밍및실습2"]
+    }
+  },
+  {
+    "name": "course_credit_semester_lookup",
+    "query": "STA2014 학점이랑 개설학기 알려줘",
+    "top_k": 5,
+    "expected": {
+      "document_type": ["course"],
+      "title_contains": ["STA2014"]
+    }
+  },
+  {
+    "name": "double_major_policy",
+    "query": "복수전공 신청 규정 알려줘",
+    "top_k": 5,
+    "expected_intent": "rule",
+    "expected": {
+      "document_type": ["academic"],
+      "category": ["학사제도"],
+      "title_contains": ["다전공"]
+    }
+  },
+  {
+    "name": "return_from_leave_policy",
+    "query": "복학 절차 알려줘",
+    "top_k": 5,
+    "expected_intent": "rule",
+    "expected": {
+      "document_type": ["rule"],
+      "title_contains": ["학사과정 학칙시행세칙"]
+    }
+  },
+  {
+    "name": "leave_of_absence_notice",
+    "query": "휴학 신청 방법 알려줘",
+    "top_k": 5,
+    "expected_intent": "rule",
+    "expected": {
+      "document_type": ["notice"],
+      "category": ["학사공지"],
+      "title_contains": ["휴학 신청 안내"]
+    }
+  },
+  {
+    "name": "graduation_review_criteria",
+    "query": "졸업사정 기준 알려줘",
+    "top_k": 5,
+    "expected_intent": "rule",
+    "expected": {
+      "document_type": ["rule"],
+      "title_contains": ["학칙"]
+    }
+  }
+]

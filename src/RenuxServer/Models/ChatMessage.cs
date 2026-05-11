@@ -15,6 +15,9 @@ public class ChatMessage
     public bool IsAsk { get; set; } = true;
     [Required]
     public string Content { get; set; } = null!;
+    public string? Citations { get; set; }
+    public string? RouteData { get; set; }
+    public string? SourcesData { get; set; }
     [Required]
     public DateTime CreatedTime { get; init; } = DateTime.Now.ToUniversalTime();
 }

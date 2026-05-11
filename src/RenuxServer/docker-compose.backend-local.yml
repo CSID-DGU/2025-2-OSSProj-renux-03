@@ -1,0 +1,54 @@
+services:
+  db:
+    container_name: renux_db_local
+    image: postgres:17
+    env_file:
+      - .env.docker.local
+    environment:
+      POSTGRES_USER: renux
+      POSTGRES_PASSWORD: renux_password
+      POSTGRES_DB: renux
+    volumes:
+      - postgres_data_local:/var/lib/postgresql/data
+    ports:
+      - "15678:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U renux -d renux"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  api:
+    container_name: renux_server_local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env.docker.local
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__RenuxServer: Host=db;Port=5432;Database=renux;Username=renux;Password=renux_password
+      Jwt__Key: ${JWT_KEY}
+      RagServiceUrl: http://host.docker.internal:8000
+      RagServiceTimeoutSeconds: 120
+    ports:
+      - "18081:8080"
+    restart: on-failure
+
+  nginx:
+    container_name: renux_nginx_local
+    image: nginx:latest
+    ports:
+      - "18080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+
+volumes:
+  postgres_data_local:

@@ -65,6 +65,9 @@ public class ServerDbContext : DbContext
         message.Property(c => c.ChatId).HasColumnName("chat_id");
         message.Property(c => c.IsAsk).HasColumnName("is_ask");
         message.Property(c => c.Content).HasColumnName("content");
+        message.Property(c => c.Citations).HasColumnName("citations");
+        message.Property(c => c.RouteData).HasColumnName("route_data");
+        message.Property(c => c.SourcesData).HasColumnName("sources_data");
         message.Property(c => c.CreatedTime).HasColumnName("created_time");
 
         org.Property(o => o.Id).HasColumnName("id");

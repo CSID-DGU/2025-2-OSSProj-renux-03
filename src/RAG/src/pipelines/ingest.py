@@ -18,7 +18,6 @@ from src.config import (
     DATA_SOURCES,
 )
 from src.models.embedding import encode_texts
-from src.search.hybrid import train_tfidf
 from src.utils.preprocess import (
     apply_cleaning,
     normalize_whitespace,
@@ -121,9 +120,7 @@ def _persist_chunks(key: str, collection: str, chunks_df: pd.DataFrame) -> Tuple
         chunks_df.to_csv(write_path, index=False, encoding="utf-8-sig")
     artifacts.chunk_path = write_path
 
-    # 4. TF-IDF 학습 (여전히 전체 데이터 필요)
-    vectorizer, matrix = train_tfidf(key, chunks_df["chunk_text"].tolist())
-    return chunks_df, vectorizer, matrix
+    return chunks_df, None, None
 
 
 def _save_chunks_to_sqlite(chunks_df: pd.DataFrame, source_key: str):
@@ -731,7 +728,7 @@ def ingest_all() -> Dict[str, Tuple[pd.DataFrame, object, object]]:
 
 
 def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, object, object]]:
-    """SQLite DB에 저장된 데이터를 기반으로 ChromaDB 인덱스와 TF-IDF를 재구축합니다."""
+    """SQLite DB에 저장된 데이터를 기반으로 ChromaDB 인덱스를 재구축합니다."""
     session = SessionLocal()
     results = {}
     

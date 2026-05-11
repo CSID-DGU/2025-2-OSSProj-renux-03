@@ -15,7 +15,12 @@ SYNONYM_MAP: Dict[str, str] = {
     "과목": "교과목",
     "교양": "교양과목",
     "전필": "전공필수",
-    "전선": "전공선택"
+    "전선": "전공선택",
+    "학식": "식단표",
+    "밥": "식단",
+    "수강 정정": "수강신청 정정",
+    "교무처": "교무처 학사지원팀 교무학생처",
+    "중도": "중앙도서관",
     # 추가적인 동의어는 여기에 추가하세요.
     # 예:
     # "강의계획서": "교과목 해설서",
@@ -34,4 +39,3 @@ def expand_query(query: str) -> str:
         # re.sub(r'\b' + re.escape(slang) + r'\b', formal_term, expanded_query, flags=re.IGNORECASE)
 
     return expanded_query
-

@@ -6,6 +6,11 @@ import ChatPage from './pages/chat/ChatPage'
 import SettingsPage from './pages/settings/SettingsPage'
 import UniversityAdminPage from './pages/admin/UniversityAdminPage'
 import DepartmentAdminPage from './pages/admin/DepartmentAdminPage'
+import RequireRole from './components/auth/RequireRole'
+import type { UserRole } from './types/auth'
+
+const universityAdminRoles: UserRole[] = ['UNIVERSITY_COUNCIL']
+const departmentAdminRoles: UserRole[] = ['DEPARTMENT_COUNCIL', 'UNIVERSITY_COUNCIL']
 
 function App() {
   return (
@@ -17,8 +22,22 @@ function App() {
           <Route path="/auth/up" element={<SignUpPage />} />
           <Route path="/chat/:chatId" element={<ChatPage />} />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/admin/university" element={<UniversityAdminPage />} />
-          <Route path="/admin/department" element={<DepartmentAdminPage />} />
+          <Route
+            path="/admin/university"
+            element={
+              <RequireRole allowedRoles={universityAdminRoles}>
+                <UniversityAdminPage />
+              </RequireRole>
+            }
+          />
+          <Route
+            path="/admin/department"
+            element={
+              <RequireRole allowedRoles={departmentAdminRoles}>
+                <DepartmentAdminPage />
+              </RequireRole>
+            }
+          />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>

@@ -1,9 +1,15 @@
 bin/
 obj/
+.env
+.env.*
+*.env
+*.local
 Properties
 __docker_temp
 .vs/
 Pages
+wwwroot/frontend/node_modules/
+wwwroot/frontend/dist/
 .dockerignore
 Dockerfile
 docker-compose.yml

@@ -19,6 +19,15 @@ using RenuxServer.Apis.Chat;
 var builder = WebApplication.CreateBuilder();
 
 builder.Configuration.AddUserSecrets<Program>();
+var jwtKey = builder.Configuration["Jwt:Key"];
+if (string.IsNullOrWhiteSpace(jwtKey))
+{
+    jwtKey = builder.Configuration["JWT_KEY"];
+}
+if (string.IsNullOrWhiteSpace(jwtKey))
+{
+    throw new InvalidOperationException("JWT signing key is not configured. Set Jwt:Key or JWT_KEY.");
+}
 
 // DbContext Setting
 builder.Services.AddDbContext<ServerDbContext>(options =>
@@ -56,7 +65,7 @@ builder.Services.AddAuthentication(options =>
         options.MapInboundClaims = false; // Disable automatic claim mapping
         options.TokenValidationParameters = new()
         {
-            IssuerSigningKey = new SymmetricSecurityKey(Convert.FromBase64String(builder.Configuration["Jwt:Key"]!)),
+            IssuerSigningKey = new SymmetricSecurityKey(Convert.FromBase64String(jwtKey)),
             ValidateIssuer = false,
             ValidateAudience = false
         };
@@ -65,14 +74,9 @@ builder.Services.AddAuthentication(options =>
         {
             OnMessageReceived = context =>
             {
-                if (context.Request.Cookies.ContainsKey("renux-server-token"))
+                if (context.Request.Cookies.TryGetValue("renux-server-token", out var token))
                 {
-                    context.Token = context.Request.Cookies["renux-server-token"];
-                    Console.WriteLine(">> [Auth] Token cookie found.");
-                }
-                else
-                {
-                    Console.WriteLine(">> [Auth] No token cookie.");
+                    context.Token = token;
                 }
                 return Task.CompletedTask;
             },

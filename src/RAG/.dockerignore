@@ -2,7 +2,13 @@ __pycache__
 *.pyc
 .git
 .env
+.env.*
+*.env
+*.local
 venv/
 .venv/
 artifacts/
+data/raw/
+data/processed/
+data/logs/
 rag_database.db

@@ -4,31 +4,14 @@ import ReactMarkdown from 'react-markdown'
 import rehypeExternalLinks from 'rehype-external-links'
 import remarkGfm from 'remark-gfm'
 import { apiFetch } from '../../api/client'
+import ChatSources from '../../components/chat/ChatSources'
 import donggukLogo from '../../assets/images/dongguk-logo.png'
 import dongddokiLogo from '../../assets/images/dongddoki-logo.png'
 import type { Department } from '../../types/organization'
-import type { ActiveChat } from '../../types/chat'
+import type { ActiveChat, ChatMessage } from '../../types/chat'
 import type { AuthNameResponse, UserRole } from '../../types/auth'
-
-type ChatPageMessage = {
-  id: string
-  chatId: string
-  isAsk: boolean
-  content: string
-  createdTime: string | number
-}
-
-const mapRoleNameToUserRole = (roleName?: string | null): UserRole => {
-  if (!roleName) return 'STUDENT'
-  const normalized = roleName.trim().toLowerCase()
-  if (normalized.includes('관리자')) {
-    return 'UNIVERSITY_COUNCIL'
-  }
-  if (normalized.includes('학생회')) {
-    return 'DEPARTMENT_COUNCIL'
-  }
-  return 'STUDENT'
-}
+import { mapRoleNameToUserRole } from '../../utils/auth'
+import { formatChatTime } from '../../utils/date'
 
 const HomePage = () => {
   const navigate = useNavigate()
@@ -44,7 +27,7 @@ const HomePage = () => {
   const [createChatError, setCreateChatError] = useState<string | null>(null)
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null)
   const [selectedChatTitle, setSelectedChatTitle] = useState<string | null>(null)
-  const [chatMessages, setChatMessages] = useState<ChatPageMessage[]>([])
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatLoading, setChatLoading] = useState(false)
   const [chatError, setChatError] = useState<string | null>(null)
   const [hasMoreMessages, setHasMoreMessages] = useState(true)
@@ -123,9 +106,9 @@ const HomePage = () => {
           }
         }
       } catch (error) {
-        console.log('User is not logged in', error)
         setIsAuthenticated(false)
         setUserName(null)
+        setDepartmentName(null)
       }
     }
     checkLoginStatus()
@@ -147,8 +130,7 @@ const HomePage = () => {
           setActiveChats([])
         }
       } else {
-        // 게스트인 경우 로컬 스토리지에서 불러오지 않음 (저장 안 함)
-        setActiveChats([])
+        setActiveChats(loadGuestChats())
       }
     }
     fetchActiveChats()
@@ -230,7 +212,18 @@ const HomePage = () => {
   const handleLogout = async () => {
     try {
       await apiFetch('/auth/signout', { method: 'GET' })
-	window.location.reload()
+      setIsAuthenticated(false)
+      setUserName(null)
+      setDepartmentName(null)
+      setUserRole('STUDENT')
+      setActiveChats(loadGuestChats())
+      setSelectedChatId(null)
+      setSelectedChatTitle(null)
+      setChatMessages([])
+      if (typeof window !== 'undefined') {
+        window.localStorage.removeItem('renux-user-role')
+      }
+      navigate('/')
     } catch (error) {
       console.error('Failed to logout', error)
       alert('로그아웃에 실패했습니다. 다시 시도해주세요.')
@@ -257,7 +250,7 @@ const HomePage = () => {
       setChatLoading(true)
       setChatError(null)
       setHasMoreMessages(true)
-      const data = await apiFetch<ChatPageMessage[]>('/chat/load', {
+      const data = await apiFetch<ChatMessage[]>('/chat/load', {
         method: 'POST',
         json: { chatId: chatIdToLoad, lastTime: new Date().toISOString() },
       })
@@ -289,7 +282,7 @@ const HomePage = () => {
       setIsLoadingMore(true)
       isLoadingMoreRef.current = true
       
-      const data = await apiFetch<ChatPageMessage[]>('/chat/load', {
+      const data = await apiFetch<ChatMessage[]>('/chat/load', {
         method: 'POST',
         json: { chatId: selectedChatId, lastTime: firstMessageTime },
       })
@@ -356,7 +349,7 @@ const HomePage = () => {
         })
 
         if (!isAuthenticated) {
-          // saveGuestChat(chatRoom)
+          saveGuestChat(chatRoom)
         }
 
         currentChatId = chatRoom.id
@@ -368,7 +361,7 @@ const HomePage = () => {
         setSelectedChatTitle(chatRoom.title ?? title)
 
         // 방금 생성된 방의 환영 메시지를 수동으로 가져옴
-        const initialData = await apiFetch<ChatPageMessage[]>('/chat/load', {
+        const initialData = await apiFetch<ChatMessage[]>('/chat/load', {
           method: 'POST',
           json: { chatId: chatRoom.id, lastTime: new Date().toISOString() },
         })
@@ -389,7 +382,7 @@ const HomePage = () => {
     }
 
     // 여기부터는 currentChatId가 반드시 존재함
-    const newMsg: ChatPageMessage = {
+    const newMsg: ChatMessage = {
       id: typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
       chatId: currentChatId,
       isAsk: true,
@@ -406,7 +399,7 @@ const HomePage = () => {
     setTimeout(scrollToBottom, 0)
 
     try {
-      const reply = await apiFetch<ChatPageMessage>('/chat/msg', {
+      const reply = await apiFetch<ChatMessage>('/chat/msg', {
         method: 'POST',
         json: {
           id: newMsg.id,
@@ -444,13 +437,6 @@ const HomePage = () => {
   const showDeptAdminButton = isAuthenticated && userRole === 'DEPARTMENT_COUNCIL' // '학생회'
   const showUnivAdminButton = isAuthenticated && userRole === 'UNIVERSITY_COUNCIL' // '총학생회'
   const visibleChats = activeChats.length > 0 ? activeChats : [] 
-
-  const formatMessageTime = (value?: string | number) => {
-    if (!value) return ''
-    const date = typeof value === 'number' ? new Date(value) : new Date(value)
-    if (Number.isNaN(date.getTime())) return ''
-    return new Intl.DateTimeFormat('ko-KR', { hour: 'numeric', minute: '2-digit' }).format(date)
-  }
 
   const loadGuestChats = (): ActiveChat[] => {
     if (typeof window === 'undefined') return []
@@ -664,7 +650,7 @@ const HomePage = () => {
                   {isLoadingMore && <li className="home-chat__status"><small>이전 대화 불러오는 중...</small></li>}
 
                   {chatMessages.map((message) => {
-                    const messageTime = formatMessageTime(message.createdTime)
+                    const messageTime = formatChatTime(message.createdTime)
                     return (
                       <li
                         key={message.id}
@@ -688,6 +674,7 @@ const HomePage = () => {
                         >
                           {message.content}
                         </ReactMarkdown>
+                        {!message.isAsk && <ChatSources sources={message.sources} citations={message.citations} />}
                         {messageTime && <time className="chat-bubble__time">{messageTime}</time>}
                       </li>
                     )

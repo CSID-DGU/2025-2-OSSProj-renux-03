@@ -9,5 +9,11 @@ public class ChatMessageDto
 
     public string Content { get; init; } = null!;
 
+    public string? Citations { get; init; }
+
+    public List<string>? Route { get; init; }
+
+    public List<SourceChunkDto>? Sources { get; init; }
+
     public DateTime CreatedTime { get; init; }
 }

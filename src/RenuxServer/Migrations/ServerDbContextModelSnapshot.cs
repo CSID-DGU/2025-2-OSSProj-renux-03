@@ -70,6 +70,10 @@ namespace RenuxServer.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("chat_id");
 
+                    b.Property<string>("Citations")
+                        .HasColumnType("text")
+                        .HasColumnName("citations");
+
                     b.Property<string>("Content")
                         .IsRequired()
                         .HasColumnType("text")
@@ -82,6 +86,14 @@ namespace RenuxServer.Migrations
                     b.Property<bool>("IsAsk")
                         .HasColumnType("boolean")
                         .HasColumnName("is_ask");
+
+                    b.Property<string>("RouteData")
+                        .HasColumnType("text")
+                        .HasColumnName("route_data");
+
+                    b.Property<string>("SourcesData")
+                        .HasColumnType("text")
+                        .HasColumnName("sources_data");
 
                     b.HasKey("Id");
 

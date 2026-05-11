@@ -135,7 +135,7 @@ def save_chunks_to_db(generated_chunks: pd.DataFrame, saved_notices: pd.DataFram
 def sync_notices(incoming_df: pd.DataFrame) -> int:
     """
     새 공지를 DB에 저장하고, 청크 생성 및 DB 저장,
-    Chroma/TF-IDF 갱신 후 신규 공지 수를 반환합니다.
+    Chroma 인덱스 갱신 후 신규 공지 수를 반환합니다.
     """
     # 1. DB에서 기존 URL 목록을 가져와 신규 공지 필터링
     existing_urls = get_existing_notice_urls()
@@ -164,11 +164,11 @@ def sync_notices(incoming_df: pd.DataFrame) -> int:
     save_chunks_to_db(generated_chunks, saved_notices_df)
     print(f"{len(generated_chunks)}개의 신규 청크를 데이터베이스에 저장했습니다.")
 
-    # 5. ChromaDB 업데이트 및 TF-IDF 재학습 (DB 기반 재색인)
+    # 5. ChromaDB 업데이트 및 lexical rerank용 메타데이터 재색인
     # 이제 CSV가 아닌 DB에 저장된 청크 데이터를 기반으로 인덱스를 업데이트합니다.
     # 증분 색인(upsert/delete) 로직이 reindex_from_db 내부에 구현되어 있습니다.
     reindex_from_db("notices")
-    print("ChromaDB 인덱스와 TF-IDF 모델을 업데이트했습니다.")
+    print("ChromaDB 인덱스를 업데이트했습니다.")
 
     return len(saved_notices_df)
 

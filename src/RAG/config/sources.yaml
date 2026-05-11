@@ -1,0 +1,600 @@
+defaults:
+  campus: "서울"
+  source: "dongguk_official"
+  request_delay_seconds: 0.7
+  timeout_seconds: 30
+  user_agent: "DongttokRagBot/1.0 (+https://github.com/renux/dongttok)"
+  max_pages: 5
+  verify_ssl: true
+  parse_pdf_attachments: false
+  max_pdf_attachments_per_notice: 2
+  max_pdf_pages_per_attachment: 20
+
+sources:
+  dongguk_general_notice:
+    enabled: true
+    use_legacy_csv: false
+    legacy_kind: "notice"
+    legacy_csv: "data/dongguk_notices.csv"
+    legacy_board_name: "일반공지"
+    crawler: "dongguk_notice"
+    source: "dongguk_official"
+    campus: "서울"
+    category: "일반공지"
+    sub_category: "일반"
+    department: "동국대학교"
+    document_type: "notice"
+    base_url: "https://www.dongguk.edu"
+    board_code: "GENERALNOTICES"
+    list_path: "/article/{board_code}/list"
+    detail_path: "/article/{board_code}/detail/{article_id}"
+    list_item_selector: "div.board_list > ul > li"
+    content_selector: "div.board_view div.view_cont"
+    title_selector: "div.board_view div.tit > p"
+    info_selector: "div.board_view div.tit > div.info span"
+    attachment_selector: "div.board_view div.view_files ul li a"
+    max_pages: null
+    crawl_until_date: "2025-09-30"
+
+  dongguk_academic_notice:
+    enabled: true
+    use_legacy_csv: false
+    legacy_kind: "notice"
+    legacy_csv: "data/dongguk_notices.csv"
+    legacy_board_name: "학사공지"
+    crawler: "dongguk_notice"
+    source: "dongguk_official"
+    campus: "서울"
+    category: "학사공지"
+    sub_category: "수업/성적"
+    department: "교무학생처"
+    document_type: "notice"
+    base_url: "https://www.dongguk.edu"
+    board_code: "HAKSANOTICE"
+    list_path: "/article/{board_code}/list"
+    detail_path: "/article/{board_code}/detail/{article_id}"
+    list_item_selector: "div.board_list > ul > li"
+    content_selector: "div.board_view div.view_cont"
+    title_selector: "div.board_view div.tit > p"
+    info_selector: "div.board_view div.tit > div.info span"
+    attachment_selector: "div.board_view div.view_files ul li a"
+    max_pages: null
+    crawl_until_date: "2025-09-08"
+
+  dongguk_scholarship_notice:
+    enabled: true
+    use_legacy_csv: false
+    legacy_kind: "notice"
+    legacy_csv: "data/dongguk_notices.csv"
+    legacy_board_name: "장학공지"
+    crawler: "dongguk_notice"
+    source: "dongguk_official"
+    campus: "서울"
+    category: "장학공지"
+    sub_category: "장학"
+    department: "학생지원팀"
+    document_type: "notice"
+    base_url: "https://www.dongguk.edu"
+    board_code: "JANGHAKNOTICE"
+    list_path: "/article/{board_code}/list"
+    detail_path: "/article/{board_code}/detail/{article_id}"
+    list_item_selector: "div.board_list > ul > li"
+    content_selector: "div.board_view div.view_cont"
+    title_selector: "div.board_view div.tit > p"
+    info_selector: "div.board_view div.tit > div.info span"
+    attachment_selector: "div.board_view div.view_files ul li a"
+    max_pages: null
+    crawl_until_date: "2025-08-12"
+
+  dongguk_global_notice:
+    enabled: true
+    use_legacy_csv: false
+    legacy_kind: "notice"
+    legacy_csv: "data/dongguk_notices.csv"
+    legacy_board_name: "국제공지"
+    crawler: "dongguk_notice"
+    category: "국제공지"
+    sub_category: "국제"
+    department: "국제처"
+    document_type: "notice"
+    base_url: "https://www.dongguk.edu"
+    board_code: "GLOBALNOLTICE"
+    list_path: "/article/{board_code}/list"
+    detail_path: "/article/{board_code}/detail/{article_id}"
+    list_item_selector: "div.board_list > ul > li"
+    content_selector: "div.board_view div.view_cont"
+    title_selector: "div.board_view div.tit > p"
+    info_selector: "div.board_view div.tit > div.info span"
+    attachment_selector: "div.board_view div.view_files ul li a"
+    max_pages: null
+    crawl_until_date: "2025-09-12"
+
+  dongguk_exchange_notice:
+    enabled: true
+    use_legacy_csv: false
+    legacy_kind: "notice"
+    legacy_csv: "data/dongguk_notices.csv"
+    legacy_board_name: "국제교류공지"
+    crawler: "dongguk_notice"
+    category: "국제교류공지"
+    sub_category: "교환/파견"
+    department: "국제처"
+    document_type: "notice"
+    base_url: "https://www.dongguk.edu"
+    board_code: "INTEXNOTICE"
+    list_path: "/article/{board_code}/list"
+    detail_path: "/article/{board_code}/detail/{article_id}"
+    list_item_selector: "div.board_list > ul > li"
+    content_selector: "div.board_view div.view_cont"
+    title_selector: "div.board_view div.tit > p"
+    info_selector: "div.board_view div.tit > div.info span"
+    attachment_selector: "div.board_view div.view_files ul li a"
+    max_pages: null
+    crawl_until_date: "2025-05-15"
+
+  dongguk_international_student_notice:
+    enabled: true
+    use_legacy_csv: false
+    legacy_kind: "notice"
+    legacy_csv: "data/dongguk_notices.csv"
+    legacy_board_name: "유학생공지"
+    crawler: "dongguk_notice"
+    category: "유학생공지"
+    sub_category: "유학생"
+    department: "국제처"
+    document_type: "notice"
+    base_url: "https://www.dongguk.edu"
+    board_code: "INTSTUNOTICE"
+    list_path: "/article/{board_code}/list"
+    detail_path: "/article/{board_code}/detail/{article_id}"
+    list_item_selector: "div.board_list > ul > li"
+    content_selector: "div.board_view div.view_cont"
+    title_selector: "div.board_view div.tit > p"
+    info_selector: "div.board_view div.tit > div.info span"
+    attachment_selector: "div.board_view div.view_files ul li a"
+    max_pages: null
+    crawl_until_date: "2025-09-12"
+
+  dongguk_research_notice:
+    enabled: true
+    use_legacy_csv: false
+    legacy_kind: "notice"
+    legacy_csv: "data/dongguk_notices.csv"
+    legacy_board_name: "학술공지"
+    crawler: "dongguk_notice"
+    category: "학술공지"
+    sub_category: "연구/학술"
+    department: "동국대학교"
+    document_type: "notice"
+    base_url: "https://www.dongguk.edu"
+    board_code: "HAKSULNOTICE"
+    list_path: "/article/{board_code}/list"
+    detail_path: "/article/{board_code}/detail/{article_id}"
+    list_item_selector: "div.board_list > ul > li"
+    content_selector: "div.board_view div.view_cont"
+    title_selector: "div.board_view div.tit > p"
+    info_selector: "div.board_view div.tit > div.info span"
+    attachment_selector: "div.board_view div.view_files ul li a"
+    max_pages: null
+    crawl_until_date: "2024-01-16"
+
+  dongguk_event_notice:
+    enabled: true
+    use_legacy_csv: false
+    legacy_kind: "notice"
+    legacy_csv: "data/dongguk_notices.csv"
+    legacy_board_name: "행사공지"
+    crawler: "dongguk_notice"
+    category: "행사공지"
+    sub_category: "행사"
+    department: "동국대학교"
+    document_type: "notice"
+    base_url: "https://www.dongguk.edu"
+    board_code: "BUDDHISTEVENT"
+    list_path: "/article/{board_code}/list"
+    detail_path: "/article/{board_code}/detail/{article_id}"
+    list_item_selector: "div.board_list > ul > li"
+    content_selector: "div.board_view div.view_cont"
+    title_selector: "div.board_view div.tit > p"
+    info_selector: "div.board_view div.tit > div.info span"
+    attachment_selector: "div.board_view div.view_files ul li a"
+    max_pages: null
+    crawl_until_date: "2025-06-02"
+
+  dongguk_safety_notice:
+    enabled: true
+    use_legacy_csv: false
+    legacy_kind: "notice"
+    legacy_csv: "data/dongguk_notices.csv"
+    legacy_board_name: "안전공지"
+    crawler: "dongguk_notice"
+    category: "안전공지"
+    sub_category: "안전"
+    department: "동국대학교"
+    document_type: "notice"
+    base_url: "https://www.dongguk.edu"
+    board_code: "SAFENOTICE"
+    list_path: "/article/{board_code}/list"
+    detail_path: "/article/{board_code}/detail/{article_id}"
+    list_item_selector: "div.board_list > ul > li"
+    content_selector: "div.board_view div.view_cont"
+    title_selector: "div.board_view div.tit > p"
+    info_selector: "div.board_view div.tit > div.info span"
+    attachment_selector: "div.board_view div.view_files ul li a"
+    max_pages: null
+    crawl_until_date: "2024-02-16"
+
+  dongguk_admission_notice:
+    enabled: true
+    use_legacy_csv: false
+    legacy_kind: "notice"
+    legacy_csv: "data/dongguk_notices.csv"
+    legacy_board_name: "입학공지"
+    crawler: "dongguk_notice"
+    category: "입학공지"
+    sub_category: "입학"
+    department: "입학처"
+    document_type: "notice"
+    base_url: "https://www.dongguk.edu"
+    board_code: "IPSINOTICE"
+    list_path: "/article/{board_code}/list"
+    detail_path: "/article/{board_code}/detail/{article_id}"
+    list_item_selector: "div.board_list > ul > li"
+    content_selector: "div.board_view div.view_cont"
+    title_selector: "div.board_view div.tit > p"
+    info_selector: "div.board_view div.tit > div.info span"
+    attachment_selector: "div.board_view div.view_files ul li a"
+    max_pages: null
+    crawl_until_date: "2024-01-15"
+
+  dongguk_academic_calendar:
+    enabled: true
+    use_legacy_csv: true
+    legacy_kind: "schedule"
+    legacy_csv: "data/dongguk_schedule.csv"
+    category: "학사일정"
+    sub_category: "일정"
+    department: "교무학생처"
+    document_type: "calendar"
+    base_url: "https://www.dongguk.edu/schedule/detail?schedule_info_seq=22"
+    min_content_length: 10
+
+  dongguk_rules:
+    enabled: true
+    use_legacy_csv: true
+    legacy_kind: "rules"
+    legacy_csv: "data/dongguk_rule_texts.csv"
+    category: "학칙/규정"
+    sub_category: "규정"
+    department: "동국대학교"
+    document_type: "rule"
+    source_url: "dongguk://rules"
+    min_content_length: 80
+
+  dongguk_staff_contacts:
+    enabled: true
+    use_legacy_csv: true
+    legacy_kind: "staff"
+    legacy_csv: "data/dongguk_staff_contacts.csv"
+    category: "부서/학과 전화번호"
+    sub_category: "연락처"
+    department: "동국대학교"
+    document_type: "department"
+    base_url: "https://www.dongguk.edu/staff/list"
+    min_content_length: 10
+
+  dongguk_course_descriptions:
+    enabled: true
+    use_legacy_csv: true
+    legacy_kind: "course_descriptions"
+    legacy_csv: "data/dongguk_statistics_course_descriptions.csv"
+    category: "교육과정"
+    sub_category: "교과목해설"
+    department: "통계학과"
+    document_type: "course"
+    source_url: "dongguk://courses/descriptions"
+    min_content_length: 20
+
+  dongguk_major_courses:
+    enabled: true
+    use_legacy_csv: true
+    legacy_kind: "major_courses"
+    legacy_csv: "data/dongguk_statistics_major_course.csv"
+    category: "교육과정"
+    sub_category: "전공교과목"
+    department: "통계학과"
+    document_type: "course"
+    source_url: "dongguk://courses/major"
+    min_content_length: 20
+
+  dongguk_academic_policy_pages:
+    enabled: true
+    crawler: "static_page"
+    base_url: "https://www.dongguk.edu"
+    category: "학사제도"
+    sub_category: "학사"
+    department: "학사지원팀"
+    document_type: "academic"
+    content_selector: "body"
+    min_content_length: 80
+    parse_pdf_attachments: true
+    max_pdf_attachments_per_page: 3
+    max_pdf_pages_per_attachment: 30
+    pages:
+      - title: "교육과정"
+        url: "https://www.dongguk.edu/page/137"
+        sub_category: "교육과정"
+        department: "교육혁신처"
+      - title: "수강신청/정정/취소"
+        url: "https://www.dongguk.edu/page/150"
+        sub_category: "수강신청"
+        department: "학사지원팀"
+      - title: "재수강"
+        url: "https://www.dongguk.edu/page/151"
+        sub_category: "성적/수강"
+        department: "학사지원팀"
+      - title: "성적"
+        url: "https://www.dongguk.edu/page/154"
+        sub_category: "성적"
+        department: "학사지원팀"
+      - title: "출결기준"
+        url: "https://www.dongguk.edu/page/156"
+        sub_category: "출결"
+        department: "학사지원팀"
+      - title: "수료 및 졸업"
+        url: "https://www.dongguk.edu/page/158"
+        sub_category: "졸업"
+        department: "학사지원팀"
+      - title: "다전공"
+        url: "https://www.dongguk.edu/page/162"
+        sub_category: "다전공"
+        department: "학사지원팀"
+      - title: "계절학기제"
+        url: "https://www.dongguk.edu/page/163"
+        sub_category: "계절학기"
+        department: "학사지원팀"
+      - title: "전과(전공변경)제"
+        url: "https://www.dongguk.edu/page/164"
+        sub_category: "전과"
+        department: "학사지원팀"
+      - title: "휴학/복학/제적/퇴학"
+        url: "https://www.dongguk.edu/page/165"
+        sub_category: "휴학/복학"
+        department: "학사지원팀"
+      - title: "성적경고/성적경고 누적 제적"
+        url: "https://www.dongguk.edu/page/167"
+        sub_category: "성적경고"
+        department: "학사지원팀"
+      - title: "국내학점교류"
+        url: "https://www.dongguk.edu/page/168"
+        sub_category: "국내학점교류"
+        department: "학사지원팀"
+      - title: "융합교육 안내"
+        url: "https://www.dongguk.edu/page/753"
+        sub_category: "융합교육"
+        department: "교육기획팀"
+      - title: "전공가이드북"
+        url: "https://www.dongguk.edu/page/181"
+        sub_category: "전공가이드북"
+        department: "입학실"
+
+  dongguk_registration_service_pages:
+    enabled: true
+    crawler: "static_page"
+    base_url: "https://www.dongguk.edu"
+    category: "등록/증명"
+    sub_category: "등록"
+    department: "재무팀"
+    document_type: "student_service"
+    content_selector: "body"
+    min_content_length: 80
+    pages:
+      - title: "등록금 납부"
+        url: "https://www.dongguk.edu/page/144"
+        sub_category: "등록금"
+        department: "재무팀"
+      - title: "등록금 환불"
+        url: "https://www.dongguk.edu/page/145"
+        sub_category: "등록금 환불"
+        department: "재무팀"
+      - title: "등록관련 FAQ"
+        url: "https://www.dongguk.edu/page/146"
+        sub_category: "등록 FAQ"
+        department: "재무팀"
+      - title: "증명서발급"
+        url: "https://www.dongguk.edu/page/207"
+        sub_category: "증명서"
+        department: "학생역량개발팀"
+
+  dongguk_student_life_pages:
+    enabled: true
+    crawler: "static_page"
+    base_url: "https://www.dongguk.edu"
+    category: "학생생활"
+    sub_category: "학생서비스"
+    department: "학생역량개발팀"
+    document_type: "student_service"
+    content_selector: "body"
+    min_content_length: 80
+    pages:
+      - title: "학생서비스센터 소개"
+        url: "https://www.dongguk.edu/page/201"
+      - title: "휴대폰충전"
+        url: "https://www.dongguk.edu/page/221"
+        sub_category: "편의서비스"
+      - title: "CS톡"
+        url: "https://www.dongguk.edu/page/222"
+        sub_category: "상담/문의"
+
+  dongguk_international_pages:
+    enabled: true
+    crawler: "static_page"
+    base_url: "https://www.dongguk.edu"
+    category: "국제교류"
+    sub_category: "국제처"
+    department: "글로벌교류팀"
+    document_type: "international"
+    content_selector: "body"
+    min_content_length: 80
+    pages:
+      - title: "국제처 소개"
+        url: "https://www.dongguk.edu/page/147"
+      - title: "국제처 오시는길"
+        url: "https://www.dongguk.edu/page/166"
+      - title: "교환학생 프로그램"
+        url: "https://www.dongguk.edu/page/174"
+        sub_category: "교환학생"
+      - title: "외국인 학생 학사제도"
+        url: "https://www.dongguk.edu/page/187"
+        sub_category: "외국인학생"
+        department: "글로벌학생팀"
+      - title: "동국벗 교류프로그램"
+        url: "https://www.dongguk.edu/page/593"
+        sub_category: "교류프로그램"
+
+  dongguk_campus_map_pages:
+    enabled: true
+    crawler: "static_page"
+    base_url: "https://www.dongguk.edu"
+    category: "캠퍼스맵/시설"
+    sub_category: "캠퍼스맵"
+    department: "동국대학교"
+    document_type: "facility"
+    content_selector: "body"
+    min_content_length: 80
+    pages:
+      - title: "서울캠퍼스 캠퍼스맵"
+        url: "https://www.dongguk.edu/campus/map/seoul"
+        campus: "서울"
+      - title: "바이오메디캠퍼스 캠퍼스맵"
+        url: "https://www.dongguk.edu/campus/map/bio"
+        campus: "바이오메디"
+
+  dongguk_library_pages:
+    enabled: true
+    crawler: "static_page"
+    base_url: "https://lib.dongguk.edu"
+    category: "도서관"
+    sub_category: "이용안내"
+    department: "중앙도서관"
+    document_type: "library"
+    content_selector: "body"
+    min_content_length: 50
+    pages:
+      - title: "중앙도서관 학습시설"
+        url: "https://lib.dongguk.edu/local/html/5210"
+        sub_category: "학습시설/이용시간"
+      - title: "중앙도서관 대출/연장/예약"
+        url: "https://lib.dongguk.edu/local/html/6230"
+        sub_category: "대출/연장/예약"
+      - title: "중앙도서관 이용안내"
+        url: "https://lib.dongguk.edu/local/html/4120"
+        sub_category: "이용안내/운영시간"
+      - title: "중앙도서관 운영시간 안내"
+        url: "https://lib.dongguk.edu/local/html/9004"
+        sub_category: "운영시간"
+
+  dongguk_scholarship_pages:
+    enabled: true
+    crawler: "static_page"
+    base_url: "https://scholarship.dongguk.edu"
+    category: "장학제도"
+    sub_category: "장학"
+    department: "장학팀"
+    document_type: "scholarship"
+    content_selector: "body"
+    min_content_length: 80
+    parse_pdf_attachments: true
+    max_pdf_attachments_per_page: 2
+    max_pdf_pages_per_attachment: 20
+    pages:
+      - title: "장학 분류"
+        url: "https://scholarship.dongguk.edu/page/2686"
+        sub_category: "장학 분류"
+      - title: "지혜장학"
+        url: "https://scholarship.dongguk.edu/page/2684"
+        sub_category: "지혜장학"
+      - title: "정진장학"
+        url: "https://scholarship.dongguk.edu/page/2685"
+        sub_category: "정진장학"
+
+  dongguk_dorm_food_pages:
+    enabled: true
+    crawler: "dongguk_food"
+    base_url: "https://dorm.dongguk.edu"
+    list_url: "https://dorm.dongguk.edu/article/food/list"
+    category: "식단표"
+    sub_category: "남산학사"
+    department: "남산학사"
+    document_type: "food"
+    content_selector: ".board_view"
+    min_content_length: 50
+    max_pages: 1
+    pdf_max_pages: 3
+    enable_ocr: true
+    ocr_lang: "kor+eng"
+    pages:
+      - title: "남산학사 주간식단표"
+        url: "https://dorm.dongguk.edu/article/food/list"
+
+  dongguk_coop_food_pages:
+    enabled: true
+    crawler: "dgucoop_food"
+    base_url: "https://dgucoop.dongguk.edu"
+    page_url: "https://dgucoop.dongguk.edu/store/store.php?w=4&l=2"
+    title: "상록원 주간식단표"
+    category: "식단표"
+    sub_category: "상록원"
+    department: "동국대학교 소비자생활협동조합"
+    document_type: "food"
+    content_selector: "#sdetail"
+    min_content_length: 50
+    encoding: "euc-kr"
+
+  dongguk_dflex_food_pages:
+    enabled: true
+    crawler: "dongguk_official_food"
+    base_url: "https://www.dongguk.edu"
+    list_url: "https://www.dongguk.edu/article/FOODDFLEX/list"
+    category: "식단표"
+    sub_category: "D-Flex"
+    department: "동국대학교"
+    document_type: "food"
+    content_selector: ".board_view"
+    min_content_length: 50
+    pdf_max_pages: 3
+    enable_ocr: true
+    ocr_lang: "kor+eng"
+
+  public_academyinfo_basic_api:
+    enabled: false
+    source: "public_data_portal"
+    category: "대학알리미"
+    sub_category: "대학 기본 정보"
+    document_type: "public_stats"
+    provider: "한국대학교육협의회"
+    data_portal_url: "https://www.data.go.kr/data/15037507/openapi.do"
+    api_endpoint: "http://openapi.academyinfo.go.kr/openapi/service/rest/BasicInformationService/getComparisonPubYear"
+    requires_service_key: true
+
+  public_academyinfo_major_api:
+    enabled: false
+    source: "public_data_portal"
+    category: "대학알리미"
+    sub_category: "대학별 학과정보"
+    document_type: "public_stats"
+    provider: "한국대학교육협의회"
+    data_portal_url: "https://www.data.go.kr/data/15116892/openapi.do"
+    api_endpoint: "http://openapi.academyinfo.go.kr/openapi/service/rest/SchoolMajorInfoService/getSchoolMajorInfo"
+    requires_service_key: true
+
+  public_academyinfo_condition_api:
+    enabled: false
+    source: "public_data_portal"
+    category: "대학알리미"
+    sub_category: "교육여건 현황"
+    document_type: "public_stats"
+    provider: "한국대학교육협의회"
+    data_portal_url: "https://www.data.go.kr/data/15037506/openapi.do"
+    api_endpoint: "http://openapi.academyinfo.go.kr/openapi/service/rest/EducationConditionService/getComparisonSchoolGroundsAndBdsEnsureRate"
+    requires_service_key: true

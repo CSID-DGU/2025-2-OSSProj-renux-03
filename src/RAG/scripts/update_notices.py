@@ -32,7 +32,7 @@ def _run_once(boards: list[str], max_pages: int | None, delay: float) -> None:
     end_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{end_ts}] ✅ 신규 공지 {added}건 반영 완료.")
 
-    print("(CSV, Chroma 컬렉션, TF-IDF 모두 최신 상태입니다.)")
+    print("(CSV와 Chroma 컬렉션이 최신 상태입니다.)")
 
 
 def main() -> None:

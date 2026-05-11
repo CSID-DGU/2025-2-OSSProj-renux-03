@@ -1,6 +1,7 @@
 "LLM을 사용하여 사용자의 질문을 가장 관련 있는 데이터셋으로 라우팅합니다."
 from __future__ import annotations
 
+from functools import lru_cache
 import logging
 from typing import List
 
@@ -9,7 +10,7 @@ from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field, ValidationError
 from langchain_openai import ChatOpenAI
 
-from src.config import LLM_ROUTER_DESCRIPTIONS, OPENAI_MODEL
+from src.config import LLM_ROUTER_DESCRIPTIONS, OPENAI_API_KEY, OPENAI_MODEL
 
 # LLM이 출력할 라우팅 결정의 스키마를 정의합니다.
 # 여러 데이터셋과 관련될 수 있으므로 문자열 리스트를 사용합니다.
@@ -41,23 +42,44 @@ prompt = PromptTemplate(
     partial_variables={"format_instructions": parser.get_format_instructions()},
 )
 
-# 라우팅을 수행할 LLM 체인을 구성합니다.
-llm = ChatOpenAI(model=OPENAI_MODEL, temperature=0, model_kwargs={"response_format": {"type": "json_object"}})
-router_chain = prompt | llm | parser
+@lru_cache(maxsize=1)
+def _build_router_chain():
+    llm = ChatOpenAI(model=OPENAI_MODEL, temperature=0, model_kwargs={"response_format": {"type": "json_object"}})
+    return prompt | llm | parser
 
 def _format_destinations() -> str:
     """LLM 프롬프트에 포함될 데이터셋 설명의 형식을 지정합니다."""
     return "\n".join(f"- {name}: {desc}" for name, desc in LLM_ROUTER_DESCRIPTIONS.items())
+
+
+def _route_by_rules(query: str) -> List[str]:
+    text = query.lower()
+    routes: list[str] = []
+    rules = [
+        ("schedule", ["일정", "학사일정", "수강신청", "개강", "종강", "방학", "시험", "정정 기간"]),
+        ("rules", ["학칙", "규정", "졸업요건", "졸업 요건", "성적", "징계", "휴학", "복학"]),
+        ("courses", ["교과목", "강의", "수업", "전공", "학점", "이수구분", "교육과정"]),
+        ("staff", ["연락처", "전화번호", "담당자", "부서", "학과 사무실", "교수"]),
+        ("notices", ["공지", "장학", "모집", "신청", "등록금", "행사", "발표"]),
+    ]
+    for route, keywords in rules:
+        if any(keyword in text for keyword in keywords):
+            routes.append(route)
+    return routes or ["notices"]
+
 
 async def route_query(query: str) -> List[str]:
     """LLM 라우터를 사용하여 사용자 질문에 가장 적합한 데이터셋을 결정합니다."""
     if not query:
         # 질문이 비어 있으면 기본값으로 'notices'를 반환합니다.
         return ["notices"]
+    if not OPENAI_API_KEY:
+        return _route_by_rules(query)
 
     formatted_destinations = _format_destinations()
     
     try:
+        router_chain = _build_router_chain()
         result = await router_chain.ainvoke({
             "query": query,
             "destinations": formatted_destinations,
