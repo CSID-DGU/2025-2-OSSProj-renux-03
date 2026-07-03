@@ -1,4 +1,1252 @@
 ﻿게시판,게시판코드,원문글ID,제목,카테고리,게시일,상단고정,상세URL,본문,본문HTML,첨부파일
+일반공지,GENERALNOTICES,26765215,공지 [디지털정보처] 보안장비 교체 및 교내 네트워크 장비 펌웨어 업그레이드 작업 안내(2026.07.19.(일) 08:00~20:00),,2026-06-26,True,https://www.dongguk.edu/article/GENERALNOTICES/detail/26765215,"보다 안정적인 정보서비스 및 네트워크 서비스 제공을 위해 보안장비 교체·패치 작업과 교내 네트워크 장비 펌웨어 업그레이드 작업이 아래와 같이 예정되어 있습니다.
+작업 시간 동안 교내 정보서비스 이용이 불가능하며, 일부 건물의 유·무선 네트워크 이용이 일시적으로 중단되거나 간헐적인 끊김 현상이 발생할 수 있으니 이용에 참고하여 주시기 바랍니다.
+1. 작업 일시 : 2026.07.19.(일), 08:00~20:00
+※ 작업 경과에 따라 시간은 변경될 수 있습니다.
+2. 작업 내용
+가. 보안장비 교체 및 패치 작업
+나. 각 건물별 네트워크 장비 펌웨어 업그레이드
+다. 교내 네트워크 장비 펌웨어 업그레이드
+3. 영향 범위
+가. 보안장비 교체 및 패치 작업
+-
+본교 서버 및 데이터베이스(DB)를 이용하는 전체 정보서비스 이용 불가
+- 대상 서비스 : 포탈, nDRIMS, 홈페이지, 이클래스, 그룹웨어, 드림패스, 증명발급 등
+나. 네트워크 장비 펌웨어 업그레이드 작업
+-
+각 건물별 작업 시간 중 해당 건물 유·무선 네트워크 이용 일시 중단
+- 캠퍼스망 및 무선망 백본 장비 작업 시간 중 간헐적인 네트워크 끊김 발생 가능
+※ 캠퍼스망 및 무선망 백본 장비는 이중화 구성으로 일시적인 순단이 발생할 수 있습니다.
+4. 건물별 네트워크 중단 예정 시간
+작업시간
+대상건물
+영향 내용
+08:00~08:30
+학술관
+,
+신공학관
+(1,2,3
+층
+)
+작업시간별 건물
+유
+·
+무선 네트워크 이용 일시 중단
+08:40~09:10
+문화관
+,
+신공학관
+(5,6,10
+층
+)
+09:20~09:50
+경영관
+,
+신공학관
+(4,7,8,9
+층
+)
+10:00~10:30
+사회과학관
+,
+본관
+10:40~11:10
+혜화관
+,
+다향관
+※ 건물별 작업 시간은 작업 경과에 따라 변경될 수 있습니다.
+5. 교내 네트워크 펌웨어 업그레이드 작업
+가. 작업 시간 : 13:00~18:00
+나. 작업 내용 : 교내 네트워크 장비 펌웨어 업그레이드
+다. 영향 범위 : 간헐적으로 유·무선 네트워크 끊김 발생
+6. 작업 중 헤이영 중단에 따른 건물 출입 안내
+헤이영 서비스 불가 기간 동안 각 건물 수위실에서 신분 확인 후 출입 지원 예정
+※ 수위실 담당자 부재 시 상황실(02-2260-8849)로 연락 주시기 바랍니다.
+※ 카드키는 영향 없이 사용 가능
+▶ 관련 문의
+- 디지털정보처 정보인프라팀 최정재(02-2260-3903)","<p>
+
+</p><p>보다 안정적인 정보서비스 및 네트워크 서비스 제공을 위해 보안장비 교체·패치 작업과 교내 네트워크 장비 펌웨어 업그레이드 작업이 아래와 같이 예정되어 있습니다.</p>
+<p>작업 시간 동안 교내 정보서비스 이용이 불가능하며, 일부 건물의 유·무선 네트워크 이용이 일시적으로 중단되거나 간헐적인 끊김 현상이 발생할 수 있으니 이용에 참고하여 주시기 바랍니다.</p>
+<p> </p>
+<p><strong>1. 작업 일시 : 2026.07.19.(일), 08:00~20:00</strong></p>
+<p>  ※ 작업 경과에 따라 시간은 변경될 수 있습니다.</p>
+<p> </p>
+<p>2. 작업 내용</p>
+<p>  가. 보안장비 교체 및 패치 작업</p>
+<p>  나. 각 건물별 네트워크 장비 펌웨어 업그레이드</p>
+<p>  다. 교내 네트워크 장비 펌웨어 업그레이드</p>
+<p> </p>
+<p>3. 영향 범위</p>
+<p>  가. 보안장비 교체 및 패치 작업</p>
+<p>    - <span style=""color:#FF0000;""><strong>본교 서버 및 데이터베이스(DB)를 이용하는 전체 정보서비스 이용 불가</strong></span></p>
+<p>    - 대상 서비스 : 포탈, nDRIMS, 홈페이지, 이클래스, 그룹웨어, 드림패스, 증명발급 등</p>
+<p>  나. 네트워크 장비 펌웨어 업그레이드 작업</p>
+<p>    - <span style=""color:#FF0000;""><strong>각 건물별 작업 시간 중 해당 건물 유·무선 네트워크 이용 일시 중단</strong></span></p>
+<p>    - 캠퍼스망 및 무선망 백본 장비 작업 시간 중 간헐적인 네트워크 끊김 발생 가능</p>
+<p>     <span style=""color:#0000FF;"">※ 캠퍼스망 및 무선망 백본 장비는 이중화 구성으로 일시적인 순단이 발생할 수 있습니다.</span></p>
+<p> </p>
+<p><span style=""color:#FF0000;""><strong>4. 건물별 네트워크 중단 예정 시간</strong></span></p>
+<table style=""border-collapse:collapse;table-layout:fixed;border-top:none;border-left:none;border-bottom:none;border-right:none;"">
+<tbody>
+<tr>
+<td style=""width:130px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:돋움;""><span style=""font-weight:bold;"">작업시간</span></span></p>
+</td>
+<td style=""width:217px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:돋움;""><span style=""font-weight:bold;"">대상건물</span></span></p>
+</td>
+<td style=""width:164px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:돋움;""><span style=""font-weight:bold;"">영향 내용</span></span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:130px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:돋움;""><span style=""letter-spacing:0pt;"">08:00~08:30</span></span></p>
+</td>
+<td style=""width:217px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:돋움;"">학술관<span style=""letter-spacing:0pt;"">, </span>신공학관<span style=""letter-spacing:0pt;"">(1,2,3</span>층<span style=""letter-spacing:0pt;"">)</span></span></p>
+</td>
+<td rowspan=""5"" style=""width:164px;height:19px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:돋움;"">작업시간별 건물 </span></p>
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:돋움;"">유<span style=""letter-spacing:0pt;"">·</span>무선 네트워크 이용 일시 중단</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:130px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:돋움;""><span style=""letter-spacing:0pt;"">08:40~09:10</span></span></p>
+</td>
+<td style=""width:217px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:돋움;"">문화관<span style=""letter-spacing:0pt;"">, </span>신공학관<span style=""letter-spacing:0pt;"">(5,6,10</span>층<span style=""letter-spacing:0pt;"">)</span></span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:130px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:돋움;""><span style=""letter-spacing:0pt;"">09:20~09:50</span></span></p>
+</td>
+<td style=""width:217px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:돋움;"">경영관<span style=""letter-spacing:0pt;"">, </span>신공학관<span style=""letter-spacing:0pt;"">(4,7,8,9</span>층<span style=""letter-spacing:0pt;"">)</span></span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:130px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:돋움;""><span style=""letter-spacing:0pt;"">10:00~10:30</span></span></p>
+</td>
+<td style=""width:217px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:돋움;"">사회과학관<span style=""letter-spacing:0pt;"">, </span>본관</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:130px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:돋움;""><span style=""letter-spacing:0pt;"">10:40~11:10</span></span></p>
+</td>
+<td style=""width:217px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:돋움;"">혜화관<span style=""letter-spacing:0pt;"">, </span>다향관</span></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p>※ 건물별 작업 시간은 작업 경과에 따라 변경될 수 있습니다.</p>
+<p> </p>
+<p>5. 교내 네트워크 펌웨어 업그레이드 작업</p>
+<p>  가. 작업 시간 : 13:00~18:00</p>
+<p>  나. 작업 내용 : 교내 네트워크 장비 펌웨어 업그레이드</p>
+<p>  다. 영향 범위 : 간헐적으로 유·무선 네트워크 끊김 발생</p>
+<p> </p>
+<p>6. 작업 중 헤이영 중단에 따른 건물 출입 안내</p>
+<p>  헤이영 서비스 불가 기간 동안 각 건물 수위실에서 신분 확인 후 출입 지원 예정</p>
+<p>  ※ 수위실 담당자 부재 시 상황실(02-2260-8849)로 연락 주시기 바랍니다.</p>
+<p>  ※ 카드키는 영향 없이 사용 가능</p>
+<p> </p>
+<p>▶ 관련 문의</p>
+<p> - 디지털정보처 정보인프라팀 최정재(02-2260-3903)</p>
+<p> </p>",[]
+일반공지,GENERALNOTICES,26765208,공지 (예비군연대) 「병역판정검사 받은 해 입영희망자(2007년생) 현역병 입영 신청」 안내,,2026-06-26,True,https://www.dongguk.edu/article/GENERALNOTICES/detail/26765208,,"<p>
+
+</p><p><img alt=""현역병입영신청"" src=""/cmmn/fileView?path=/ckeditor//GENERALNOTICES&amp;physical=1782440638727.jpg&amp;contentType=image"" style=""width: 992px; height: 1403px;""/></p>",[]
+장학공지,JANGHAKNOTICE,26765220,2026년도 『산학협동재단 장학금 지원사업』 ②국내 외국인 근로자 자녀 장학생,,2026-06-26,False,https://www.dongguk.edu/article/JANGHAKNOTICE/detail/26765220,"1.
+선발인원
+: 0
+명
+2.
+신청기간
+: ~ 2026.7.10.(
+금
+) 17:00
+까지
+3.
+신청방법
+:
+장학팀 이메일 접수
+4.
+제출서류
+:
+첨부파일 및 기타 해당 제출서류 발급하여 제출
+(
+서류 원본제출
+,
+이미지파일 접수 안됨
+)
+※
+첨부파일 양식 각 서명까지 하여 제출
+,
+서명 누락 시 장학생 추천 불가
+/
+※
+서류 미비시 장학생 추천 불가
+5.
+필수자격
+○
+국내
+4
+년제 대학 재학생
+○
+부모가 대한민국 국적이 없는 외국인으로서
+,
+국내에서 근로를 목적으로 체류하며 현재 근로 중인 자의 자녀
+○
+성적우수자 우대
+(
+전체 이수학기의 평균 학점
+)
+※
+지원 제한
+(
+제외 대상
+)
+-
+타 민간재단 및 부모 직장 복지
+(
+학비
+(
+등록금 성격
+)
+장학금
+)
+이중 수혜에 해당시 지원 불가
+6.
+선발절차
+1
+단계 대학추천
+/ 2
+단계 재단 서류심사
+/ 3
+단계 최종선발
+7.
+지원내용
+□
+지원성격
+:
+등록금성
+□
+장학금액
+:
+실 수업료
+□
+지원방식
+:
+대학 명의 계좌로 송금
+□
+지원유형
+: 1
+개 학기
+(2026-2
+학기
+)
+8.
+장학생 결격사유 및 의무사항
+(
+발생시 장학생 탈락으로 장학금 환수
+)
+□
+장학생 신청 당시 제출서류 내용이 사실과 다른 경우
+□
+장학생 선발 직후 휴학할 경우
+□
+등록금을 타 민간재단 장학금 또는 직장인 자녀 학비 등을 지원받는 경우
+□
+선발 장학생 장학증서 수여식 및 재단 주최 특강 등 연수 활동
+필수 참석
+9.
+기타 유의사항
+□
+장학생 선발 결과는 개별 통보 및 재단 홈페이지를 통해 공개
+□
+기타 홍보 및 안내 사항은 대학교 교외장학금 담당자 앞으로 안내 공문
+,
+선발 계획
+(
+안
+)
+송부
+□
+제출된 서류는 반환되지 않음
+10.
+제출서류
+순번
+서류명
+비고
+1
+장학금신청서
+서식
+1
+2
+자기소개서
+서식
+2
+3
+개인
+(
+신용
+)
+정보 수집이용제공 및 조회 동의서
+서식
+3
+4
+장학생서약서
+서식
+4
+5
+성적증명서
+(
+전체학기
+)
+대학 발급
+6
+외국인등록사실증명
+*
+동거가족 사항이 반드시 기재되어 있어야 함
+정부
+24,
+주민센터 등 발급
+7
+재직증명서
+부모의 근무지 발급
+11.
+문의
+:
+장학팀
+02-2260-3043/3698","<p>
+
+</p><p><span style=""letter-spacing:0pt;"">1. </span><span style=""font-family:함초롬바탕;"">선발인원 </span><span style=""letter-spacing:0pt;"">: 0</span><span style=""font-family:함초롬바탕;"">명</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">2. </span><span style=""font-family:함초롬바탕;"">신청기간 </span><span style=""letter-spacing:0pt;"">: ~ 2026.7.10.(</span><span style=""font-family:함초롬바탕;"">금</span><span style=""letter-spacing:0pt;"">) 17:00</span><span style=""font-family:함초롬바탕;"">까지</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">3. </span><span style=""font-family:함초롬바탕;"">신청방법 </span>: <span style=""font-family:함초롬바탕;"">장학팀 이메일 접수</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">4. </span><span style=""font-family:함초롬바탕;"">제출서류 </span>: <span style=""font-family:함초롬바탕;"">첨부파일 및 기타 해당 제출서류 발급하여 제출 </span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">서류 원본제출</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">이미지파일 접수 안됨</span><span style=""letter-spacing:0pt;"">)</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">※ </span></span><span style=""font-family:함초롬바탕;"">첨부파일 양식 각 서명까지 하여 제출</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">서명 누락 시 장학생 추천 불가 </span><span style=""letter-spacing:0pt;"">/ </span><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">※ </span></span><span style=""font-family:함초롬바탕;"">서류 미비시 장학생 추천 불가</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">5. </span><span style=""font-family:함초롬바탕;"">필수자격</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">○ </span></span><span style=""font-family:함초롬바탕;"">국내 </span><span style=""letter-spacing:0pt;"">4</span><span style=""font-family:함초롬바탕;"">년제 대학 재학생</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">○ </span></span><span style=""font-size:13.0pt;""><span style=""font-family:malgungothic;"">부모가 대한민국 국적이 없는 외국인으로서</span></span><span style=""letter-spacing:0pt;""><span style=""font-size:13.0pt;""><span style=""font-family:malgungothic;"">, </span></span></span><span style=""font-size:13.0pt;""><span style=""font-family:malgungothic;"">국내에서 근로를 목적으로 체류하며 현재 근로 중인 자의 자녀</span></span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">○ </span></span><span style=""font-size:13.0pt;""><span style=""font-family:malgungothic;"">성적우수자 우대 </span></span><span style=""letter-spacing:0pt;""><span style=""font-size:13.0pt;""><span style=""font-family:malgungothic;"">(</span></span></span><span style=""font-size:13.0pt;""><span style=""font-family:malgungothic;"">전체 이수학기의 평균 학점</span></span><span style=""letter-spacing:0pt;""><span style=""font-size:13.0pt;""><span style=""font-family:malgungothic;"">)</span></span></span></p>
+<p style=""line-height:100%;word-break:keep-all;""><span style=""letter-spacing:0pt;font-weight:bold;""><span style=""font-size:11.0pt;""><span style=""font-family:malgungothicbold;"">※ </span></span></span><span style=""font-weight:bold;""><span style=""font-size:11.0pt;""><span style=""font-family:malgungothicbold;"">지원 제한</span></span></span><span style=""letter-spacing:0pt;font-weight:bold;""><span style=""font-size:11.0pt;""><span style=""font-family:malgungothicbold;"">(</span></span></span><span style=""font-weight:bold;""><span style=""font-size:11.0pt;""><span style=""font-family:malgungothicbold;"">제외 대상</span></span></span><span style=""letter-spacing:0pt;font-weight:bold;""><span style=""font-size:11.0pt;""><span style=""font-family:malgungothicbold;"">)</span></span></span></p>
+<p style=""line-height:100%;word-break:keep-all;""><span style=""letter-spacing:0pt;""><span style=""font-size:11.0pt;""><span style=""font-family:malgungothic;"">- </span></span></span><span style=""font-size:11.0pt;""><span style=""font-family:malgungothic;"">타 민간재단 및 부모 직장 복지</span></span><span style=""letter-spacing:0pt;""><span style=""font-size:11.0pt;""><span style=""font-family:malgungothic;"">(</span></span></span><span style=""font-size:11.0pt;""><span style=""font-family:malgungothic;"">학비</span></span><span style=""letter-spacing:0pt;""><span style=""font-size:11.0pt;""><span style=""font-family:malgungothic;"">(</span></span></span><span style=""font-size:11.0pt;""><span style=""font-family:malgungothic;"">등록금 성격</span></span><span style=""letter-spacing:0pt;""><span style=""font-size:11.0pt;""><span style=""font-family:malgungothic;"">) </span></span></span><span style=""font-size:11.0pt;""><span style=""font-family:malgungothic;"">장학금</span></span><span style=""letter-spacing:0pt;""><span style=""font-size:11.0pt;""><span style=""font-family:malgungothic;"">) </span></span></span><span style=""font-size:11.0pt;""><span style=""font-family:malgungothic;"">이중 수혜에 해당시 지원 불가</span></span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">6. </span><span style=""font-family:함초롬바탕;"">선발절차</span></p>
+<p><span style=""letter-spacing:0pt;"">1</span><span style=""font-family:함초롬바탕;"">단계 대학추천 </span><span style=""letter-spacing:0pt;"">/ 2</span><span style=""font-family:함초롬바탕;"">단계 재단 서류심사 </span><span style=""letter-spacing:0pt;"">/ 3</span><span style=""font-family:함초롬바탕;"">단계 최종선발</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">7. </span><span style=""font-family:함초롬바탕;"">지원내용</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">지원성격 </span>: <span style=""font-family:함초롬바탕;"">등록금성</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">장학금액 </span>: <span style=""font-family:함초롬바탕;"">실 수업료</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">지원방식 </span>: <span style=""font-family:함초롬바탕;"">대학 명의 계좌로 송금</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">지원유형 </span><span style=""letter-spacing:0pt;"">: 1</span><span style=""font-family:함초롬바탕;"">개 학기</span><span style=""letter-spacing:0pt;"">(2026-2</span><span style=""font-family:함초롬바탕;"">학기</span><span style=""letter-spacing:0pt;"">)</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">8. </span><span style=""font-family:함초롬바탕;"">장학생 결격사유 및 의무사항 </span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">발생시 장학생 탈락으로 장학금 환수</span><span style=""letter-spacing:0pt;"">)</span></p>
+<p style=""line-height:100%;word-break:keep-all;""><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">장학생 신청 당시 제출서류 내용이 사실과 다른 경우</span></p>
+<p style=""line-height:100%;word-break:keep-all;""><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">장학생 선발 직후 휴학할 경우</span></p>
+<p style=""line-height:100%;word-break:keep-all;""><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">등록금을 타 민간재단 장학금 또는 직장인 자녀 학비 등을 지원받는 경우</span></p>
+<p style=""line-height:100%;word-break:keep-all;""><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">선발 장학생 장학증서 수여식 및 재단 주최 특강 등 연수 활동 </span><span style=""font-weight:bold;""><span style=""font-family:함초롬바탕;"">필수 참석</span></span></p>
+<p style=""line-height:100%;word-break:keep-all;font-weight:bold;""> </p>
+<p><span style=""letter-spacing:0pt;"">9. </span><span style=""font-family:함초롬바탕;"">기타 유의사항</span></p>
+<p style=""line-height:100%;word-break:keep-all;""><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">장학생 선발 결과는 개별 통보 및 재단 홈페이지를 통해 공개</span></p>
+<p style=""line-height:100%;word-break:keep-all;""><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">기타 홍보 및 안내 사항은 대학교 교외장학금 담당자 앞으로 안내 공문</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">선발 계획</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">안</span><span style=""letter-spacing:0pt;"">) </span><span style=""font-family:함초롬바탕;"">송부</span></p>
+<p style=""line-height:100%;word-break:keep-all;""><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">제출된 서류는 반환되지 않음</span></p>
+<p style=""line-height:100%;word-break:keep-all;font-size:13pt;""> </p>
+<p><span style=""letter-spacing:0pt;"">10. </span><span style=""font-family:함초롬바탕;"">제출서류</span></p>
+<p> </p>
+<table style=""border-collapse:collapse;table-layout:fixed;border-top:none;border-left:none;border-bottom:none;border-right:none;"">
+<tbody>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-weight:bold;""><span style=""font-family:함초롬바탕;"">순번</span></span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-weight:bold;""><span style=""font-family:함초롬바탕;"">서류명</span></span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-weight:bold;""><span style=""font-family:함초롬바탕;"">비고</span></span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">1</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">장학금신청서</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">서식</span><span style=""letter-spacing:0pt;"">1</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">2</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">자기소개서</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">서식</span><span style=""letter-spacing:0pt;"">2</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">3</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">개인</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">신용</span><span style=""letter-spacing:0pt;"">)</span><span style=""font-family:함초롬바탕;"">정보 수집이용제공 및 조회 동의서</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">서식</span><span style=""letter-spacing:0pt;"">3</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">4</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">장학생서약서</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">서식</span><span style=""letter-spacing:0pt;"">4</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">5</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">성적증명서</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">전체학기</span><span style=""letter-spacing:0pt;"">)</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">대학 발급</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">6</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">외국인등록사실증명</span></p>
+<p style=""line-height:100%;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">*</span><span style=""font-family:함초롬바탕;"">동거가족 사항이 반드시 기재되어 있어야 함</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">정부</span><span style=""letter-spacing:0pt;"">24, </span><span style=""font-family:함초롬바탕;"">주민센터 등 발급</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">7</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">재직증명서</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">부모의 근무지 발급</span></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">11. </span><span style=""font-family:함초롬바탕;"">문의</span>: <span style=""font-family:함초롬바탕;"">장학팀 </span><span style=""letter-spacing:0pt;"">02-2260-3043/3698</span></p>
+<div id=""hwpEditorBoardContent""> </div>","[{""name"": ""별첨_산학재단 장학생 신청서류(작성서식모음)_외국인근로자자녀장학.hwp"", ""url"": ""https://www.dongguk.edu/cmmn/fileDown.do?filename=%EB%B3%84%EC%B2%A8_%EC%82%B0%ED%95%99%EC%9E%AC%EB%8B%A8%20%EC%9E%A5%ED%95%99%EC%83%9D%20%EC%8B%A0%EC%B2%AD%EC%84%9C%EB%A5%98%28%EC%9E%91%EC%84%B1%EC%84%9C%EC%8B%9D%EB%AA%A8%EC%9D%8C%29_%EC%99%B8%EA%B5%AD%EC%9D%B8%EA%B7%BC%EB%A1%9C%EC%9E%90%EC%9E%90%EB%85%80%EC%9E%A5%ED%95%99.hwp&filepath=/files/article/JANGHAKNOTICE/26765220/&filerealname=DC0DCFA476BD456F88CAA92606A672FA.hwp""}]"
+장학공지,JANGHAKNOTICE,26765219,2026년도 『산학협동재단 장학금 지원사업』 ①디딤돌 장학생 선발 안내,,2026-06-26,False,https://www.dongguk.edu/article/JANGHAKNOTICE/detail/26765219,"2026
+년도
+『
+산학협동재단 장학금 지원사업
+』 ①
+디딤돌 장학생 선발 안내
+1.
+선발인원
+: 0
+명
+2.
+신청기간
+: ~ 2026.7.10.(
+금
+) 17:00
+까지
+3.
+신청방법
+:
+장학팀 이메일 접수
+4.
+제출서류
+:
+첨부파일 및 기타 해당 제출서류 발급하여 제출
+(
+서류 원본제출
+,
+이미지파일 접수 안됨
+)
+※
+첨부파일 양식 각 서명까지 하여 제출
+,
+서명 누락 시 장학생 추천 불가
+/
+※
+서류 미비시 장학생 추천 불가
+5.
+필수자격
+○
+국내
+4
+년제 대학 신입생
+(2026
+학년도
+1
+학년 재학생
+)
+※
+의학계열 등
+5~6
+년 교육과정 학과
+(
+부
+)
+제외
+○
+등록금의 경우
+,
+한국장학재단 국가장학금으로 수혜
+(
+감면
+)
+받는 자
+※
+2026-1
+학기 등록금을 국가장학금으로 수혜를 받았으며
+,
+남은
+7
+개 학기 등록금 또한 국가장학금으로 수혜가 가능해야 함
+6.
+선발절차
+1
+단계 대학추천
+/ 2
+단계 재단 서류심사
+/ 3
+단계 재단 면접평가
+(8/6(
+목
+)
+예정
+) / 4
+단계 최종선발
+7.
+지원내용
+□
+지원성격
+:
+학업보조비
+(
+생활비성
+)
+□
+장학금액
+:
+月
+80
+만원
+(
+年
+960
+만원
+)
+□
+지원방식
+:
+장학생 명의의 개인 계좌로 송금
+□
+지원유형
+○
+全
+학년
+(4
+년
+, 8
+학기
+)
+매월 지급
+○
+학기별 결격사유
+(
+성적
+,
+휴학
+/
+자퇴
+,
+국가장학금 감면 확인 등
+)
+심사 후 계속장학생 지원
+□
+기타사항
+:
+재단은 학기 말 한국장학재단 중복지원방지시스템에 장학금 지원 내역을 등록하며
+,
+대학 장학팀은 이를 통해 해당 학생의 장학금 수혜 내역을 확인할 수 있음
+8.
+장학생 결격사유
+(
+발생시 장학생 탈락으로 장학금 지급 중단
+)
+□
+장학생 신청 당시 제출서류 내용이 사실과 다른 경우
+□
+매 학기 성적이
+B+(4.5
+점 기준
+3.5
+점
+)
+가 유지되지 않는 경우
+○
+성적 미달 시
+, 1
+차 경고
+(
+유예
+)
+및 사유서를 받고
+2
+차부터는 결격사유로 봄
+□
+휴학이나 자퇴 등으로 학업을 중단하는 경우
+(
+원칙적으로 중도휴학 불가능
+)
+○
+입영휴학의 경우
+,
+증빙서류
+(
+소속대학 입영휴학 증빙 및 입영통지서 등
+)
+를 첨부하여 제출
+※
+입영휴학 기간은 최대
+2
+년
+6
+개월까지 유예하며
+,
+미복학시 결격사유로 봄
+○
+기타 질병 및 개인 사유의 일반휴학의 경우 최대
+1
+년까지 유예하며
+,
+휴학사유서 제출
+○
+재단에 통보없이 무단 휴학 등 학적 변동시 즉시 결격사유에 해당
+□
+등록금을 한국장학재단 국가장학금으로 수혜받지 않은 경우
+(
+매학기 확인
+)
+○
+새터민일 경우
+,
+보훈청 장학금 수혜 가능
+□
+장학생이 징계 및 퇴학 등 품위유지에 반하는 행동을 하는 경우
+□
+장학금 지급을 위해 성적증명서 및 기타 필요 서류를 요구할 때
+,
+이에 불응하거나 위조 및 변조하는 경우
+□
+타 민간재단 장학생으로 선발되거나
+,
+직장인 자녀 학비 등을 지원받는 경우
+□
+생활비성 장학금이라도 재단 디딤돌 장학금처럼 연속성이 띄는 장학금을 수혜받는 경우
+(
+단
+,
+교내근로 및 일회성 장학금이나 기타 대회수상 상금은 예외
+)
+□
+상기 사항 외 결격사유에 해당 여부는 재단 장학사업위원회의 심의를 통해 결정함
+9.
+장학생 의무사항
+□
+선발 장학생 장학증서 수여식 및 재단 주최 특강
+,
+장학생 교류회 등 연수 활동 필수 참석
+(
+불참시 결격사유에 해당함
+)
+□
+한국장학재단 외 타 재단 장학금
+(
+등록금성
+)
+을 중복으로 지원받지 않을 것
+□
+디딤돌 장학금처럼 연속적으로 수혜되는 장학금을 중복으로 지원받지 않을 것
+※
+타 장학금 공고 내용을 숙지하여 신청할 것
+□
+결격사유에 해당하지 않도록 학업 관리
+(
+성적
+B+
+유지
+)
+및 장학생으로서 품위유지
+10.
+기타 유의사항
+□
+장학생 선발 직후 휴학
+(
+입영휴학 포함
+)
+불가
+□
+서류 및 면접 심사 일정
+,
+장학생 선발 결과는 개별 통보 및 재단 홈페이지를 통해 공개
+□
+제출된 서류는 반환되지 않음
+11.
+제출서류
+순번
+서류명
+비고
+1
+장학금신청서
+서식
+1
+2
+자기소개서
+서식
+2
+3
+개인
+(
+신용
+)
+정보 수집이용제공 및 조회 동의서
+서식
+3
+4
+장학생서약서
+서식
+4
+5
+성적증명서
+(2026-1
+학기
+)
+대학 발급
+6
+국가장학금증명서
+(
+전체내역
+)
+한국장학재단 발급
+7
+학자금지원구간통지서
+한국장학재단 발급
+8
+주민등록등본
+(
+세대주와의 관계 명시
+)
+민원
+24,
+주민센터 발급
+9
+가족관계증명서
+(
+부모기준
+)
+전자가족관계등록시스템 발급
+10
+사회적배려대상자증빙서류
+(
+해당사항 제출
+)
+아래 상세표 참조
+12.
+사회적배려대상자 증빙서류 상세표
+순번
+서류명
+비고
+법정저소득층
+기초생활수급자
+정부
+24,
+주민센터
+차상위계층 확인서
+법정저소득층 한부모가족 증명서
+차상위 본인부담 경감대상자 증명서
+국민건강보험공단
+자활근로자 확인서
+복지로
+새터민 가정
+(
+북한이탈주민
+)
+교육지원
+(
+보호
+)
+대상자 증명서
+주소지 시구청
+,
+주민센터 등
+북한이탈주민 등록확인서
+자립준비청년
+(
+보호종료아동
+)
+보호 종료 확인서
+퇴소기관 및 지역가정위탁지원센터 등
+퇴소 확인서
+13.
+문의
+:
+장학팀
+02-2260-3043/3698","<p>
+
+</p><p style=""text-align: center;""><strong><span style=""letter-spacing:0pt;"">2026</span><span style=""font-family:함초롬바탕;"">년도 </span><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">『</span></span><span style=""font-family:함초롬바탕;"">산학협동재단 장학금 지원사업</span><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">』 ①</span></span><span style=""font-family:함초롬바탕;"">디딤돌 장학생 선발 안내</span></strong></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">1. </span><span style=""font-family:함초롬바탕;"">선발인원 </span><span style=""letter-spacing:0pt;"">: 0</span><span style=""font-family:함초롬바탕;"">명</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">2. </span><span style=""font-family:함초롬바탕;"">신청기간 </span><span style=""letter-spacing:0pt;"">: ~ 2026.7.10.(</span><span style=""font-family:함초롬바탕;"">금</span><span style=""letter-spacing:0pt;"">) 17:00</span><span style=""font-family:함초롬바탕;"">까지</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">3. </span><span style=""font-family:함초롬바탕;"">신청방법 </span>: <span style=""font-family:함초롬바탕;"">장학팀 이메일 접수</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">4. </span><span style=""font-family:함초롬바탕;"">제출서류 </span>: <span style=""font-family:함초롬바탕;"">첨부파일 및 기타 해당 제출서류 발급하여 제출 </span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">서류 원본제출</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">이미지파일 접수 안됨</span><span style=""letter-spacing:0pt;"">)</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">※ </span></span><span style=""font-family:함초롬바탕;"">첨부파일 양식 각 서명까지 하여 제출</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">서명 누락 시 장학생 추천 불가 </span><span style=""letter-spacing:0pt;"">/ </span><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">※ </span></span><span style=""font-family:함초롬바탕;"">서류 미비시 장학생 추천 불가</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">5. </span><span style=""font-family:함초롬바탕;"">필수자격</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">○ </span></span><span style=""font-family:함초롬바탕;"">국내 </span><span style=""letter-spacing:0pt;"">4</span><span style=""font-family:함초롬바탕;"">년제 대학 신입생</span><span style=""letter-spacing:0pt;"">(2026</span><span style=""font-family:함초롬바탕;"">학년도 </span><span style=""letter-spacing:0pt;"">1</span><span style=""font-family:함초롬바탕;"">학년 재학생</span><span style=""letter-spacing:0pt;"">)</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">※ </span></span><span style=""font-family:함초롬바탕;"">의학계열 등 </span><span style=""letter-spacing:0pt;"">5~6</span><span style=""font-family:함초롬바탕;"">년 교육과정 학과</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">부</span><span style=""letter-spacing:0pt;"">) </span><span style=""font-family:함초롬바탕;"">제외</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">○ </span></span><span style=""font-family:함초롬바탕;"">등록금의 경우</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">한국장학재단 국가장학금으로 수혜</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">감면</span><span style=""letter-spacing:0pt;"">)</span><span style=""font-family:함초롬바탕;"">받는 자</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">※ </span></span><span style=""letter-spacing:0pt;"">2026-1</span><span style=""font-family:함초롬바탕;"">학기 등록금을 국가장학금으로 수혜를 받았으며</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">남은 </span><span style=""letter-spacing:0pt;"">7</span><span style=""font-family:함초롬바탕;"">개 학기 등록금 또한 국가장학금으로 수혜가 가능해야 함</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">6. </span><span style=""font-family:함초롬바탕;"">선발절차</span></p>
+<p><span style=""letter-spacing:0pt;"">1</span><span style=""font-family:함초롬바탕;"">단계 대학추천 </span><span style=""letter-spacing:0pt;"">/ 2</span><span style=""font-family:함초롬바탕;"">단계 재단 서류심사 </span><span style=""letter-spacing:0pt;"">/ 3</span><span style=""font-family:함초롬바탕;"">단계 재단 면접평가</span><span style=""letter-spacing:0pt;"">(8/6(</span><span style=""font-family:함초롬바탕;"">목</span><span style=""letter-spacing:0pt;"">) </span><span style=""font-family:함초롬바탕;"">예정</span><span style=""letter-spacing:0pt;"">) / 4</span><span style=""font-family:함초롬바탕;"">단계 최종선발</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">7. </span><span style=""font-family:함초롬바탕;"">지원내용</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">지원성격 </span>: <span style=""font-family:함초롬바탕;"">학업보조비 </span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">생활비성</span><span style=""letter-spacing:0pt;"">)</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">장학금액 </span>: <span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">月 </span></span><span style=""letter-spacing:0pt;"">80</span><span style=""font-family:함초롬바탕;"">만원 </span><span style=""letter-spacing:0pt;"">(</span><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">年 </span></span><span style=""letter-spacing:0pt;"">960</span><span style=""font-family:함초롬바탕;"">만원</span><span style=""letter-spacing:0pt;"">)</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">지원방식 </span>: <span style=""font-family:함초롬바탕;"">장학생 명의의 개인 계좌로 송금</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">지원유형</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">○ </span></span><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">全</span></span><span style=""font-family:함초롬바탕;"">학년</span><span style=""letter-spacing:0pt;"">(4</span><span style=""font-family:함초롬바탕;"">년</span><span style=""letter-spacing:0pt;"">, 8</span><span style=""font-family:함초롬바탕;"">학기</span><span style=""letter-spacing:0pt;"">) </span><span style=""font-family:함초롬바탕;"">매월 지급</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">○ </span></span><span style=""font-family:함초롬바탕;"">학기별 결격사유</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">성적</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">휴학</span><span style=""letter-spacing:0pt;"">/</span><span style=""font-family:함초롬바탕;"">자퇴</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">국가장학금 감면 확인 등</span><span style=""letter-spacing:0pt;"">) </span><span style=""font-family:함초롬바탕;"">심사 후 계속장학생 지원</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">기타사항 </span>: <span style=""font-family:함초롬바탕;"">재단은 학기 말 한국장학재단 중복지원방지시스템에 장학금 지원 내역을 등록하며</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">대학 장학팀은 이를 통해 해당 학생의 장학금 수혜 내역을 확인할 수 있음</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">8. </span><span style=""font-family:함초롬바탕;"">장학생 결격사유 </span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">발생시 장학생 탈락으로 장학금 지급 중단</span><span style=""letter-spacing:0pt;"">)</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">장학생 신청 당시 제출서류 내용이 사실과 다른 경우</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">매 학기 성적이 </span><span style=""letter-spacing:0pt;"">B+(4.5</span><span style=""font-family:함초롬바탕;"">점 기준 </span><span style=""letter-spacing:0pt;"">3.5</span><span style=""font-family:함초롬바탕;"">점</span><span style=""letter-spacing:0pt;"">)</span><span style=""font-family:함초롬바탕;"">가 유지되지 않는 경우</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">○ </span></span><span style=""font-family:함초롬바탕;"">성적 미달 시</span><span style=""letter-spacing:0pt;"">, 1</span><span style=""font-family:함초롬바탕;"">차 경고</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">유예</span><span style=""letter-spacing:0pt;"">) </span><span style=""font-family:함초롬바탕;"">및 사유서를 받고 </span><span style=""letter-spacing:0pt;"">2</span><span style=""font-family:함초롬바탕;"">차부터는 결격사유로 봄</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">휴학이나 자퇴 등으로 학업을 중단하는 경우</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">원칙적으로 중도휴학 불가능</span><span style=""letter-spacing:0pt;"">)</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">○ </span></span><span style=""font-family:함초롬바탕;"">입영휴학의 경우</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">증빙서류</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">소속대학 입영휴학 증빙 및 입영통지서 등</span><span style=""letter-spacing:0pt;"">)</span><span style=""font-family:함초롬바탕;"">를 첨부하여 제출</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">※ </span></span><span style=""font-family:함초롬바탕;"">입영휴학 기간은 최대 </span><span style=""letter-spacing:0pt;"">2</span><span style=""font-family:함초롬바탕;"">년 </span><span style=""letter-spacing:0pt;"">6</span><span style=""font-family:함초롬바탕;"">개월까지 유예하며</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">미복학시 결격사유로 봄</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">○ </span></span><span style=""font-family:함초롬바탕;"">기타 질병 및 개인 사유의 일반휴학의 경우 최대 </span><span style=""letter-spacing:0pt;"">1</span><span style=""font-family:함초롬바탕;"">년까지 유예하며</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">휴학사유서 제출</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">○ </span></span><span style=""font-family:함초롬바탕;"">재단에 통보없이 무단 휴학 등 학적 변동시 즉시 결격사유에 해당</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">등록금을 한국장학재단 국가장학금으로 수혜받지 않은 경우</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">매학기 확인</span><span style=""letter-spacing:0pt;"">)</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">○ </span></span><span style=""font-family:함초롬바탕;"">새터민일 경우</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">보훈청 장학금 수혜 가능</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">장학생이 징계 및 퇴학 등 품위유지에 반하는 행동을 하는 경우</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">장학금 지급을 위해 성적증명서 및 기타 필요 서류를 요구할 때</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">이에 불응하거나 위조 및 변조하는 경우</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">타 민간재단 장학생으로 선발되거나</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">직장인 자녀 학비 등을 지원받는 경우</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">생활비성 장학금이라도 재단 디딤돌 장학금처럼 연속성이 띄는 장학금을 수혜받는 경우</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">단</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">교내근로 및 일회성 장학금이나 기타 대회수상 상금은 예외</span><span style=""letter-spacing:0pt;"">)</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">상기 사항 외 결격사유에 해당 여부는 재단 장학사업위원회의 심의를 통해 결정함</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">9. </span><span style=""font-family:함초롬바탕;"">장학생 의무사항</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">선발 장학생 장학증서 수여식 및 재단 주최 특강</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">장학생 교류회 등 연수 활동 필수 참석 </span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">불참시 결격사유에 해당함</span><span style=""letter-spacing:0pt;"">)</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">한국장학재단 외 타 재단 장학금</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">등록금성</span><span style=""letter-spacing:0pt;"">)</span><span style=""font-family:함초롬바탕;"">을 중복으로 지원받지 않을 것</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">디딤돌 장학금처럼 연속적으로 수혜되는 장학금을 중복으로 지원받지 않을 것</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">※ </span></span><span style=""font-family:함초롬바탕;"">타 장학금 공고 내용을 숙지하여 신청할 것</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">결격사유에 해당하지 않도록 학업 관리</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">성적 </span><span style=""letter-spacing:0pt;"">B+ </span><span style=""font-family:함초롬바탕;"">유지</span><span style=""letter-spacing:0pt;"">) </span><span style=""font-family:함초롬바탕;"">및 장학생으로서 품위유지</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">10. </span><span style=""font-family:함초롬바탕;"">기타 유의사항</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">장학생 선발 직후 휴학</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">입영휴학 포함</span><span style=""letter-spacing:0pt;"">) </span><span style=""font-family:함초롬바탕;"">불가</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">서류 및 면접 심사 일정</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">장학생 선발 결과는 개별 통보 및 재단 홈페이지를 통해 공개</span></p>
+<p><span style=""letter-spacing:0pt;""><span style=""font-family:함초롬바탕;"">□ </span></span><span style=""font-family:함초롬바탕;"">제출된 서류는 반환되지 않음</span></p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">11. </span><span style=""font-family:함초롬바탕;"">제출서류</span></p>
+<p> </p>
+<table style=""border-collapse:collapse;table-layout:fixed;border-top:none;border-left:none;border-bottom:none;border-right:none;"">
+<tbody>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-weight:bold;""><span style=""font-family:함초롬바탕;"">순번</span></span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-weight:bold;""><span style=""font-family:함초롬바탕;"">서류명</span></span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-weight:bold;""><span style=""font-family:함초롬바탕;"">비고</span></span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">1</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">장학금신청서</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">서식</span><span style=""letter-spacing:0pt;"">1</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">2</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">자기소개서</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">서식</span><span style=""letter-spacing:0pt;"">2</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">3</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">개인</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">신용</span><span style=""letter-spacing:0pt;"">)</span><span style=""font-family:함초롬바탕;"">정보 수집이용제공 및 조회 동의서</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">서식</span><span style=""letter-spacing:0pt;"">3</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">4</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">장학생서약서</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">서식</span><span style=""letter-spacing:0pt;"">4</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">5</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">성적증명서</span><span style=""letter-spacing:0pt;"">(2026-1</span><span style=""font-family:함초롬바탕;"">학기</span><span style=""letter-spacing:0pt;"">)</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">대학 발급</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">6</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">국가장학금증명서</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">전체내역</span><span style=""letter-spacing:0pt;"">)</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">한국장학재단 발급</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">7</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">학자금지원구간통지서</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">한국장학재단 발급</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">8</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">주민등록등본</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">세대주와의 관계 명시</span><span style=""letter-spacing:0pt;"">)</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">민원</span><span style=""letter-spacing:0pt;"">24,</span><span style=""font-family:함초롬바탕;"">주민센터 발급</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">9</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">가족관계증명서</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">부모기준</span><span style=""letter-spacing:0pt;"">)</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">전자가족관계등록시스템 발급</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:58px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">10</span></p>
+</td>
+<td style=""width:315px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">사회적배려대상자증빙서류</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">해당사항 제출</span><span style=""letter-spacing:0pt;"">)</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">아래 상세표 참조</span></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">12. </span><span style=""font-family:함초롬바탕;"">사회적배려대상자 증빙서류 상세표</span></p>
+<p> </p>
+<table style=""border-collapse:collapse;table-layout:fixed;border-top:none;border-left:none;border-bottom:none;border-right:none;"">
+<tbody>
+<tr>
+<td style=""width:107px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-weight:bold;""><span style=""font-family:함초롬바탕;"">순번</span></span></p>
+</td>
+<td style=""width:266px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-weight:bold;""><span style=""font-family:함초롬바탕;"">서류명</span></span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-weight:bold;""><span style=""font-family:함초롬바탕;"">비고</span></span></p>
+</td>
+</tr>
+<tr>
+<td rowspan=""5"" style=""width:107px;height:19px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">법정저소득층</span></p>
+</td>
+<td style=""width:266px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""line-height:11.50pt;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">기초생활수급자 </span></p>
+</td>
+<td rowspan=""3"" style=""width:186px;height:11px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""line-height:100%;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">정부</span><span style=""letter-spacing:0pt;"">24, </span><span style=""font-family:함초롬바탕;"">주민센터</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:266px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""line-height:11.50pt;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">차상위계층 확인서</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:266px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""line-height:11.50pt;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">법정저소득층 한부모가족 증명서</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:266px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""line-height:11.50pt;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">차상위 본인부담 경감대상자 증명서</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""line-height:100%;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">국민건강보험공단</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:266px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""line-height:100%;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">자활근로자 확인서</span></p>
+</td>
+<td style=""width:186px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""line-height:100%;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">복지로</span></p>
+</td>
+</tr>
+<tr>
+<td rowspan=""2"" style=""width:107px;height:8px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""line-height:100%;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">새터민 가정</span></p>
+<p style=""line-height:100%;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">북한이탈주민</span><span style=""letter-spacing:0pt;"">)</span></p>
+</td>
+<td style=""width:266px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""line-height:100%;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">교육지원</span><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">보호</span><span style=""letter-spacing:0pt;"">)</span><span style=""font-family:함초롬바탕;"">대상자 증명서</span></p>
+</td>
+<td rowspan=""2"" style=""width:186px;height:8px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">주소지 시구청</span><span style=""letter-spacing:0pt;"">, </span><span style=""font-family:함초롬바탕;"">주민센터 등</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:266px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""line-height:100%;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">북한이탈주민 등록확인서</span></p>
+</td>
+</tr>
+<tr>
+<td rowspan=""2"" style=""width:107px;height:8px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""line-height:100%;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">자립준비청년</span></p>
+<p style=""line-height:100%;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""letter-spacing:0pt;"">(</span><span style=""font-family:함초롬바탕;"">보호종료아동</span><span style=""letter-spacing:0pt;"">)</span></p>
+</td>
+<td style=""width:266px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""line-height:100%;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">보호 종료 확인서</span></p>
+</td>
+<td rowspan=""2"" style=""width:186px;height:8px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">퇴소기관 및 지역가정위탁지원센터 등</span></p>
+</td>
+</tr>
+<tr>
+<td style=""width:266px;height:4px;padding:1.41pt 5.10pt 1.41pt 5.10pt;border-top:solid #000000 0.28pt;border-left:solid #000000 0.28pt;border-bottom:solid #000000 0.28pt;border-right:solid #000000 0.28pt;vertical-align:middle;"">
+<p style=""line-height:100%;text-align:center;word-break:keep-all;text-autospace:none;""><span style=""font-family:함초롬바탕;"">퇴소 확인서</span></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+<p> </p>
+<p><span style=""letter-spacing:0pt;"">13. </span><span style=""font-family:함초롬바탕;"">문의</span>: <span style=""font-family:함초롬바탕;"">장학팀 </span><span style=""letter-spacing:0pt;"">02-2260-3043/3698</span></p>
+<div id=""hwpEditorBoardContent""> </div>","[{""name"": ""별첨_산학재단 장학생 신청서류(작성서식모음)_디딤돌장학금.hwp"", ""url"": ""https://www.dongguk.edu/cmmn/fileDown.do?filename=%EB%B3%84%EC%B2%A8_%EC%82%B0%ED%95%99%EC%9E%AC%EB%8B%A8%20%EC%9E%A5%ED%95%99%EC%83%9D%20%EC%8B%A0%EC%B2%AD%EC%84%9C%EB%A5%98%28%EC%9E%91%EC%84%B1%EC%84%9C%EC%8B%9D%EB%AA%A8%EC%9D%8C%29_%EB%94%94%EB%94%A4%EB%8F%8C%EC%9E%A5%ED%95%99%EA%B8%88.hwp&filepath=/files/article/JANGHAKNOTICE/26765219/&filerealname=30A4CAC623504106A6A4473B67BDA95B.hwp""}]"
+행사공지,BUDDHISTEVENT,26765192,공지 [정각원] 2026년 연꽃 화분 공양 불사 동참 안내,,2026-06-24,True,https://www.dongguk.edu/article/BUDDHISTEVENT/detail/26765192,,"<p>
+
+</p><p style=""text-align: center;""><img alt=""ㄴㅇㄹㅇㄴㄹㅇㄹㅇㄹ"" src=""/cmmn/fileView?path=/ckeditor//BUDDHISTEVENT&amp;physical=1782264981144.png&amp;contentType=image"" style=""width: 1080px; height: 1080px;""/></p>",[]
+일반공지,GENERALNOTICES,26765187,공지 [서울RISE] 2026 열린시민대학  열린커리어랩 이커머스 연계 창업 실전 과정 참여자 모집(~07.04(토)),,2026-06-24,True,https://www.dongguk.edu/article/GENERALNOTICES/detail/26765187,"동국대학교 서울RISE사업단이 함께하는 2026 열린커리어랩 이커머스 연계 창업 실전 과정 참여자 모집을 다음과 같이 진행하오니 많은 참여 부탁드립니다.
+신청하기
+▶ 접수기간 : 2026년 6월 24일(수) ~ 7월 4일(토)
+▶ 교육기간 : 2026년 7월7일(화) ~ 7월24일(금)
+▶ 모집인원 : 25명
+▶ 지원자격 : 만 30세 이상 서울시민
+▶ 신청방법 : 구글폼 신청(
+https://m.site.naver.com/2b5iD
+)
+(신청큐알)
+▶ 선정안내 : 개별 문자 공지(신청서 심사 후 선발 대상자 통보)
+▶ 교육장소 : 동국대학교 문화관
+▶ 참여혜택 : 교육비 전액 무료, 수료증 제공 등
+▶ 교육문의 : 서울RISE사업단 평생교육 담당(02-2290-1724)
+**
+필수사항 사업자등록증, 통신판매업 신고 필수
+**
+**전 교육과정 실습으로 진행되어 노트북 반드시 지참하셔야 합니다!**","<p>
+
+</p><p><span style=""font-family:verdana;""><span style=""font-size:14pt;"">동국대학교 서울RISE사업단이 함께하는 2026 열린커리어랩 이커머스 연계 창업 실전 과정 참여자 모집을 다음과 같이 진행하오니 많은 참여 부탁드립니다.</span></span></p>
+<p> </p>
+<p style=""text-align: center;""><a href=""https://m.site.naver.com/2b5iD""><img alt=""이커머스 포스터"" src=""/cmmn/fileView?path=/ckeditor//GENERALNOTICES&amp;physical=1782261927888.png&amp;contentType=image"" style=""width: 800px; height: 1131px;""/></a></p>
+<p style=""text-align: center;""> </p>
+<p style=""text-align: center;""><a href=""https://m.site.naver.com/2b5iD""><span style=""color:#FFFFFF;""><span style=""font-size:36pt;""><span style=""background-color:#FF8C00;"">신청하기</span></span></span></a></p>
+<p style=""text-align: center;""> </p>
+<p><span style=""font-family:verdana;""><span style=""font-size:14pt;"">▶ 접수기간 : 2026년 6월 24일(수) ~ 7월 4일(토)</span></span></p>
+<p><span style=""font-family:verdana;""><span style=""font-size:14pt;"">▶ 교육기간 : 2026년 7월7일(화) ~ 7월24일(금) </span></span></p>
+<p><span style=""font-family:verdana;""><span style=""font-size:14pt;"">▶ 모집인원 : 25명</span></span></p>
+<p><span style=""font-family:verdana;""><span style=""font-size:14pt;"">▶ 지원자격 : 만 30세 이상 서울시민</span></span></p>
+<p><span style=""font-family:verdana;""><span style=""font-size:14pt;"">▶ 신청방법 : 구글폼 신청(<a href=""https://m.site.naver.com/2b5iD"">https://m.site.naver.com/2b5iD</a>)</span></span></p>
+<p><span style=""font-family:verdana;""><span style=""font-size:14pt;"">   (신청큐알) <img alt=""신청 큐알"" src=""/cmmn/fileView?path=/ckeditor//GENERALNOTICES&amp;physical=1782262095152.jpg&amp;contentType=image"" style=""width: 100px; height: 100px;""/></span></span></p>
+<p><span style=""font-family:verdana;""><span style=""font-size:14pt;"">▶ 선정안내 : 개별 문자 공지(신청서 심사 후 선발 대상자 통보)</span></span></p>
+<p><span style=""font-family:verdana;""><span style=""font-size: 18.6667px;"">▶ 교육장소 : 동국대학교 문화관</span></span></p>
+<p><span style=""font-family:verdana;""><span style=""font-size: 18.6667px;"">▶ 참여혜택 : 교육비 전액 무료, 수료증 제공 등</span></span></p>
+<p><span style=""font-family:verdana;""><span style=""font-size: 18.6667px;"">▶ 교육문의 : 서울RISE사업단 평생교육 담당(02-2290-1724)</span></span></p>
+<p><br/>
+<span style=""font-family:verdana;""><span style=""font-size:14pt;"">** <span style=""color:#B22222;"">필수사항 사업자등록증, 통신판매업 신고 필수</span>**</span></span></p>
+<p><span style=""font-family:verdana;""><span style=""font-size:14pt;"">**전 교육과정 실습으로 진행되어 노트북 반드시 지참하셔야 합니다!**</span></span></p>
+<p style=""text-align: center;""> </p>
+<p style=""text-align: center;""> </p>",[]
+일반공지,GENERALNOTICES,26765196,[한국연구재단] 2026년 국가공인 신용상담사 자격 지원 안내(~7/1(수)),,2026-06-24,False,https://www.dongguk.edu/article/GENERALNOTICES/detail/26765196,"한국연구재단에서 교육부와 함께 산학협력 활성화 도모를 위해 산학협력 마일리지 제도를 운영하고 있으며,
+그 일환으로 당해 산학협력 마일리지 활용사업(국가공인 신용상담사 자격 지원)을 추진 중에 있습니다.
+국가공인 신용상담사 자격 지원 활용사업은 2026년 국가공인 신용상담사 자격시험의 필수 시험 교재를 무상으로 제공하는 프로그램으로,
+해당 혜택을 받을 분들은 아래 내용을 확인하고 신청하시기 바랍니다.
+1. 지원 내용 : 교재(4종 1세트, 우편발송), PDF파일, 동영상 링크 제공
+2. 지원 대상 : 전국 대학 교직원 및 재학생
+3. 신청기한 및 방법 : 신청서 작성 및 메일 발송 / ~ 2026.07.01(수)까지 [ 상세 내용 붙임1 참조 ]
+붙임 : 1. 마일리지 활용 안내(대학) 1부
+2. 신청서 양식 1부
+3. 신용상담사 자격 시험 소개 자료 1부.  끝.","<p>
+
+</p><p>한국연구재단에서 교육부와 함께 산학협력 활성화 도모를 위해 산학협력 마일리지 제도를 운영하고 있으며,</p>
+<p>그 일환으로 당해 산학협력 마일리지 활용사업(국가공인 신용상담사 자격 지원)을 추진 중에 있습니다. </p>
+<p> </p>
+<p>국가공인 신용상담사 자격 지원 활용사업은 2026년 국가공인 신용상담사 자격시험의 필수 시험 교재를 무상으로 제공하는 프로그램으로,</p>
+<p>해당 혜택을 받을 분들은 아래 내용을 확인하고 신청하시기 바랍니다. </p>
+<p> </p>
+<p>  1. 지원 내용 : 교재(4종 1세트, 우편발송), PDF파일, 동영상 링크 제공</p>
+<p>  2. 지원 대상 : 전국 대학 교직원 및 재학생</p>
+<p>  3. 신청기한 및 방법 : 신청서 작성 및 메일 발송 / ~ 2026.07.01(수)까지 [ 상세 내용 붙임1 참조 ]</p>
+<p> </p>
+<p> 붙임 : 1. 마일리지 활용 안내(대학) 1부</p>
+<p>           2. 신청서 양식 1부</p>
+<p>           3. 신용상담사 자격 시험 소개 자료 1부.  끝. </p>
+<p> </p>
+<p> </p>
+<p> </p>
+<p> </p>
+<p> </p>
+<p> </p>
+<p> </p>","[{""name"": ""붙임3. 신용상담사 자격시험 소개 자료.pdf"", ""url"": ""https://www.dongguk.edu/cmmn/fileDown.do?filename=%EB%B6%99%EC%9E%843.%20%EC%8B%A0%EC%9A%A9%EC%83%81%EB%8B%B4%EC%82%AC%20%EC%9E%90%EA%B2%A9%EC%8B%9C%ED%97%98%20%EC%86%8C%EA%B0%9C%20%EC%9E%90%EB%A3%8C.pdf&filepath=/files/article/GENERALNOTICES/26765196/&filerealname=865C3906D6A6435F803E4CE6571CD2E5.pdf""}, {""name"": ""붙임2. 신청서 양식.xlsx"", ""url"": ""https://www.dongguk.edu/cmmn/fileDown.do?filename=%EB%B6%99%EC%9E%842.%20%EC%8B%A0%EC%B2%AD%EC%84%9C%20%EC%96%91%EC%8B%9D.xlsx&filepath=/files/article/GENERALNOTICES/26765196/&filerealname=D296CCBA66DE49D6B8747CF1474C0975.xlsx""}, {""name"": ""붙임1. 마일리지 활용(국가공인 신용상담사 자격 지원) 안내(대학).pdf"", ""url"": ""https://www.dongguk.edu/cmmn/fileDown.do?filename=%EB%B6%99%EC%9E%841.%20%EB%A7%88%EC%9D%BC%EB%A6%AC%EC%A7%80%20%ED%99%9C%EC%9A%A9%28%EA%B5%AD%EA%B0%80%EA%B3%B5%EC%9D%B8%20%EC%8B%A0%EC%9A%A9%EC%83%81%EB%8B%B4%EC%82%AC%20%EC%9E%90%EA%B2%A9%20%EC%A7%80%EC%9B%90%29%20%EC%95%88%EB%82%B4%28%EB%8C%80%ED%95%99%29.pdf&filepath=/files/article/GENERALNOTICES/26765196/&filerealname=7792F610BB3043218041DEB308D5AD2E.pdf""}]"
+일반공지,GENERALNOTICES,26765181,공지 [서울RISE] 전공 무관! 클라우드와 생성형 AI를 한 번에! 교육생 추가 모집 (~6/29),,2026-06-23,True,https://www.dongguk.edu/article/GENERALNOTICES/detail/26765181,"AI로 더 안전한 미래를 만드는 디지털 인재에 도전하세요!
+서울RISE사업단과 경찰사법대학이 함께 운영하는「클라우드 인프라 기반 AI 활용 범죄예방 역량 강화 교육과정」의 참가자 모집 기간을
+6월 29일(월)까지 연장
+합니다.
+본 교육과정은
+전공과 관계없이 누구나 참여 가능
+하며, 생성형 AI와 클라우드 기술을 쉽고 체계적으로 익히고 이를
+범죄예방, 데이터 분석 및 AI 실무 프로젝트
+에 직접 적용해 볼 수 있는 실습 중심 프로그램입니다.
+AI 시대에 필요한 디지털 융합 역량을 키우고, 실무 경험과 프로젝트 수행 능력을 함께 쌓을 수 있는 좋은 기회이니 많은 관심과 참여 바랍니다.
+- 신청기간 :
+~ 2026. 6. 29.(월)까지 (기간 연장)
+- 모집대상 :
+전공 무관, AI에 관심 있는 재학생 누구나
+- 교육내용
+생성형 AI 활용 기초 및 실습
+클라우드 인프라 이해 및 활용
+AI 기반 데이터 분석
+범죄예방 프로젝트 실습
+AI와 클라우드를 직접 경험하며 미래 산업이 요구하는 실무 역량을 함께 키워보세요!
+📢 모집 안내
+모집대상 : 서울RISE사업 참여학과 재학생
+모집인원 : 30명 내외
+교육기간 : 2026.07.06.(월) ~ 08.07.(금)
+교육장소 : 경찰사법대학 강의실
+선발방법 : 신청서 심사 후 선발
+우대사항 : 경찰사법대학 재학생 50% 이상 우선 선발
+💡 신청 기간 및 방법
+기    간 : ~ 2026.06.29.(월)
+접    수 : 구글폼(
+https://forms.gle/GnaGvLJxB8md7K4x6
+) 신청
+선발결과 : 6월 말 개별 안내 예정
+문    의 : 동국대학교 서울RISE사업팀 02-2290-1723","<p>
+
+</p><p class=""isSelectedEnd"" style=""text-align: center;""><span style=""font-size:20pt;""><strong>AI로 더 안전한 미래를 만드는 디지털 인재에 도전하세요!</strong></span></p>
+<p class=""isSelectedEnd"">서울RISE사업단과 경찰사법대학이 함께 운영하는「클라우드 인프라 기반 AI 활용 범죄예방 역량 강화 교육과정」의 참가자 모집 기간을 <strong>6월 29일(월)까지 연장</strong>합니다.</p>
+<p class=""isSelectedEnd"">본 교육과정은 <strong>전공과 관계없이 누구나 참여 가능</strong>하며, 생성형 AI와 클라우드 기술을 쉽고 체계적으로 익히고 이를 <strong>범죄예방, 데이터 분석 및 AI 실무 프로젝트</strong>에 직접 적용해 볼 수 있는 실습 중심 프로그램입니다.</p>
+<p>AI 시대에 필요한 디지털 융합 역량을 키우고, 실무 경험과 프로젝트 수행 능력을 함께 쌓을 수 있는 좋은 기회이니 많은 관심과 참여 바랍니다.</p>
+<p><strong>- 신청기간 :</strong> ~ 2026. 6. 29.(월)까지 (기간 연장)</p>
+<p><strong>- 모집대상 :</strong> 전공 무관, AI에 관심 있는 재학생 누구나</p>
+<p class=""isSelectedEnd""><strong>- 교육내용</strong></p>
+<ul>
+<li>생성형 AI 활용 기초 및 실습</li>
+<li>클라우드 인프라 이해 및 활용</li>
+<li>AI 기반 데이터 분석</li>
+<li>범죄예방 프로젝트 실습</li>
+</ul>
+<p>AI와 클라우드를 직접 경험하며 미래 산업이 요구하는 실무 역량을 함께 키워보세요!</p>
+<p><img alt=""신청포스터"" src=""/cmmn/fileView?path=/ckeditor//GENERALNOTICES&amp;physical=1782181395554.png&amp;contentType=image"" style=""width: 1000px; height: 1415px;""/></p>
+<h2>📢 모집 안내</h2>
+<ul>
+<li>모집대상 : 서울RISE사업 참여학과 재학생</li>
+<li>모집인원 : 30명 내외</li>
+<li>교육기간 : 2026.07.06.(월) ~ 08.07.(금)</li>
+<li>교육장소 : 경찰사법대학 강의실</li>
+<li>선발방법 : 신청서 심사 후 선발</li>
+<li>우대사항 : 경찰사법대학 재학생 50% 이상 우선 선발</li>
+</ul>
+<p> </p>
+<h2>💡 신청 기간 및 방법</h2>
+<ul>
+<li>기    간 : ~ 2026.06.29.(월)</li>
+<li>접    수 : 구글폼(<a href=""https://forms.gle/GnaGvLJxB8md7K4x6"">https://forms.gle/GnaGvLJxB8md7K4x6</a>) 신청</li>
+<li>선발결과 : 6월 말 개별 안내 예정</li>
+<li>문    의 : 동국대학교 서울RISE사업팀 02-2290-1723</li>
+</ul>","[{""name"": ""클라우드 인프라 기반 AI 활용 범죄예방 역량 강화 교육 참여학생 모집 안내.pdf"", ""url"": ""https://www.dongguk.edu/cmmn/fileDown.do?filename=%ED%81%B4%EB%9D%BC%EC%9A%B0%EB%93%9C%20%EC%9D%B8%ED%94%84%EB%9D%BC%20%EA%B8%B0%EB%B0%98%20AI%20%ED%99%9C%EC%9A%A9%20%EB%B2%94%EC%A3%84%EC%98%88%EB%B0%A9%20%EC%97%AD%EB%9F%89%20%EA%B0%95%ED%99%94%20%EA%B5%90%EC%9C%A1%20%EC%B0%B8%EC%97%AC%ED%95%99%EC%83%9D%20%EB%AA%A8%EC%A7%91%20%EC%95%88%EB%82%B4.pdf&filepath=/files/article/GENERALNOTICES/26765181/&filerealname=C2F976BCD1884B0AAC47CA76157E70F4.pdf""}]"
 유학생공지,INTSTUNOTICE,26765165,공지 2026-2학기 글로벌인재트랙 어학기준 미충족자 한국어 레벨테스트 신청 안내,일반/생활,2026-06-22,True,https://www.dongguk.edu/article/INTSTUNOTICE/detail/26765165,"※
 글로벌인재트랙이란
 ?
