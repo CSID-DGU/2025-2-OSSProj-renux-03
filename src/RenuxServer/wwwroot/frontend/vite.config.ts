@@ -78,6 +78,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           secure: false,
         },
+        '/notifications': {
+          target: DEV_PROXY_TARGET,
+          changeOrigin: true,
+          secure: false,
+        },
       },
     },
   }
