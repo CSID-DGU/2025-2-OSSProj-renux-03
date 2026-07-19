@@ -145,6 +145,11 @@ RAG_SUGGEST_FOLLOWUPS_COUNT = int(os.getenv("RAG_SUGGEST_FOLLOWUPS_COUNT", "3"))
 RAG_GROUNDING_CHECK_ENABLED = os.getenv("RAG_GROUNDING_CHECK_ENABLED", "1") == "1"
 RAG_COLLEGE_SCOPE_ENABLED = os.getenv("RAG_COLLEGE_SCOPE_ENABLED", "1") == "1"
 RAG_GROUNDING_MIN_SCORE = float(os.getenv("RAG_GROUNDING_MIN_SCORE", "0.5"))
+# 라우터로 일부 데이터셋만 고르지 않고, 항상 전체 데이터셋에서 검색한다.
+# 라우터 오분류로 관련 문서를 못 찾는 문제를 피하고, 점수 병합이 관련 문서를 선별한다.
+RAG_SEARCH_ALL_DATASETS = os.getenv("RAG_SEARCH_ALL_DATASETS", "1") == "1"
+# 검색 시 질문을 여러 서브쿼리로 펼치지 않고, 사용자 질문 1개로만 검색한다.
+RAG_SINGLE_QUERY_RETRIEVAL = os.getenv("RAG_SINGLE_QUERY_RETRIEVAL", "1") == "1"
 
 # 데이터 자동 갱신 스케줄러 (rag-service 프로세스 내 APScheduler).
 # 이미 로드된 임베딩 모델을 재사용하고 Chroma 클라이언트를 단일 프로세스가 소유하므로
@@ -251,6 +256,8 @@ __all__ = [
     "RAG_GROUNDING_CHECK_ENABLED",
     "RAG_COLLEGE_SCOPE_ENABLED",
     "RAG_GROUNDING_MIN_SCORE",
+    "RAG_SEARCH_ALL_DATASETS",
+    "RAG_SINGLE_QUERY_RETRIEVAL",
     "RAG_SCHEDULER_ENABLED",
     "RAG_NOTICES_REFRESH_HOURS",
     "RAG_MEALS_REFRESH_HOURS",

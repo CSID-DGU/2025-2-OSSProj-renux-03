@@ -211,7 +211,7 @@ _BODY_FULL_DATE_END_PATTERN = re.compile(
     r"(?P<day>\d{1,2})"
 )
 _BODY_MONTH_DAY_END_PATTERN = re.compile(
-    r"(?:~|-|–|—|∼|〜)\s*(?P<month>\d{1,2})\s*[\-/월]\s*(?P<day>\d{1,2})"
+    r"(?:~|-|–|—|∼|〜)\s*(?P<month>\d{1,2})\s*[.\-/월]\s*(?P<day>\d{1,2})"
 )
 _BODY_FULL_DATE_SINGLE_PATTERN = re.compile(
     r"(?P<year>\d{4})\s*[.\-/년]\s*"

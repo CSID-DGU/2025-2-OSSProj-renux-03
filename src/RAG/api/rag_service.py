@@ -13,7 +13,7 @@ import uuid
 import json
 from datetime import datetime
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Tuple
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -40,7 +40,9 @@ from src.config import (
     RAG_GROUNDING_CHECK_ENABLED,
     RAG_GROUNDING_MIN_SCORE,
     RAG_MAX_SUBQUERIES,
+    RAG_SEARCH_ALL_DATASETS,
     RAG_SEMANTIC_CACHE_ENABLED,
+    RAG_SINGLE_QUERY_RETRIEVAL,
     RAG_SUGGEST_FOLLOWUPS,
     RAG_SUGGEST_FOLLOWUPS_COUNT,
     RECENCY_DECAY_DAYS_BY_DATASET,
@@ -258,6 +260,8 @@ class QueryAnalysisMeta:
 _datasets: Dict[str, DatasetCache] = {}
 # admin 리로드(del/재로드)와 검색 스레드의 _ensure_dataset 경합 방지용 락
 _datasets_lock = threading.Lock()
+# 라우팅 없이 전체 검색을 할 때 대상이 되는 모든 데이터셋(인덱싱된 순서 유지).
+SEARCHABLE_DATASETS: List[str] = list(DATASET_ARTIFACTS.keys())
 FALLBACK_REASON_NO_RESULTS = "no_results"
 FALLBACK_REASON_DATE_FILTER_ELIMINATED_ALL = "date_filter_eliminated_all"
 FALLBACK_REASON_DATASET_UNAVAILABLE = "dataset_unavailable"
@@ -278,7 +282,11 @@ def _should_cache_answer(
     date_filter_applied: bool,
     grounded: bool | None,
     answer: str | None = None,
+    *,
+    recent_notice_query: bool = False,
 ) -> bool:
+    if recent_notice_query:
+        return False
     if fallback_triggered:
         return False
     if "meals" in route:
@@ -329,8 +337,8 @@ NOTICE_BOARD_ALIASES = {
     "행사 공지": "행사공지",
     "국제교류공지": "국제교류공지",
     "국제교류 공지": "국제교류공지",
-    "국제공지": "국제공지",
-    "국제 공지": "국제공지",
+    "국제공지": "국제교류공지",
+    "국제 공지": "국제교류공지",
     "학술공지": "학술공지",
     "학술 공지": "학술공지",
     "입학공지": "입학공지",
@@ -693,6 +701,10 @@ def _user_profile_prefix(user_major: str | None) -> str:
 def _build_retrieval_queries(
     raw_query: str, expanded_query: str, analysis: QueryAnalysisMeta, user_major: str | None = None
 ) -> List[str]:
+    # 단일 쿼리 모드: 서브쿼리/확장/단과대 보강 없이 사용자 질문 1개로만 검색한다.
+    if RAG_SINGLE_QUERY_RETRIEVAL:
+        return [raw_query.strip()]
+
     queries: List[str] = []
 
     # 1. 원문은 항상 포함
@@ -890,6 +902,98 @@ def _matches_where_filter(row: pd.Series, where_filter: Dict | None) -> bool:
         elif str(value) != str(condition):
             return False
     return True
+
+
+def _latest_notice_hits(
+    *,
+    chunks_df: pd.DataFrame,
+    top_k: int,
+    where_filter: Dict | None = None,
+    date_filter: QueryDateFilter | None = None,
+) -> pd.DataFrame:
+    """최신 공지 질의는 유사도 검색 없이 게시일 역순으로 직접 조회한다.
+
+    ``recent``는 고정된 최근 N일 범위가 아니라 "현재 색인에서 가장 최신"이라는
+    정렬 의도다. 다만 오늘/이번 달/특정 월처럼 명시적인 날짜 범위가 함께 있으면
+    그 범위 안에서 최신순으로 반환한다.
+    """
+    if chunks_df.empty or "published_at" not in chunks_df.columns:
+        return chunks_df.iloc[:0].copy()
+
+    eligible = chunks_df.copy()
+    if where_filter:
+        eligible = eligible[eligible.apply(lambda row: _matches_where_filter(row, where_filter), axis=1)].copy()
+    if eligible.empty:
+        return eligible
+
+    eligible["_published_ts"] = pd.to_datetime(eligible["published_at"], errors="coerce")
+    eligible = eligible[eligible["_published_ts"].notna()].copy()
+    if eligible.empty:
+        return eligible.drop(columns=["_published_ts"], errors="ignore")
+
+    if date_filter is not None and date_filter.label != "recent":
+        start = pd.Timestamp(date_filter.start)
+        end = pd.Timestamp(date_filter.end)
+        eligible = eligible[
+            (eligible["_published_ts"] >= start) & (eligible["_published_ts"] <= end)
+        ].copy()
+        if eligible.empty:
+            return eligible.drop(columns=["_published_ts"], errors="ignore")
+
+    # 한 공지가 여러 청크로 나뉘어도 목록에는 한 번만 노출한다. 첫 청크(position=0)를
+    # 우선 선택하면 이후 parent-context 확장도 같은 문서의 전체 내용을 복원할 수 있다.
+    if "position" in eligible.columns:
+        eligible["_position"] = pd.to_numeric(eligible["position"], errors="coerce").fillna(0)
+    else:
+        eligible["_position"] = 0
+    if "notice_id" in eligible.columns:
+        eligible["_notice_order"] = pd.to_numeric(eligible["notice_id"], errors="coerce").fillna(-1)
+    else:
+        eligible["_notice_order"] = -1
+
+    def notice_key(row: pd.Series) -> str:
+        for column in ("notice_id", "doc_id", "document_key", "url"):
+            value = _clean_response_value(row.get(column))
+            if value is not None and str(value).strip():
+                return f"{column}:{value}"
+        return "fallback:" + "|".join(
+            str(row.get(column, "")) for column in ("topics", "published_at", "title")
+        )
+
+    eligible["_notice_key"] = eligible.apply(notice_key, axis=1)
+    eligible.sort_values(
+        by=["_published_ts", "_notice_order", "_position"],
+        ascending=[False, False, True],
+        kind="stable",
+        inplace=True,
+    )
+    eligible.drop_duplicates(subset=["_notice_key"], keep="first", inplace=True)
+    eligible = eligible.head(top_k).copy()
+
+    if "title" not in eligible.columns:
+        eligible["title"] = eligible["chunk_text"].apply(_extract_chunk_title)
+    else:
+        missing_title = eligible["title"].isna() | eligible["title"].astype(str).str.strip().eq("")
+        if missing_title.any() and "chunk_text" in eligible.columns:
+            eligible.loc[missing_title, "title"] = eligible.loc[missing_title, "chunk_text"].apply(_extract_chunk_title)
+
+    for column in ("topics", "category", "published_at", "apply_deadline", "url", "source", "notice_id"):
+        if column not in eligible.columns:
+            eligible[column] = ""
+        else:
+            eligible[column] = eligible[column].fillna("")
+
+    # 최신 목록 조회는 의미 유사도 점수가 적용되지 않는다. 검증/폴백 파이프라인과의
+    # 호환성을 위해 결정적 조회 결과임을 나타내는 중립 점수를 부여한다.
+    eligible["hybrid_score"] = 1.0
+    eligible["vector_score"] = 0.0
+    eligible["sparse_score"] = 0.0
+    eligible.drop(
+        columns=["_published_ts", "_notice_order", "_position", "_notice_key"],
+        inplace=True,
+        errors="ignore",
+    )
+    return eligible.reset_index(drop=True)
 
 
 def _extract_chunk_title(text: object) -> str:
@@ -1093,6 +1197,7 @@ async def _retrieve_frames(
     date_filter: QueryDateFilter | None,
     entry_year: int | None,
     request_id: str,
+    recent_notice_query: bool = False,
 ) -> tuple[List[pd.DataFrame], bool, List[str]]:
     frames: List[pd.DataFrame] = []
     date_filter_eliminated_any = False
@@ -1125,7 +1230,22 @@ async def _retrieve_frames(
         dataset_top_k = DEFAULT_TOP_K * 2
         if dataset == "meals":
             dataset_top_k = max(dataset_top_k, 40)
-        if dataset == "notices" and date_filter is not None and getattr(date_filter, "kind", "published") == "deadline":
+        if dataset == "notices" and recent_notice_query and getattr(date_filter, "kind", "published") != "deadline":
+            hits = await run_in_threadpool(
+                functools.partial(
+                    _latest_notice_hits,
+                    chunks_df=chunks_df,
+                    top_k=dataset_top_k,
+                    where_filter=final_filter,
+                    date_filter=date_filter,
+                )
+            )
+            eliminated = (
+                hits.empty
+                and date_filter is not None
+                and getattr(date_filter, "label", None) != "recent"
+            )
+        elif dataset == "notices" and date_filter is not None and getattr(date_filter, "kind", "published") == "deadline":
             search_func = functools.partial(
                 _deadline_filter_rank_notices,
                 chunks_df=chunks_df,
@@ -1182,6 +1302,7 @@ async def _retrieve_frames_for_queries(
     date_filter: QueryDateFilter | None,
     entry_year: int | None,
     request_id: str,
+    recent_notice_query: bool = False,
 ) -> tuple[List[pd.DataFrame], bool, List[str]]:
     all_frames: List[pd.DataFrame] = []
     date_filter_eliminated_any = False
@@ -1196,6 +1317,7 @@ async def _retrieve_frames_for_queries(
             date_filter=date_filter,
             entry_year=entry_year,
             request_id=request_id,
+            recent_notice_query=recent_notice_query,
         )
         for frame in frames:
             if frame.empty:
@@ -1564,7 +1686,9 @@ def _save_feedback(feedback: FeedbackRequest) -> None:
 def _format_mtime(path: Path) -> str | None:
     if not path.exists():
         return None
-    return datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+    from datetime import timezone, timedelta
+    kst = timezone(timedelta(hours=9))
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=kst).isoformat()
 
 
 def _build_notices_ingestion_status(session) -> dict:
@@ -1992,7 +2116,7 @@ async def export_rag_logs(limit: int = 1000):
     finally:
         session.close()
 
-    filename = f"rag_evaluation_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    filename = f"rag_evaluation_logs_{kst_now().strftime('%Y%m%d_%H%M%S')}.csv"
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv; charset=utf-8",
@@ -2075,18 +2199,17 @@ async def get_admin_feedback(limit: int = 100, rating: int | None = None):
                     "answer": answer,
                 }
             )
-        logging.info(f"📋 [Admin] Returning {len(result)} RAG feedback items.")
         return result
-    except Exception as e:
-        logging.error(f"❌ [Admin] Failed to fetch RAG feedback: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        _log_event(logging.ERROR, "admin_feedback_fetch_failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="피드백 조회 중 오류가 발생했습니다.")
     finally:
         session.close()
 
 
 @app.get("/admin/rag/status")
 async def rag_admin_status():
-    generated_at = datetime.now().isoformat()
+    generated_at = kst_now().isoformat()
     session = SessionLocal()
     try:
         datasets = []
@@ -2237,20 +2360,19 @@ async def rag_admin_status():
             _log_event(logging.WARNING, "rag_feedback_status_failed", exc_info=True)
         notices_ingestion = _build_notices_ingestion_status(session)
         try:
-            today_kst = kst_now().date()
+            today_str = kst_now().strftime('%Y-%m-%d')
             today_visitors = (
-                session.query(RagQueryLog.session_id)
-                .filter(func.date(RagQueryLog.created_at) == today_kst)
-                .distinct()
-                .count()
-            )
+                session.query(func.count(func.distinct(RagQueryLog.session_id)))
+                .filter(func.strftime('%Y-%m-%d', RagQueryLog.created_at) == today_str)
+                .scalar()
+            ) or 0
             total_visitors = (
-                session.query(RagQueryLog.session_id)
-                .distinct()
-                .count()
-            )
+                session.query(func.count(func.distinct(RagQueryLog.session_id)))
+                .scalar()
+            ) or 0
             visitor_stats = {"today": today_visitors, "total": total_visitors}
         except Exception:
+            _log_event(logging.WARNING, "visitor_stats_query_failed", exc_info=True)
             visitor_stats = {"today": None, "total": None}
 
         status_dict = {
@@ -2332,7 +2454,7 @@ def _build_notice_from_pending(source_type: str, data: dict) -> Notice | None:
             board="학과지식",
             title=data.get("question"),
             category="FAQ",
-            published_date=datetime.now().strftime("%Y-%m-%d"),
+            published_date=kst_now().strftime("%Y-%m-%d"),
             content=content,
             is_manual=1,
         )
@@ -2664,26 +2786,62 @@ async def ask_stream(req: AskRequest, request: Request):
                 final_where_filter["major"] = {"$eq": user_major}
 
         stage_started_at = time.perf_counter()
-        routed = await route_query(semantic_query)
+        if RAG_SEARCH_ALL_DATASETS:
+            # 라우터를 건너뛰고 전체 데이터셋을 검색한다(오분류 회피). 점수 병합이 선별한다.
+            routed = list(SEARCHABLE_DATASETS)
+            route = list(SEARCHABLE_DATASETS)
+        else:
+            routed = await route_query(semantic_query)
+            route = _merge_routes(analysis_meta, routed)
+            if _should_append_rules_route(semantic_query, route):
+                route.append("rules")
         _mark_stage(stage_timings, "routing", stage_started_at)
-        route = _merge_routes(analysis_meta, routed)
-        if _should_append_rules_route(semantic_query, route):
-            route.append("rules")
-        
+        # RAG_SEARCH_ALL_DATASETS=True のとき route は全データセットを含むため
+        # policy/cache の meals・notices 有無チェックが正しく機能しない。
+        # _policy_route は「この質問が何について」を表し、検索範囲(route)とは独立。
+        if RAG_SEARCH_ALL_DATASETS:
+            _raw_policy = _merge_routes(analysis_meta, [])
+            # _merge_routes 는 analysis 결과가 없거나 intent 가 인식 불가일 때 ["notices"] 를 fallback으로 반환.
+            # 이 기본값은 분석이 실제로 notices 로 분류한 경우에만 사용해야 한다.
+            _notices_by_default = (
+                _raw_policy == ["notices"]
+                and (
+                    analysis_meta.result is None
+                    or analysis_meta.result.intent not in {"notices", "rules", "schedule", "courses", "staff", "meals"}
+                )
+            )
+            _policy_route = [] if _notices_by_default else _raw_policy
+        else:
+            _policy_route = route
+
         entry_year = _extract_entry_year_from_query(semantic_query) or _extract_entry_year_from_query(raw_query)
         stage_started_at = time.perf_counter()
         date_filter = await run_in_threadpool(extract_date_filter_from_query, semantic_query)
         _mark_stage(stage_timings, "date_filter_parse", stage_started_at)
         date_filter_applied = date_filter is not None
         date_filter_relaxed = False
-        recent_notice_query = _is_recent_notice_query(semantic_query, route)
-        notice_board_filter = _extract_notice_board_filter(semantic_query, route)
-        retrieval_policy = _resolve_retrieval_policy(semantic_query, route)
+        recent_notice_query = (
+            _is_recent_notice_query(semantic_query, _policy_route)
+            or _is_recent_notice_query(raw_query, _policy_route)
+        )
+        notice_board_filter = (
+            _extract_notice_board_filter(semantic_query, _policy_route)
+            or _extract_notice_board_filter(raw_query, _policy_route)
+        )
+        retrieval_policy = _resolve_retrieval_policy(semantic_query, _policy_route)
+        if recent_notice_query and not retrieval_policy.prefer_notices_with_dates:
+            retrieval_policy = replace(
+                retrieval_policy,
+                name='recent_notices',
+                allow_recency_override=True,
+                prefer_notices_with_dates=True,
+            )
 
         stage_started_at = time.perf_counter()
         frames, date_filter_eliminated_any, unavailable_datasets = await _retrieve_frames_for_queries(
             route=route, queries=retrieval_queries, final_where_filter=final_where_filter,
-            notice_board_filter=notice_board_filter, date_filter=date_filter, entry_year=entry_year, request_id=request_id
+            notice_board_filter=notice_board_filter, date_filter=date_filter, entry_year=entry_year,
+            request_id=request_id, recent_notice_query=recent_notice_query,
         )
 
         if not frames and date_filter is not None and date_filter.relaxed_start and date_filter.relaxed_end:
@@ -2695,7 +2853,8 @@ async def ask_stream(req: AskRequest, request: Request):
             )
             relaxed_frames, _, relaxed_unavailable = await _retrieve_frames_for_queries(
                 route=route, queries=retrieval_queries, final_where_filter=final_where_filter,
-                notice_board_filter=notice_board_filter, date_filter=relaxed_filter, entry_year=entry_year, request_id=request_id
+                notice_board_filter=notice_board_filter, date_filter=relaxed_filter, entry_year=entry_year,
+                request_id=request_id, recent_notice_query=recent_notice_query,
             )
             if relaxed_frames:
                 frames = relaxed_frames
@@ -2799,7 +2958,7 @@ async def ask_stream(req: AskRequest, request: Request):
 
         # 소스 데이터 정리
         score_cols = {"vector_score", "sparse_score", "hybrid_score", "norm_recency", "final_score"}
-        internal_cols = {"chunk_text", "dataset", "sort_date", "sort_timestamp", "norm_hybrid", "recent_notice_priority", "matched_query_count", "query_match_bonus", "date_unknown_auxiliary"} | score_cols
+        internal_cols = {"chunk_text", "dataset", "sort_date", "sort_timestamp", "norm_hybrid", "recent_notice_priority", "matched_query_count", "query_match_bonus", "date_unknown_auxiliary", "notice_topic_match", "matched_queries"} | score_cols
         sources = [
             SourceChunk(
                 source=_clean_response_str(row.get("dataset")) or "",
@@ -2921,7 +3080,14 @@ async def ask_stream(req: AskRequest, request: Request):
         )
         if grounding_result is not None and grounding_result.checked:
             await run_in_threadpool(_update_grounding_log, request_id, grounding_result)
-        if RAG_SEMANTIC_CACHE_ENABLED and _should_cache_answer(route, False, date_filter_applied, grounded_flag, final_answer):
+        if RAG_SEMANTIC_CACHE_ENABLED and _should_cache_answer(
+            _policy_route,
+            False,
+            date_filter_applied,
+            grounded_flag,
+            final_answer,
+            recent_notice_query=recent_notice_query,
+        ):
             await run_in_threadpool(
                 semantic_cache.put,
                 raw_query,
@@ -3100,15 +3266,24 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
 
     _log_event(logging.INFO, "ask_filters", request_id=request_id, filters=final_where_filter)
     stage_started_at = time.perf_counter()
-    routed = await route_query(
-        analysis_meta.result.normalized_question
-        if analysis_meta.result is not None
-        else expanded_query
-    )
+    if RAG_SEARCH_ALL_DATASETS:
+        # 라우터를 건너뛰고 전체 데이터셋을 검색한다(오분류 회피). 점수 병합이 선별한다.
+        routed = list(SEARCHABLE_DATASETS)
+        route = list(SEARCHABLE_DATASETS)
+    else:
+        routed = await route_query(
+            analysis_meta.result.normalized_question
+            if analysis_meta.result is not None
+            else expanded_query
+        )
+        route = _merge_routes(analysis_meta, routed)
+        if _should_append_rules_route(semantic_query, route):
+            route.append("rules")
     _mark_stage(stage_timings, "routing", stage_started_at)
-    route = _merge_routes(analysis_meta, routed)
-    if _should_append_rules_route(semantic_query, route):
-        route.append("rules")
+    # RAG_SEARCH_ALL_DATASETS=True のとき route は全データセットを含むため
+    # policy/cache の meals・notices 有無チェックが正しく機能しない。
+    # _policy_route は「この質問が何について」を表し、検索範囲(route)とは独立。
+    _policy_route = _merge_routes(analysis_meta, []) if RAG_SEARCH_ALL_DATASETS else route
     entry_year = _extract_entry_year_from_query(semantic_query) or _extract_entry_year_from_query(raw_query)
     stage_started_at = time.perf_counter()
     date_filter = await run_in_threadpool(
@@ -3118,9 +3293,22 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
     _mark_stage(stage_timings, "date_filter_parse", stage_started_at)
     date_filter_applied = date_filter is not None
     date_filter_relaxed = False
-    recent_notice_query = _is_recent_notice_query(semantic_query, route)
-    notice_board_filter = _extract_notice_board_filter(semantic_query, route)
-    retrieval_policy = _resolve_retrieval_policy(semantic_query, route)
+    recent_notice_query = (
+        _is_recent_notice_query(semantic_query, _policy_route)
+        or _is_recent_notice_query(raw_query, _policy_route)
+    )
+    notice_board_filter = (
+        _extract_notice_board_filter(semantic_query, _policy_route)
+        or _extract_notice_board_filter(raw_query, _policy_route)
+    )
+    retrieval_policy = _resolve_retrieval_policy(semantic_query, _policy_route)
+    if recent_notice_query and not retrieval_policy.prefer_notices_with_dates:
+        retrieval_policy = replace(
+            retrieval_policy,
+            name='recent_notices',
+            allow_recency_override=True,
+            prefer_notices_with_dates=True,
+        )
 
     stage_started_at = time.perf_counter()
     frames, date_filter_eliminated_any, unavailable_datasets = await _retrieve_frames_for_queries(
@@ -3131,6 +3319,7 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
         date_filter=date_filter,
         entry_year=entry_year,
         request_id=request_id,
+        recent_notice_query=recent_notice_query,
     )
 
     if not frames and date_filter is not None and date_filter.relaxed_start and date_filter.relaxed_end:
@@ -3150,6 +3339,7 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
             date_filter=relaxed_filter,
             entry_year=entry_year,
             request_id=request_id,
+            recent_notice_query=recent_notice_query,
         )
         if relaxed_frames:
             frames = relaxed_frames
@@ -3359,7 +3549,7 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
     citations = re.sub(r'<[^>]+>', '', citations_raw)
 
     score_columns = {"vector_score", "sparse_score", "hybrid_score", "norm_recency", "final_score"}
-    internal_columns = {"chunk_text", "dataset", "sort_date", "sort_timestamp", "norm_hybrid", "recent_notice_priority", "matched_query_count", "query_match_bonus", "date_unknown_auxiliary"} | score_columns
+    internal_columns = {"chunk_text", "dataset", "sort_date", "sort_timestamp", "norm_hybrid", "recent_notice_priority", "matched_query_count", "query_match_bonus", "date_unknown_auxiliary", "notice_topic_match", "matched_queries"} | score_columns
     sources = [
         SourceChunk(
             source=_clean_response_str(row.get("dataset")) or "",
@@ -3474,7 +3664,14 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
         notice_board_filter=notice_board_filter,
     )
 
-    if RAG_SEMANTIC_CACHE_ENABLED and _should_cache_answer(route, False, date_filter_applied, grounded, answer):
+    if RAG_SEMANTIC_CACHE_ENABLED and _should_cache_answer(
+        _policy_route,
+        False,
+        date_filter_applied,
+        grounded,
+        answer,
+        recent_notice_query=recent_notice_query,
+    ):
         await run_in_threadpool(
             semantic_cache.put,
             raw_query,

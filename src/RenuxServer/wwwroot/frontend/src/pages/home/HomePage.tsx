@@ -280,6 +280,10 @@ const HomePage = () => {
     navigate('/admin/department')
   }
 
+  const handleOpenSettings = () => {
+    navigate('/settings')
+  }
+
   const handleSelectChat = (chat: ActiveChat) => {
     setSelectedChatId(chat.id)
     setSelectedChatTitle(chat.title ?? '채팅방')
@@ -670,6 +674,9 @@ const HomePage = () => {
                                     학과 관리자
                                 </button>
                             )}
+                            <button className="ghost-btn small" type="button" onClick={handleOpenSettings}>
+                                알림 설정
+                            </button>
                             <button className="ghost-btn small" type="button" onClick={handleLogout}>
                                 로그아웃
                             </button>
@@ -740,9 +747,14 @@ const HomePage = () => {
               </button>
             )}
             {isAuthenticated ? (
-              <button className="ghost-btn small" type="button" onClick={handleLogout}>
-                로그아웃
-              </button>
+              <>
+                <button className="ghost-btn small" type="button" onClick={handleOpenSettings}>
+                  알림 설정
+                </button>
+                <button className="ghost-btn small" type="button" onClick={handleLogout}>
+                  로그아웃
+                </button>
+              </>
             ) : (
               <>
                 <button className="ghost-btn small" type="button" onClick={handleLogin}>

@@ -329,6 +329,12 @@ def ensure_runtime_schema() -> None:
             "sort_date": "VARCHAR",
         },
     )
+    _ensure_sqlite_columns(
+        "rag_feedback",
+        {
+            "major": "VARCHAR",
+        },
+    )
 
 
 def init_db():
