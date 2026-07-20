@@ -150,6 +150,12 @@ RAG_GROUNDING_MIN_SCORE = float(os.getenv("RAG_GROUNDING_MIN_SCORE", "0.5"))
 RAG_SEARCH_ALL_DATASETS = os.getenv("RAG_SEARCH_ALL_DATASETS", "1") == "1"
 # 검색 시 질문을 여러 서브쿼리로 펼치지 않고, 사용자 질문 1개로만 검색한다.
 RAG_SINGLE_QUERY_RETRIEVAL = os.getenv("RAG_SINGLE_QUERY_RETRIEVAL", "1") == "1"
+# 전체 데이터셋 검색 뒤 OpenAI가 직접 관련성/중복/충돌을 판정할 때의 비용 상한.
+# 데이터셋별 후보 수를 먼저 제한해 특정 코퍼스가 shortlist를 독점하지 않게 한다.
+RAG_EVIDENCE_CANDIDATES_PER_DATASET = int(os.getenv("RAG_EVIDENCE_CANDIDATES_PER_DATASET", "3"))
+RAG_EVIDENCE_MAX_CANDIDATES = int(os.getenv("RAG_EVIDENCE_MAX_CANDIDATES", "18"))
+RAG_EVIDENCE_TEXT_CHARS = int(os.getenv("RAG_EVIDENCE_TEXT_CHARS", "700"))
+RAG_EVIDENCE_TIMEOUT_SECONDS = int(os.getenv("RAG_EVIDENCE_TIMEOUT_SECONDS", "20"))
 
 # 데이터 자동 갱신 스케줄러 (rag-service 프로세스 내 APScheduler).
 # 이미 로드된 임베딩 모델을 재사용하고 Chroma 클라이언트를 단일 프로세스가 소유하므로
@@ -258,6 +264,10 @@ __all__ = [
     "RAG_GROUNDING_MIN_SCORE",
     "RAG_SEARCH_ALL_DATASETS",
     "RAG_SINGLE_QUERY_RETRIEVAL",
+    "RAG_EVIDENCE_CANDIDATES_PER_DATASET",
+    "RAG_EVIDENCE_MAX_CANDIDATES",
+    "RAG_EVIDENCE_TEXT_CHARS",
+    "RAG_EVIDENCE_TIMEOUT_SECONDS",
     "RAG_SCHEDULER_ENABLED",
     "RAG_NOTICES_REFRESH_HOURS",
     "RAG_MEALS_REFRESH_HOURS",

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dongttok.local/schemas/golden-result-v2.schema.json",
+  "title": "Dongttok real HTTP golden result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "id", "question_hash", "response_received", "http_status", "latency_ms", "request_id", "actual_app_intents", "answer", "citations_text", "sources", "followups", "fallback_triggered", "fallback_reason", "grounded", "grounding_score", "error"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "status": {"enum": ["ok", "http_error"]},
+    "id": {"type": "string", "pattern": "^[A-Z]{2}-[0-9]{3}$"},
+    "question_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "response_received": {"type": "boolean"},
+    "http_status": {"type": "integer", "minimum": 0, "maximum": 599},
+    "latency_ms": {"type": "integer", "minimum": 0},
+    "request_id": {"type": ["string", "null"]},
+    "actual_app_intents": {"type": "array", "items": {"enum": ["notices", "rules", "schedule", "staff", "courses", "meals", "unknown"]}, "uniqueItems": true},
+    "answer": {"type": "string"},
+    "citations_text": {"type": "string"},
+    "fallback_triggered": {"type": "boolean"},
+    "fallback_reason": {"type": ["string", "null"]},
+    "grounded": {"type": ["boolean", "null"]},
+    "grounding_score": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "error": {"type": ["string", "null"]},
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "dataset", "source_type", "chunk_id", "url", "campus_scope", "published_at", "effective_date", "snippet", "snippet_hash", "citation_number", "locator"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "dataset": {"enum": ["notices", "rules", "schedule", "staff", "courses", "meals"]},
+          "source_type": {"type": "string", "minLength": 1},
+          "chunk_id": {"type": ["string", "null"]},
+          "url": {"type": ["string", "null"], "format": "uri"},
+          "campus_scope": {"enum": ["seoul", "bmc", "wise", "shared", "unknown"]},
+          "published_at": {"type": ["string", "null"]},
+          "effective_date": {"type": ["string", "null"]},
+          "snippet": {"type": "string", "minLength": 1},
+          "snippet_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "citation_number": {"type": ["integer", "null"], "minimum": 1},
+          "locator": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "followups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["question", "source_refs"],
+        "properties": {
+          "question": {"type": "string", "minLength": 1},
+          "source_refs": {"type": "array", "items": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "uniqueItems": true}
+        }
+      }
+    }
+  }
+}

@@ -20,6 +20,10 @@ from src.config import (
 )
 from src.models.embedding import encode_texts
 from src.search.hybrid import train_tfidf
+from src.services.campus_scope import (
+    classify_campus_scope,
+    enrich_documents_with_campus_scope,
+)
 from src.utils.preprocess import (
     apply_cleaning,
     normalize_whitespace,
@@ -75,6 +79,17 @@ DATASET_ARTIFACTS: Dict[str, DatasetArtifacts] = {
         chunk_path=CHUNKS_DIR / "meals.parquet",
     ),
 }
+
+
+def _canonicalize_campus_scope_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Attach canonical campus metadata to legacy/DB reconstruction frames."""
+    if frame.empty:
+        return frame.copy()
+    canonical = frame.copy()
+    canonical["campus_scope"] = [
+        classify_campus_scope(row).value for _, row in canonical.iterrows()
+    ]
+    return canonical
 
 
 def _persist_chunks(key: str, collection: str, chunks_df: pd.DataFrame) -> Tuple[pd.DataFrame, object, object]:
@@ -411,6 +426,9 @@ def build_notice_chunks(df: pd.DataFrame) -> pd.DataFrame:
                 "text": text_content,
                 "topics": row.get(column["topic"], ""),
                 "category": row.get("카테고리", ""),
+                "category_original": row.get("카테고리원본", row.get("카테고리", "")),
+                "category_source": row.get("카테고리출처", "list" if row.get("카테고리") else "missing"),
+                "category_board_fallback": row.get("카테고리게시판대체", ""),
                 "published_at": published_date or "",
                 "apply_deadline": apply_deadline,
                 "url": url,
@@ -424,6 +442,7 @@ def build_notice_chunks(df: pd.DataFrame) -> pd.DataFrame:
             }
         )
 
+    enrich_documents_with_campus_scope(docs)
     chunks = to_chunks(
         docs,
         chunk_size=CHUNK_SIZE,
@@ -519,6 +538,7 @@ def build_notice_index_frame_from_session(session: Session) -> pd.DataFrame:
                 "title": notice.title,
                 "topics": notice.board,
                 "published_at": notice.published_date,
+                "apply_deadline": _extract_notice_apply_deadline(notice.title, chunk.chunk_text, notice.published_date),
                 "url": notice.detail_url,
                 "attachments": notice.attachments,
                 "source": "notices",
@@ -542,6 +562,7 @@ def build_notice_index_frame_from_session(session: Session) -> pd.DataFrame:
                 "title": ck.question,
                 "topics": ck.category or "CustomKnowledge",
                 "published_at": ck.created_at.strftime("%Y-%m-%d") if ck.created_at else "",
+                "apply_deadline": None,
                 "url": "",
                 "attachments": "[]",
                 "source": "custom_knowledge",
@@ -553,7 +574,9 @@ def build_notice_index_frame_from_session(session: Session) -> pd.DataFrame:
             }
         )
 
-    return pd.DataFrame(notice_rows) if notice_rows else pd.DataFrame()
+    if not notice_rows:
+        return pd.DataFrame()
+    return _canonicalize_campus_scope_frame(pd.DataFrame(notice_rows))
 
 
 def build_notice_index_frame_from_db() -> pd.DataFrame:
@@ -602,6 +625,7 @@ def build_rule_chunks(df: pd.DataFrame) -> pd.DataFrame:
             }
         )
 
+    enrich_documents_with_campus_scope(docs)
     chunks = to_chunks(
         docs,
         chunk_size=CHUNK_SIZE,
@@ -700,6 +724,7 @@ def build_schedule_chunks(df: pd.DataFrame) -> pd.DataFrame:
             }
         )
 
+    enrich_documents_with_campus_scope(docs)
     chunks = to_chunks(
         docs,
         chunk_size=CHUNK_SIZE // 2,
@@ -848,6 +873,7 @@ def build_course_chunks(combined: pd.DataFrame) -> pd.DataFrame:
 
     # 교과 설명이 비정상적으로 긴 경우 단일 거대 청크가 임베딩 품질을 해치므로
     # 일반 청크의 2배 크기로 상한을 둔다(대부분의 교과목은 한 청크에 그대로 들어감).
+    enrich_documents_with_campus_scope(docs)
     chunks = to_chunks(
         docs,
         chunk_size=CHUNK_SIZE * 2,
@@ -1039,6 +1065,7 @@ def build_staff_chunks(df: pd.DataFrame) -> pd.DataFrame:
             "published_at": "",
         })
         
+    enrich_documents_with_campus_scope(docs)
     chunks = to_chunks(docs, chunk_size=CHUNK_SIZE, chunk_overlap=0, include_title=True)
     return pd.DataFrame(chunks)
 
@@ -1140,6 +1167,7 @@ def build_meal_chunks(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     # 하루·식당당 한 청크(분할 안 함) — 메뉴 전체가 하나의 근거로 검색되도록.
+    enrich_documents_with_campus_scope(docs)
     chunks = to_chunks(docs, chunk_size=None, include_title=True)
     return pd.DataFrame(chunks)
 
@@ -1196,6 +1224,7 @@ def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, 
                     "title": notice.title,
                     "topics": notice.board,
                     "published_at": notice.published_date,
+                    "apply_deadline": _extract_notice_apply_deadline(notice.title, chunk.chunk_text, notice.published_date),
                     "url": notice.detail_url,
                     "attachments": notice.attachments,
                     "source": "notices",
@@ -1216,6 +1245,7 @@ def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, 
                     "title": ck.question, 
                     "topics": ck.category or "CustomKnowledge", 
                     "published_at": ck.created_at.strftime("%Y-%m-%d") if ck.created_at else "", 
+                    "apply_deadline": None,
                     "url": "", 
                     "attachments": "[]", 
                     "source": "custom_knowledge", 
@@ -1229,9 +1259,9 @@ def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, 
             # Combine both data sources
             all_notices_data = notice_data + custom_knowledge_data
 
-            reset_collection(DATASET_ARTIFACTS["notices"].collection)
             if all_notices_data:
-                df = pd.DataFrame(all_notices_data)
+                df = _canonicalize_campus_scope_frame(pd.DataFrame(all_notices_data))
+                reset_collection(DATASET_ARTIFACTS["notices"].collection)
                 results["notices"] = _persist_chunks("notices", DATASET_ARTIFACTS["notices"].collection, df)
         
         # 2. Rules
@@ -1253,7 +1283,8 @@ def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, 
                     "rule_id": rule.id
                 })
             if data:
-                df = pd.DataFrame(data)
+                df = _canonicalize_campus_scope_frame(pd.DataFrame(data))
+                reset_collection(DATASET_ARTIFACTS["rules"].collection)
                 results["rules"] = _persist_chunks("rules", DATASET_ARTIFACTS["rules"].collection, df)
 
         # 3. Schedule
@@ -1277,7 +1308,7 @@ def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, 
                     "schedule_id": sch.id
                 })
             if data:
-                df = pd.DataFrame(data)
+                df = _canonicalize_campus_scope_frame(pd.DataFrame(data))
                 reset_collection(DATASET_ARTIFACTS["schedule"].collection)
                 results["schedule"] = _persist_chunks("schedule", DATASET_ARTIFACTS["schedule"].collection, df)
 
@@ -1307,7 +1338,8 @@ def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, 
                     "college_name": raw_data.get("college_name", "")
                 })
             if data:
-                df = pd.DataFrame(data)
+                df = _canonicalize_campus_scope_frame(pd.DataFrame(data))
+                reset_collection(DATASET_ARTIFACTS["courses"].collection)
                 results["courses"] = _persist_chunks("courses", DATASET_ARTIFACTS["courses"].collection, df)
 
         # 5. Staff (New)
@@ -1327,7 +1359,7 @@ def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, 
                     "staff_id": staff.id
                 })
             if data:
-                df = pd.DataFrame(data)
+                df = _canonicalize_campus_scope_frame(pd.DataFrame(data))
                 reset_collection(DATASET_ARTIFACTS["staff"].collection)
                 results["staff"] = _persist_chunks("staff", DATASET_ARTIFACTS["staff"].collection, df)
 
@@ -1388,6 +1420,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "DATASET_ARTIFACTS",
+    "_extract_notice_apply_deadline",
     "build_notice_chunks",
     "build_rule_chunks",
     "build_schedule_chunks",

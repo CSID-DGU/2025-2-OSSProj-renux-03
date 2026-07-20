@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 import json
+import re
 import time
+from difflib import SequenceMatcher
 from typing import Any
 from functools import lru_cache
 
@@ -140,7 +142,7 @@ def _get_system_prompt(mode: str = "rag") -> str:
 2. 학교 정보, 공지, 학사, 장학, 수업, 교직원, 규정, 일정 질문은 아래 [참고 자료]에 명시된 내용만 근거로 답변하세요. 자료에 없는 내용, 일반 상식, 추측, 이전 학기 정보는 보완해서 말하지 마세요.
 2-1. **근거 표기(중요)**: 날짜·기간·금액·자격요건 등 핵심 사실을 말할 때마다 그 근거가 된 자료의 번호를 문장 끝에 [문서N] 형식으로 표기하세요(예: "신청 기간은 6월 9일부터예요 [문서2]."). 어떤 문서로도 뒷받침할 수 없는 사실은 답변에 포함하지 마세요.
 3. 학교 정보 질문에 답할 충분한 근거가 [참고 자료]에 없으면 "제공된 학교 자료에서 확인되지 않습니다"라고 말하고, 학교 공식 홈페이지나 담당 부서 확인을 안내하세요. 일부만 확인되면 확인된 부분만 [문서N]과 함께 답하고 나머지는 확인되지 않는다고 명시하세요.
-4. 서로 다른 자료가 충돌하면 게시일이 더 최신인 자료를 우선하고, 충돌 사실을 함께 설명하세요.
+4. 서로 다른 자료가 충돌하면 어느 한쪽을 임의로 우선하지 말고, 각 자료의 범위·게시일과 충돌 사실을 함께 설명하세요.
 5. 답변에서 특정 정보를 언급할 때, 그 정보의 출처 URL이 [참고 자료]에 있다면 해당 설명 바로 아래에 '[사이트로 이동하기](URL)' 형식으로 적어주세요. 첨부파일은 본문 중에 '[파일명](URL)' 형식으로 포함하세요.
 6. 사용자가 영어로 질문하면 영어로 답하고, 그 외에는 친절한 한국어(해요체)로 답변하세요. 영어 답변에서도 학교명, 부서명, 공지 제목, URL, 첨부파일명은 원문 표기를 유지하세요.
 7. 절차나 방법을 설명할 때는 반드시 번호를 매겨 단계별로 작성하세요.
@@ -149,7 +151,7 @@ def _get_system_prompt(mode: str = "rag") -> str:
 10. 이전 대화 맥락을 고려하되, 현재 질문이 주제가 바뀌었다면 이전 내용은 무시하고 현재 질문에 집중하세요.
 11. 질문에 '최근', '어제' 등 시간 표현이 포함된 경우, [참고 자료]의 게시일과 현재 날짜({current_date})를 비교하여 정확히 계산해 답변하세요.
 12. 검색 전 분석 단계에서 만들어졌을 수 있는 가정이나 추론을 사실처럼 단정하지 마세요. [참고 자료]에 없는 엔터티를 보완 생성하지 마세요.
-13. [참고 자료]에 서로 다른 종류의 정보(예: 졸업요건·교과목·학사일정·담당부서 연락처)가 함께 있으면, 단순히 항목을 나열하지 말고 사용자가 다음에 무엇을 해야 하는지 실행 관점에서 통합해 설명하세요. 예를 들어 졸업/수강 계획 질문이면 "충족해야 할 요건 → 남은 학기에 들을 만한 과목/이수구분 → 관련 신청·제출 일정 → 더 정확한 확인을 위한 담당 부서 연락처" 흐름으로 엮고, 자료에 없는 부분(예: 개인 수강 이력)은 본인 확인이나 학과 문의를 안내하세요. 단, 자료에 없는 사실을 지어내서는 안 됩니다.
+13. [참고 자료] 안의 서로 보완하는 정보는 단순 나열하지 말고 사용자가 다음에 무엇을 해야 하는지 실행 관점에서 통합해 설명하세요. 단, [근거 그룹]이 둘 이상 제공되면 그룹 간 사실이나 해석을 하나로 합치지 말고, 동일 그룹 안에서만 정보를 통합하여 각 그룹을 별도의 동등한 섹션으로 유지하세요. 자료에 없는 사실은 지어내지 마세요.
 
 [출력 형식 지침 — 중요]
 - 번호 목록은 반드시 '번호 + 제목'을 같은 줄에 작성하세요.
@@ -183,12 +185,18 @@ def _is_valid_message(message: BaseMessage) -> bool:
 
 
 def _build_messages(
-    question: str, context: str, history: BaseChatMessageHistory, current_date: str
+    question: str,
+    context: str,
+    history: BaseChatMessageHistory,
+    current_date: str,
+    response_instructions: str | None = None,
 ) -> list[BaseMessage]:
     """시스템 프롬프트 + 이전 대화 이력 + 현재 질문을 LangChain 메시지로 구성합니다."""
     messages: list[BaseMessage] = [
         SystemMessage(content=_get_system_prompt("rag").format(current_date=current_date))
     ]
+    if response_instructions:
+        messages.append(SystemMessage(content=response_instructions))
     messages.extend(m for m in history.messages if _is_valid_message(m))
     messages.append(
         HumanMessage(
@@ -325,6 +333,7 @@ async def generate_langchain_answer(
     session_id: str | None = None,
     current_date: str = "",
     usage_collector: list[dict[str, Any]] | None = None,
+    response_instructions: str | None = None,
 ) -> str:
     """선택된 프로바이더로 답변을 생성합니다. 실패 시 반대 프로바이더로 폴백합니다."""
     actual_session_id = session_id or "default_session"
@@ -332,7 +341,13 @@ async def generate_langchain_answer(
     logger.info("Generating answer for session_id=%s (provider=%s)", actual_session_id, primary)
 
     history = _get_session_history(actual_session_id)
-    messages = _build_messages(question, context, history, current_date)
+    messages = _build_messages(
+        question,
+        context,
+        history,
+        current_date,
+        response_instructions=response_instructions,
+    )
 
     try:
         answer = await _invoke_with_provider(primary, messages, usage_collector=usage_collector, usage_stage="generation")
@@ -348,20 +363,153 @@ async def generate_langchain_answer(
     return answer
 
 
+_FOLLOWUP_TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9]{2,}")
+_FOLLOWUP_NUMBER_RE = re.compile(r"\d[\d,.]*(?:\s*(?:원|만원|%|학점|월|일|시|분))?")
+_FOLLOWUP_WISE_RE = re.compile(
+    r"(?i)(?:\bwise\b|wise캠퍼스|동국대학교\s*wise|와이즈\s*캠퍼스|경주\s*캠퍼스)"
+)
+_FOLLOWUP_UNSUPPORTED_RE = re.compile(r"(?:주식|코인|가상화폐|연애|게임\s*공략|일기예보|날씨)")
+_FOLLOWUP_STOPWORDS = {
+    "그리고", "그러면", "그럼", "관련", "대해서", "어떻게", "언제", "어디서",
+    "무엇", "무슨", "알려줘", "알려주세요", "궁금해", "질문", "동국대학교",
+}
+_FOLLOWUP_PARTICLE_RE = re.compile(
+    r"(?:인가요|하나요|할까요|인가|에서|으로|에게|부터|까지|처럼|보다|"
+    r"은|는|이|가|을|를|와|과|의|도|만|로|에|요)$"
+)
+
+
+def _followup_source_text(source_context: list[dict[str, Any]] | None) -> str:
+    parts: list[str] = []
+    for source in (source_context or [])[:5]:
+        if not isinstance(source, dict):
+            continue
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        for key in ("title", "snippet", "source", "campus_scope"):
+            value = source.get(key) or metadata.get(key)
+            if value:
+                parts.append(str(value)[:1500])
+    return "\n".join(parts)
+
+
+def _normalize_followup_text(text: str) -> str:
+    return re.sub(r"[^가-힣a-z0-9]", "", text.lower())
+
+
+def _topic_tokens(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for raw in _FOLLOWUP_TOKEN_RE.findall(text):
+        token = raw.lower()
+        previous = None
+        while previous != token:
+            previous = token
+            token = _FOLLOWUP_PARTICLE_RE.sub("", token)
+        if len(token) >= 2 and token not in _FOLLOWUP_STOPWORDS:
+            tokens.add(token)
+    return tokens
+
+
+def _supported_topic_overlap(candidate_tokens: set[str], support_tokens: set[str]) -> int:
+    return sum(
+        1
+        for candidate in candidate_tokens
+        if any(
+            candidate == support
+            or (len(candidate) >= 2 and candidate in support)
+            or (len(support) >= 2 and support in candidate)
+            for support in support_tokens
+        )
+    )
+
+
+def validate_followup_questions(
+    candidates: list[Any],
+    *,
+    question: str,
+    answer: str,
+    source_context: list[dict[str, Any]] | None,
+    campus_scope: str,
+    supported_domains: list[str] | None,
+    count: int,
+) -> list[str]:
+    """Deterministically remove unsafe or unsupported LLM suggestions."""
+    if not source_context or count <= 0:
+        return []
+
+    support_text = f"{answer}\n{_followup_source_text(source_context)}"
+    support_lower = support_text.lower()
+    support_tokens = _topic_tokens(support_text)
+    domain_set = {str(domain).lower() for domain in (supported_domains or [])}
+    original_norm = _normalize_followup_text(question)
+    suggestions: list[str] = []
+    normalized_suggestions: list[str] = []
+
+    for item in candidates:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        normalized = _normalize_followup_text(text)
+        if not normalized or normalized == original_norm:
+            continue
+        if original_norm and SequenceMatcher(None, normalized, original_norm).ratio() >= 0.90:
+            continue
+        if any(SequenceMatcher(None, normalized, previous).ratio() >= 0.86 for previous in normalized_suggestions):
+            continue
+        if campus_scope != "wise" and _FOLLOWUP_WISE_RE.search(text):
+            continue
+        if _FOLLOWUP_UNSUPPORTED_RE.search(text):
+            continue
+
+        # A newly invented date, amount, credit count, or percentage is not a
+        # safe suggestion even when phrased as a question.
+        numeric_claims = [match.replace(" ", "") for match in _FOLLOWUP_NUMBER_RE.findall(text)]
+        if any(claim.lower() not in support_lower.replace(" ", "") for claim in numeric_claims):
+            continue
+
+        lowered = text.lower()
+        if ("학식" in lowered or "식단" in lowered) and "meals" not in domain_set:
+            continue
+        if ("전화번호" in lowered or "교직원" in lowered) and "staff" not in domain_set:
+            continue
+
+        candidate_tokens = _topic_tokens(text)
+        overlap = _supported_topic_overlap(candidate_tokens, support_tokens)
+        # A single generic token (for example only "신청") is not sufficient
+        # evidence of topic consistency. Conservative failure is preferable to
+        # suggesting a fluent but unrelated next question.
+        if overlap < 2 or overlap / max(len(candidate_tokens), 1) < 0.6:
+            continue
+
+        suggestions.append(text)
+        normalized_suggestions.append(normalized)
+        if len(suggestions) >= count:
+            break
+    return suggestions
+
+
 async def generate_followup_questions(
     question: str,
     answer: str,
     count: int = 3,
     usage_collector: list[dict[str, Any]] | None = None,
+    *,
+    source_context: list[dict[str, Any]] | None = None,
+    campus_scope: str = "seoul_bmc",
+    supported_domains: list[str] | None = None,
 ) -> list[str]:
-    """답변 이후 이어서 물어볼 만한 후속 질문을 생성합니다. 실패해도 호출자를 깨지 않습니다."""
+    """Generate source-bounded follow-ups after the caller completes grounding."""
     try:
+        if not source_context or count <= 0:
+            return []
+        source_text = _followup_source_text(source_context)
+        domains = ", ".join(supported_domains or []) or "없음"
         messages: list[BaseMessage] = [
             SystemMessage(
                 content=(
                     "당신은 동국대학교 학생 도우미입니다. "
-                    "사용자 질문과 답변을 바탕으로 학생이 자연스럽게 이어서 물어볼 만한 "
-                    "후속 질문을 제안하세요."
+                    "grounding이 완료된 답변과 공식 출처 안에서만 학생이 이어서 물을 "
+                    "후속 질문을 제안하세요. 출처에 없는 날짜·금액·요건을 만들지 말고, "
+                    "지원하지 않는 영역이나 다른 캠퍼스로 유도하지 마세요."
                 )
             ),
             HumanMessage(
@@ -370,7 +518,11 @@ async def generate_followup_questions(
                     f"{question}\n\n"
                     "[어시스턴트 답변]\n"
                     f"{answer}\n\n"
-                    f"정확히 {count}개의 간결하고 서로 다른 한국어 후속 질문을 제안하세요. "
+                    f"[허용 캠퍼스]\n{campus_scope}\n\n"
+                    f"[지원 데이터 영역]\n{domains}\n\n"
+                    f"[공식 출처 요약]\n{source_text}\n\n"
+                    f"최대 {count}개의 간결하고 서로 다른 한국어 후속 질문을 제안하세요. "
+                    "유효한 질문이 부족하면 개수를 억지로 채우지 마세요. "
                     '반드시 문자열만 담긴 STRICT JSON 배열만 출력하세요. 예: ["...", "..."]'
                 )
             ),
@@ -406,18 +558,15 @@ async def generate_followup_questions(
             logger.debug("Follow-up response was not a JSON array: %s", cleaned)
             return []
 
-        suggestions: list[str] = []
-        original = question.strip()
-        for item in parsed:
-            if not isinstance(item, str):
-                continue
-            text = item.strip()
-            if not text or text == original or text in suggestions:
-                continue
-            suggestions.append(text)
-            if len(suggestions) >= count:
-                break
-        return suggestions
+        return validate_followup_questions(
+            parsed,
+            question=question,
+            answer=answer,
+            source_context=source_context,
+            campus_scope=campus_scope,
+            supported_domains=supported_domains,
+            count=count,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to generate follow-up questions: %s", exc)
         return []
@@ -429,6 +578,7 @@ async def generate_langchain_answer_stream(
     session_id: str | None = None,
     current_date: str = "",
     usage_collector: list[dict[str, Any]] | None = None,
+    response_instructions: str | None = None,
 ):
     """선택된 프로바이더로 답변을 스트리밍 생성합니다.
 
@@ -440,7 +590,13 @@ async def generate_langchain_answer_stream(
     logger.info("Generating streaming answer for session_id=%s (provider=%s)", actual_session_id, primary)
 
     history = _get_session_history(actual_session_id)
-    messages = _build_messages(question, context, history, current_date)
+    messages = _build_messages(
+        question,
+        context,
+        history,
+        current_date,
+        response_instructions=response_instructions,
+    )
 
     async def _stream(provider: str):
         llm = _get_chat_llm(provider)
@@ -527,12 +683,16 @@ def get_recent_history_text(
 
 def append_manual_history(session_id: str | None, question: str, answer: str) -> None:
     actual_session_id = session_id or "default_session"
-    history = _get_session_history(actual_session_id)
-    history.add_user_message(question)
-    history.add_ai_message(answer)
+    try:
+        history = _get_session_history(actual_session_id)
+        history.add_user_message(question)
+        history.add_ai_message(answer)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("append_manual_history failed (session=%s): %s", actual_session_id, exc)
 
 __all__ = [
     "generate_followup_questions",
+    "validate_followup_questions",
     "generate_langchain_answer",
     "generate_langchain_answer_stream",
     "append_manual_history",
