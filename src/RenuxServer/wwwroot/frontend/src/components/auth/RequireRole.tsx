@@ -1,24 +1,8 @@
 import { type ReactNode, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { apiFetch } from '../../api/client'
+import { mapRoleNameToUserRole } from '../../auth/roleMapping'
 import type { UserRole } from '../../types/auth'
-
-const mapRoleNameToUserRole = (roleName?: string | null): UserRole => {
-  if (!roleName) return 'STUDENT'
-  const normalized = roleName.trim().toLowerCase()
-  if (normalized.includes('관리자')) return 'UNIVERSITY_COUNCIL'
-  if (normalized.includes('학생회')) return 'DEPARTMENT_COUNCIL'
-  return 'STUDENT'
-}
-
-const readStoredRole = (): UserRole | null => {
-  if (typeof window === 'undefined') return null
-  const stored = window.localStorage.getItem('renux-user-role')
-  if (stored === 'STUDENT' || stored === 'DEPARTMENT_COUNCIL' || stored === 'UNIVERSITY_COUNCIL') {
-    return stored
-  }
-  return null
-}
 
 interface RequireRoleProps {
   allow: UserRole[]
@@ -28,25 +12,26 @@ interface RequireRoleProps {
 /**
  * 관리자 라우트의 클라이언트 측 가드. 서버 API 인가가 1차 방어선이지만,
  * 권한 없는 사용자에게 관리자 UI가 노출되는 것을 막는다.
- * localStorage 역할을 우선 사용하고, 없으면 /auth/name으로 1회 조회한다.
+ * localStorage 역할은 이전 세션의 낡은 값일 수 있으므로 권한 판단에 사용하지 않고,
+ * 페이지를 열 때마다 /auth/name의 현재 서버 역할을 확인한다.
  */
 const RequireRole = ({ allow, children }: RequireRoleProps) => {
-  const [role, setRole] = useState<UserRole | null>(() => readStoredRole())
-  const [status, setStatus] = useState<'pending' | 'resolved'>(() =>
-    readStoredRole() ? 'resolved' : 'pending',
-  )
+  const [role, setRole] = useState<UserRole | null>(null)
+  const [status, setStatus] = useState<'pending' | 'resolved'>('pending')
 
   useEffect(() => {
-    if (status === 'resolved') return
-
     let cancelled = false
     const resolveRole = async () => {
       try {
         const data = await apiFetch<{ roleName?: string; role?: string }>('/auth/name', { method: 'GET' })
         const resolved = mapRoleNameToUserRole(data?.roleName || data?.role)
         if (!cancelled) {
-          window.localStorage.setItem('renux-user-role', resolved)
           setRole(resolved)
+          try {
+            window.localStorage.setItem('renux-user-role', resolved)
+          } catch {
+            // 저장소가 차단되어도 서버에서 확인한 현재 역할은 그대로 사용한다.
+          }
         }
       } catch {
         if (!cancelled) setRole('STUDENT')
@@ -59,7 +44,7 @@ const RequireRole = ({ allow, children }: RequireRoleProps) => {
     return () => {
       cancelled = true
     }
-  }, [status])
+  }, [])
 
   if (status === 'pending') {
     return <div className="app-shell" style={{ padding: '2rem' }}>권한을 확인하는 중입니다...</div>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { apiFetch, type ApiError } from '../../api/client'
 
 type NotificationTopic = 'scholarship' | 'course_registration' | 'tuition_payment' | 'document_submission' | 'academic_schedule'
@@ -357,6 +357,10 @@ const SettingsPage = () => {
           </section>
         </>
       )}
+
+      <footer className="settings-page__footer">
+        <Link to="/privacy">개인정보처리방침</Link>
+      </footer>
     </div>
   )
 }

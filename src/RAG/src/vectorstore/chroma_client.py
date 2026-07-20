@@ -78,6 +78,25 @@ def upsert_items(
             embeddings=embeddings_list[i : i + batch_size],
         )
 
+
+def update_item_metadatas(
+    name: str,
+    ids: Iterable[str],
+    metadatas: Iterable[Mapping[str, object]],
+) -> None:
+    """Update existing Chroma metadata without recomputing embeddings."""
+    collection = get_collection(name)
+    ids_list = list(ids)
+    metadatas_list = list(metadatas)
+    if len(ids_list) != len(metadatas_list):
+        raise ValueError("ids and metadatas must have the same length")
+    batch_size = 5000
+    for i in range(0, len(ids_list), batch_size):
+        collection.update(
+            ids=ids_list[i : i + batch_size],
+            metadatas=metadatas_list[i : i + batch_size],
+        )
+
 def delete_items(name: str, ids: Iterable[str]) -> None:
     """지정된 Chroma 컬렉션에서 항목을 삭제합니다."""
     collection = get_collection(name)
@@ -123,4 +142,7 @@ def reset_collection(name: str) -> None:
     client.create_collection(name=name, metadata=_COLLECTION_METADATA)
 
 
-__all__ = ["get_client", "get_collection", "add_items", "upsert_items", "delete_items", "get_all_ids", "count_items", "reset_collection"]
+__all__ = [
+    "get_client", "get_collection", "add_items", "upsert_items",
+    "update_item_metadatas", "delete_items", "get_all_ids", "count_items", "reset_collection",
+]

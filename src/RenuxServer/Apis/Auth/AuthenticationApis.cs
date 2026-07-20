@@ -1,5 +1,4 @@
 ﻿using FluentValidation;
-using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 
@@ -148,8 +147,7 @@ static public class AuthenticationApis
 
         // 회원가입
         app.MapPost("/signup",
-            async (ServerDbContext db, SignupUserDto signup, IValidator<SignupUserDto> validator,
-            IMapper mapper) =>
+            async (ServerDbContext db, SignupUserDto signup, IValidator<SignupUserDto> validator) =>
         {
             if (signup.HasForbiddenRoleInput())
             {
@@ -175,10 +173,14 @@ static public class AuthenticationApis
                 return Results.Problem("기본 역할이 구성되지 않았습니다.", statusCode: 500);
             }
 
-            User user = mapper.Map<User>(signup);
-            user.RoleId = defaultRole.Id;
-
-            user.HashPassword = BCrypt.Net.BCrypt.HashPassword(signup.Password);
+            User user = new()
+            {
+                UserId = signup.UserId,
+                Username = signup.Username,
+                MajorId = signup.MajorId,
+                RoleId = defaultRole.Id,
+                HashPassword = BCrypt.Net.BCrypt.HashPassword(signup.Password),
+            };
             user.UpdatedTime = user.CreatedTime;
 
             await db.Users.AddAsync(user);

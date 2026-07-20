@@ -1,5 +1,5 @@
-﻿using AutoMapper;
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.DataProtection;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Json;
@@ -9,18 +9,12 @@ using RenuxServer.DbContexts;
 using RenuxServer.Dtos.ChatDtos;
 using RenuxServer.Models;
 using RenuxServer.Dtos.EtcDtos;
+using RenuxServer.Services;
 
 namespace RenuxServer.Apis.Chat;
 
 public record StartChat(OrganizationDto Org, string Title);
 public record LoadChat(Guid ChatId, DateTime LastTime);
-public record ToRag(string SessionId, string Question, string? Major = null);
-public record Reply(
-    string Answer,
-    List<RagSource>? Sources,
-    [property: JsonPropertyName("fallback_triggered")] bool FallbackTriggered,
-    [property: JsonPropertyName("fallback_reason")] string? FallbackReason
-);
 public record RagSource(
     string? Source,
     [property: JsonPropertyName("chunk_id")] string? ChunkId,
@@ -34,7 +28,6 @@ public record RagSource(
     [property: JsonPropertyName("recency_score")] double? RecencyScore,
     [property: JsonPropertyName("final_score")] double? FinalScore
 );
-public record RagCallResult(string Answer, string RequestId, bool Succeeded, List<ChatSourceDto> Sources, bool FallbackTriggered, string? FallbackReason);
 public record FeedbackDto(string RequestId, int Rating, string? Reason, string? Comment);
 
 static public class ChatRequestApis
@@ -79,39 +72,32 @@ static public class ChatRequestApis
         // IP 단위 레이트리밋(LLM 비용·남용 방어) 적용.
         var app = application.MapGroup("/chat").RequireRateLimiting("chat");
 
-        app.MapGet("/active", async (ServerDbContext db, HttpContext context, IMapper mapper) =>
+        app.MapGet("/active", async (ServerDbContext db, HttpContext context) =>
         {
             // For guests, return an empty list as their chats are not persisted
-            if (!context.Request.Cookies.ContainsKey("renux-server-token"))
+            if (!TryGetUserId(context, out Guid id))
             {
                 return Results.Ok(new List<ActiveChatDto>());
             }
 
-            Guid id;
-            var userIdStr = context.User.FindFirstValue(Microsoft.IdentityModel.JsonWebTokens.JwtRegisteredClaimNames.Sub);
-            if (userIdStr == null || !Guid.TryParse(userIdStr, out id))
-            {
-                return Results.Unauthorized();
-            }
-
-            List<ActiveChatDto> chats =
-            mapper.Map<List<ActiveChatDto>>(
-                await db.Chats
-                .Include(ch => ch.Organization)
-                .Where(ch => Equals(ch.UserId, id))
-                .ToListAsync()
-                );
+            List<ActiveChatDto> chats = (await db.Chats
+                    .Include(ch => ch.Organization)
+                    .ThenInclude(org => org!.Major)
+                    .Where(ch => Equals(ch.UserId, id))
+                    .ToListAsync())
+                .Select(ToActiveChatDto)
+                .ToList();
 
             return Results.Ok(chats);
         });
 
-        app.MapPost("/start", async (ServerDbContext db, HttpContext context, StartChat stch, IMapper mapper, IConfiguration configuration) =>
+        app.MapPost("/start", async (ServerDbContext db, HttpContext context, StartChat stch, IConfiguration configuration, IDataProtectionProvider dataProtectionProvider) =>
         {
             DateTime time = DateTime.UtcNow;
             Guid id = Guid.NewGuid();
 
             // Authenticated user check
-            bool isAuthenticated = context.Request.Cookies.ContainsKey("renux-server-token");
+            bool isAuthenticated = TryGetUserId(context, out Guid authenticatedUserId);
 
             if (!isAuthenticated)
             {
@@ -120,10 +106,10 @@ static public class ChatRequestApis
                 Guid guestChatId = Guid.NewGuid();
                 
                 // Ensure the guest cookie exists for session consistency (optional but good practice)
-                if (!context.Request.Cookies.ContainsKey("renux-server-guest"))
+                if (!GuestIdentity.TryValidate(context.Request, dataProtectionProvider, out _))
                 {
                     CookieOptions opt = BuildGuestCookieOptions(configuration);
-                    context.Response.Cookies.Append("renux-server-guest", Guid.NewGuid().ToString(), opt);
+                    context.Response.Cookies.Append(GuestIdentity.CookieName, GuestIdentity.Issue(dataProtectionProvider), opt);
                 }
 
                 ActiveChatDto guestChatDto = new()
@@ -139,11 +125,7 @@ static public class ChatRequestApis
             while (await db.Chats.AnyAsync(c => c.Id == id))
                 id = Guid.NewGuid();
 
-            var userIdStr = context.User.FindFirstValue(Microsoft.IdentityModel.JsonWebTokens.JwtRegisteredClaimNames.Sub);
-            if (userIdStr == null || !Guid.TryParse(userIdStr, out Guid userId))
-            {
-                return Results.Unauthorized();
-            }
+            Guid userId = authenticatedUserId;
 
             // 프론트가 보낸 OrganizationId가 실제 존재하는지 검증 (FK 위반/고아 데이터 방지)
             if (!await db.Organizations.AnyAsync(o => o.Id == stch.Org.Id))
@@ -172,88 +154,17 @@ static public class ChatRequestApis
             await db.ChatMessages.AddAsync(startChat);
             await db.SaveChangesAsync();
 
-            ActiveChatDto chatDto = mapper.Map<ActiveChatDto>(chat);
+            ActiveChatDto chatDto = new()
+            {
+                Id = chat.Id,
+                Organization = stch.Org,
+                Title = chat.Title
+            };
 
             return Results.Ok(chatDto);
         });
 
-        app.MapPost("/msg", async (ServerDbContext db, HttpContext context, ChatMessageDto askDto, IMapper mapper, ILogger<Program> logger, IConfiguration configuration, IHttpClientFactory httpClientFactory) =>
-        {
-            if (string.IsNullOrWhiteSpace(askDto.Content))
-                return Results.BadRequest(new { message = "메시지를 입력해주세요." });
-            var content = askDto.Content;
-            if ((askDto.Content?.Length ?? 0) > MaxChatContentLength)
-                return Results.BadRequest(new { message = $"메시지가 너무 깁니다(최대 {MaxChatContentLength}자)." });
-
-            bool isAuthenticated = context.Request.Cookies.ContainsKey("renux-server-token");
-
-            if (!isAuthenticated)
-            {
-                // Guest Flow: Do NOT save to DB
-                ToRag toRag = new(askDto.ChatId.ToString(), content);
-                var ragResult = await CallRagAsync(toRag, context, configuration, httpClientFactory, logger);
-                string replyContent = ragResult.Answer;
-                logger.LogInformation(
-                    "Guest AI reply generated. RequestId={RequestId}, Succeeded={Succeeded}",
-                    ragResult.RequestId,
-                    ragResult.Succeeded
-                );
-
-                ChatMessageDto replyDto = new()
-                {
-                    ChatId = askDto.ChatId,
-                    Content = replyContent,
-                    IsAsk = false,
-                    CreatedTime = DateTime.UtcNow,
-                    Sources = ragResult.Sources,
-                    RequestId = ragResult.RequestId,
-                    IsFallback = ragResult.FallbackTriggered,
-                    FallbackReason = ragResult.FallbackReason
-                };
-                return Results.Ok(replyDto);
-            }
-
-            // Authenticated Flow
-            if (!TryGetUserId(context, out Guid msgUserId))
-            {
-                return Results.Unauthorized();
-            }
-            if (!await UserOwnsChatAsync(db, askDto.ChatId, msgUserId))
-            {
-                return Results.Forbid();
-            }
-
-            ChatMessage ask = mapper.Map<ChatMessage>(askDto);
-            await db.ChatMessages.AddAsync(ask);
-
-            ToRag authToRag = new(askDto.ChatId.ToString(), content, ResolveMajor(context));
-            var authRagResult = await CallRagAsync(authToRag, context, configuration, httpClientFactory, logger);
-            string authReply = authRagResult.Answer;
-            logger.LogInformation(
-                "Authenticated AI reply generated. RequestId={RequestId}, Succeeded={Succeeded}",
-                authRagResult.RequestId,
-                authRagResult.Succeeded
-            );
-
-            ChatMessage apply = new()
-            {
-                ChatId = ask.ChatId,
-                Content = authReply,
-                IsAsk = false,
-                CreatedTime = DateTime.UtcNow,
-                SourcesJson = SerializeSources(authRagResult.Sources),
-                IsFallback = authRagResult.FallbackTriggered,
-                FallbackReason = authRagResult.FallbackReason
-            };
-
-            await db.ChatMessages.AddAsync(apply);
-            await db.SaveChangesAsync();
-
-            ChatMessageDto applyDto = ToDto(apply, authRagResult.RequestId);
-            return Results.Ok(applyDto);
-        });
-
-        app.MapPost("/stream", async (ServerDbContext db, HttpContext context, ChatMessageDto askDto, IMapper mapper, ILogger<Program> logger, IConfiguration configuration, IHttpClientFactory httpClientFactory) =>
+        app.MapPost("/stream", async (ServerDbContext db, HttpContext context, ChatMessageDto askDto, ILogger<Program> logger, IConfiguration configuration, IHttpClientFactory httpClientFactory, IDataProtectionProvider dataProtectionProvider) =>
         {
             if (string.IsNullOrWhiteSpace(askDto.Content))
             {
@@ -269,7 +180,14 @@ static public class ChatRequestApis
                 return;
             }
 
-            bool isAuthenticated = context.Request.Cookies.ContainsKey("renux-server-token");
+            bool isAuthenticated = TryGetUserId(context, out Guid authenticatedStreamUserId);
+            string? validatedGuestSubjectId = null;
+            if (!isAuthenticated && !GuestIdentity.TryValidate(context.Request, dataProtectionProvider, out validatedGuestSubjectId))
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                await context.Response.WriteAsJsonAsync(new { message = "유효한 게스트 세션이 필요합니다." });
+                return;
+            }
             string sessionId = askDto.ChatId.ToString();
             string question = content;
             string? major = isAuthenticated ? ResolveMajor(context) : null;
@@ -278,11 +196,13 @@ static public class ChatRequestApis
             ChatMessage? ask = null;
             if (isAuthenticated)
             {
-                if (!TryGetUserId(context, out Guid streamUserId))
+                if (askDto.Id == Guid.Empty)
                 {
-                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    await context.Response.WriteAsJsonAsync(new { message = "질문 ID가 필요합니다." });
                     return;
                 }
+                Guid streamUserId = authenticatedStreamUserId;
                 if (!await UserOwnsChatAsync(db, askDto.ChatId, streamUserId))
                 {
                     context.Response.StatusCode = StatusCodes.Status403Forbidden;
@@ -292,9 +212,26 @@ static public class ChatRequestApis
                 ask = await db.ChatMessages.FindAsync([askDto.Id], context.RequestAborted);
                 if (ask is null)
                 {
-                    ask = mapper.Map<ChatMessage>(askDto);
+                    ask = ToQuestionEntity(askDto, content);
                     await db.ChatMessages.AddAsync(ask);
                     await db.SaveChangesAsync(context.RequestAborted);
+                }
+                else
+                {
+                    if (ask.ChatId != askDto.ChatId)
+                    {
+                        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                        return;
+                    }
+                    if (!ask.IsAsk || !string.Equals(ask.Content, content, StringComparison.Ordinal))
+                    {
+                        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                        await context.Response.WriteAsJsonAsync(new { message = "저장된 질문과 요청 내용이 일치하지 않습니다." });
+                        return;
+                    }
+
+                    // Never allow a client to mutate a persisted question during regeneration.
+                    question = ask.Content;
                 }
             }
 
@@ -308,6 +245,16 @@ static public class ChatRequestApis
             List<ChatSourceDto> sources = [];
             bool fallbackTriggered = false;
             string? fallbackReason = null;
+            bool ragResponseSucceeded = false;
+            bool streamReportedError = false;
+            bool streamCancelled = false;
+            // This answer identifier is backend-owned and independent from the
+            // request trace id so infrastructure logs cannot disclose it.
+            string backendRequestId = Guid.NewGuid().ToString("N");
+            var terminalState = new RagTerminalStateMachine(backendRequestId);
+            List<string> suggestedQuestions = [];
+            bool? grounded = null;
+            double? groundingScore = null;
 
             try
             {
@@ -319,36 +266,48 @@ static public class ChatRequestApis
                 {
                     Content = JsonContent.Create(new { question, sessionId, major })
                 };
-                request.Headers.TryAddWithoutValidation("X-Request-ID", context.TraceIdentifier);
+                request.Headers.TryAddWithoutValidation("X-Request-ID", backendRequestId);
 
                 using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, context.RequestAborted);
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    var errorBody = await response.Content.ReadAsStringAsync(context.RequestAborted);
+                    fallbackTriggered = true;
+                    fallbackReason = "rag_stream_http_error";
                     logger.LogWarning(
-                        "RAG stream request failed. RequestId={RequestId}, StatusCode={StatusCode}, Body={Body}",
-                        context.TraceIdentifier, (int)response.StatusCode, errorBody);
+                        "RAG stream request failed. StatusCode={StatusCode}",
+                        (int)response.StatusCode);
                 }
                 else
                 {
+                    ragResponseSucceeded = true;
                     using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(context.RequestAborted));
 
                     while (await reader.ReadLineAsync(context.RequestAborted) is { } line)
                     {
-                        // Re-emit verbatim, preserving blank lines so SSE event framing (\n\n) survives the proxy.
-                        await context.Response.WriteAsync($"{line}\n", context.RequestAborted);
-                        await context.Response.Body.FlushAsync(context.RequestAborted);
-
-                        if (line.Length == 0 || !line.StartsWith("data: ")) continue;
+                        if (line.Length == 0 || !line.StartsWith("data: "))
+                        {
+                            // Preserve blank lines and non-data SSE fields. Data
+                            // fields are forwarded only after contract validation.
+                            await context.Response.WriteAsync($"{line}\n", context.RequestAborted);
+                            await context.Response.Body.FlushAsync(context.RequestAborted);
+                            continue;
+                        }
 
                         try
                         {
                             var json = line.Substring(6);
                             var chunk = JsonSerializer.Deserialize<JsonElement>(json);
-                            if (chunk.TryGetProperty("type", out var typeProp))
+                            if (!terminalState.Observe(chunk, out string? type))
                             {
-                                var type = typeProp.GetString();
+                                streamReportedError = true;
+                                continue;
+                            }
+
+                            await context.Response.WriteAsync($"{line}\n", context.RequestAborted);
+                            await context.Response.Body.FlushAsync(context.RequestAborted);
+                            if (type is not null)
+                            {
                                 if (type == "metadata")
                                 {
                                     if (chunk.TryGetProperty("sources", out var sourcesProp))
@@ -365,6 +324,37 @@ static public class ChatRequestApis
                                         fallbackReason = fbrProp.GetString();
                                     }
                                 }
+                                else if (type == "suggestions")
+                                {
+                                    suggestedQuestions = ReadSuggestedQuestions(chunk);
+                                }
+                                else if (type == "grounding")
+                                {
+                                    if (chunk.TryGetProperty("grounded", out var groundedProp)
+                                        && groundedProp.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                                    {
+                                        grounded = groundedProp.GetBoolean();
+                                    }
+                                    groundingScore = ReadGroundingScore(chunk, "score") ?? groundingScore;
+                                }
+                                else if (type == "completion")
+                                {
+                                    suggestedQuestions = ReadSuggestedQuestions(chunk, "suggested_questions", suggestedQuestions);
+                                    grounded = ReadNullableBoolean(chunk, "grounded") ?? grounded;
+                                    groundingScore = ReadGroundingScore(chunk, "grounding_score") ?? groundingScore;
+                                    if (chunk.TryGetProperty("sources", out var completionSourcesProp))
+                                    {
+                                        var completionSources = JsonSerializer.Deserialize<List<RagSource>>(completionSourcesProp.GetRawText());
+                                        sources = MapSources(completionSources);
+                                    }
+                                    if (chunk.TryGetProperty("fallback_reason", out var completionFallbackReasonProp))
+                                    {
+                                        fallbackReason = completionFallbackReasonProp.ValueKind == JsonValueKind.String
+                                            ? completionFallbackReasonProp.GetString()
+                                            : null;
+                                        fallbackTriggered = !string.IsNullOrWhiteSpace(fallbackReason);
+                                    }
+                                }
                                 else if (type == "text")
                                 {
                                     if (chunk.TryGetProperty("content", out var contentProp))
@@ -372,23 +362,59 @@ static public class ChatRequestApis
                                         fullAnswer.Append(contentProp.GetString());
                                     }
                                 }
+                                else if (type == "error")
+                                {
+                                    streamReportedError = true;
+                                    fallbackTriggered = true;
+                                    fallbackReason = "rag_stream_error";
+                                }
+                                else if (type == "done")
+                                {
+                                    // Terminal shape/order/request id were already
+                                    // validated by RagTerminalStateMachine.
+                                }
                             }
                         }
                         catch (Exception ex)
                         {
-                            logger.LogWarning(ex, "Failed to parse streaming chunk: {Line}", line);
+                            terminalState.ObserveMalformedData();
+                            streamReportedError = true;
+                            logger.LogWarning(ex, "Failed to parse an upstream SSE data event.");
                         }
                     }
+
+                    terminalState.ObserveEndOfStream();
                 }
             }
             catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
             {
-                // Client disconnected mid-stream: stop streaming but still persist what we have below.
-                logger.LogInformation("Chat stream cancelled by client. RequestId={RequestId}", context.TraceIdentifier);
+                // Client disconnected mid-stream: no answer version or completion
+                // event may be committed, even if terminal data was seen first.
+                terminalState.ObserveCancellation();
+                streamCancelled = true;
+                logger.LogInformation("Chat stream cancelled by client.");
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "RAG stream error. RequestId={RequestId}", context.TraceIdentifier);
+                terminalState.ObserveTransportFailure();
+                streamReportedError = true;
+                fallbackTriggered = true;
+                fallbackReason = "rag_stream_transport_error";
+                logger.LogError(ex, "RAG stream error.");
+            }
+
+            bool generationSucceeded = ragResponseSucceeded &&
+                                       terminalState.IsSuccessful &&
+                                       !streamReportedError &&
+                                       !streamCancelled &&
+                                       fullAnswer.Length > 0;
+
+            if (fullAnswer.Length > 0 && !generationSucceeded)
+            {
+                fallbackTriggered = true;
+                fallbackReason ??= streamCancelled
+                    ? "rag_stream_cancelled"
+                    : "rag_stream_incomplete";
             }
 
             // RAG failed or produced nothing: send a graceful fallback to the client and use it as the saved answer.
@@ -408,38 +434,123 @@ static public class ChatRequestApis
                 }
                 catch (Exception ex)
                 {
-                    logger.LogWarning(ex, "Failed to emit fallback stream message. RequestId={RequestId}", context.TraceIdentifier);
+                    logger.LogWarning(ex, "Failed to emit fallback stream message.");
                 }
             }
 
-            // Always persist a reply for authenticated users so the saved question is never orphaned.
-            if (isAuthenticated && ask != null)
+            // Only the exact completion -> done terminal contract may create or
+            // promote an immutable answer version. Partial, malformed, cancelled,
+            // and transport-failed streams remain transient client output.
+            bool completedVersionReady = generationSucceeded && !isAuthenticated;
+            if (isAuthenticated && ask != null && generationSucceeded)
             {
-                ChatMessage reply = new()
+                PersistReplyResult persisted = await PersistReplyVersionAsync(
+                    db,
+                    ask,
+                    fullAnswer.ToString(),
+                    sources,
+                    fallbackTriggered,
+                    fallbackReason,
+                    replaceExistingCurrent: true,
+                    requestId: backendRequestId,
+                    suggestedQuestions: suggestedQuestions,
+                    grounded: grounded,
+                    groundingScore: groundingScore);
+
+                completedVersionReady = persisted.Persisted;
+            }
+
+            // Completion is recorded only after the explicit RAG terminal event
+            // and (for authenticated users) a successful immutable-version commit.
+            // Telemetry failure is intentionally non-blocking for chat delivery.
+            if (completedVersionReady)
+            {
+                try
                 {
-                    ChatId = ask.ChatId,
-                    Content = fullAnswer.ToString(),
-                    IsAsk = false,
-                    CreatedTime = DateTime.UtcNow,
-                    SourcesJson = SerializeSources(sources),
-                    IsFallback = fallbackTriggered,
-                    FallbackReason = fallbackReason
-                };
-                await db.ChatMessages.AddAsync(reply);
-                await db.SaveChangesAsync();
+                    var eventContext = await ProductTelemetry.ResolveContextAsync(
+                        db,
+                        context,
+                        configuration,
+                        askDto.ChatId,
+                        validatedGuestSubjectId,
+                        CancellationToken.None);
+                    await ProductTelemetry.RecordAsync(
+                        db,
+                        configuration,
+                        eventContext,
+                        new ProductEventData(
+                            ProductEventTypes.AnswerCompleted,
+                            backendRequestId,
+                            askDto.ChatId,
+                            SuggestionCount: suggestedQuestions.Count,
+                            IsFallback: fallbackTriggered,
+                            Grounded: grounded,
+                            SourceCount: sources.Count),
+                        CancellationToken.None);
+                }
+                catch (Exception exception)
+                {
+                    logger.LogWarning(exception, "Answer completion telemetry write failed.");
+                }
             }
         });
 
-        app.MapPost("/feedback", async (FeedbackDto feedback, HttpContext context, IConfiguration configuration, IHttpClientFactory httpClientFactory, ILogger<Program> logger) =>
+        app.MapPost("/feedback", async (FeedbackDto feedback, ServerDbContext db, HttpContext context, IConfiguration configuration, IHttpClientFactory httpClientFactory, ILogger<Program> logger, IDataProtectionProvider dataProtectionProvider) =>
         {
-            if (string.IsNullOrWhiteSpace(feedback.RequestId))
+            if (string.IsNullOrWhiteSpace(feedback.RequestId) || feedback.RequestId.Length > 200)
             {
                 return Results.BadRequest(new { message = "requestId가 필요합니다." });
+            }
+            if (feedback.Rating is not (1 or -1))
+            {
+                return Results.BadRequest(new { message = "rating은 1 또는 -1이어야 합니다." });
+            }
+            if ((feedback.Comment?.Length ?? 0) > 2000)
+            {
+                return Results.BadRequest(new { message = "의견은 2,000자까지 입력할 수 있습니다." });
+            }
+
+            Guid? verifiedChatId = null;
+            bool isAuthenticated = TryGetUserId(context, out Guid feedbackUserId);
+            string? validatedGuestSubjectId = null;
+            if (isAuthenticated)
+            {
+                verifiedChatId = await (
+                    from answer in db.ChatMessages
+                    join chat in db.Chats on answer.ChatId equals chat.Id
+                    where !answer.IsAsk
+                          && answer.IsCurrent
+                          && answer.RequestId == feedback.RequestId
+                          && chat.UserId == feedbackUserId
+                    select (Guid?)answer.ChatId)
+                    .FirstOrDefaultAsync(context.RequestAborted);
+                if (verifiedChatId is null) return Results.NotFound();
+            }
+            else if (!GuestIdentity.TryValidate(context.Request, dataProtectionProvider, out validatedGuestSubjectId))
+            {
+                return Results.BadRequest(new { message = "유효한 게스트 세션이 필요합니다." });
+            }
+
+            var eventContext = await ProductTelemetry.ResolveContextAsync(
+                db,
+                context,
+                configuration,
+                verifiedChatId,
+                validatedGuestSubjectId,
+                context.RequestAborted);
+            ProductEvent? completionEvent = await ProductTelemetry.FindAnswerCompletionEventAsync(
+                db,
+                configuration,
+                eventContext,
+                feedback.RequestId,
+                context.RequestAborted);
+            if (!isAuthenticated && completionEvent is null)
+            {
+                return Results.NotFound(new { message = "이 게스트가 완료한 답변을 찾을 수 없습니다." });
             }
 
             var ragUrl = configuration["RagServiceUrl"] ?? configuration["RAG_SERVICE_URL"] ?? "http://rag-service:8000";
             var client = httpClientFactory.CreateClient();
-            bool isAuthenticated = context.Request.Cookies.ContainsKey("renux-server-token");
             var payload = new
             {
                 requestId = feedback.RequestId,
@@ -452,24 +563,52 @@ static public class ChatRequestApis
 
             try
             {
+                string answerKey = ProductTelemetry.BuildPseudonymousKey(configuration, "answer", feedback.RequestId);
+                await using var feedbackTransaction = await db.Database.BeginTransactionAsync(context.RequestAborted);
+                await db.Database.ExecuteSqlInterpolatedAsync(
+                    $"SELECT pg_advisory_xact_lock(hashtextextended({answerKey}, 0));",
+                    context.RequestAborted);
+                int? existingRating = await ProductTelemetry.FindFeedbackRatingAsync(
+                    db,
+                    configuration,
+                    eventContext,
+                    feedback.RequestId,
+                    context.RequestAborted);
+                FeedbackDecision feedbackDecision = FeedbackPolicy.Decide(existingRating, feedback.Rating);
+                if (feedbackDecision is not FeedbackDecision.Accept)
+                {
+                    await feedbackTransaction.CommitAsync(context.RequestAborted);
+                    return feedbackDecision == FeedbackDecision.Duplicate
+                        ? Results.Ok(new { ok = true, duplicate = true })
+                        : Results.Conflict(new { message = "이미 반대 평가가 제출된 답변입니다." });
+                }
+
                 using var response = await client.PostAsJsonAsync($"{ragUrl}/feedback", payload, JsonOptions, context.RequestAborted);
                 if (response.IsSuccessStatusCode)
                 {
+                    await ProductTelemetry.RecordAsync(
+                        db,
+                        configuration,
+                        eventContext,
+                        new ProductEventData(
+                            ProductEventTypes.FeedbackSubmitted,
+                            feedback.RequestId,
+                            verifiedChatId,
+                            Rating: feedback.Rating),
+                        context.RequestAborted);
+                    await feedbackTransaction.CommitAsync(context.RequestAborted);
                     return Results.Ok(new { ok = true });
                 }
 
-                var body = await response.Content.ReadAsStringAsync(context.RequestAborted);
                 logger.LogWarning(
-                    "RAG feedback request failed. RequestId={RequestId}, StatusCode={StatusCode}, Body={Body}",
-                    feedback.RequestId,
-                    (int)response.StatusCode,
-                    body
+                    "RAG feedback request failed. StatusCode={StatusCode}",
+                    (int)response.StatusCode
                 );
                 return Results.StatusCode(StatusCodes.Status502BadGateway);
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "RAG feedback request failed. RequestId={RequestId}", feedback.RequestId);
+                logger.LogWarning(ex, "RAG feedback request failed.");
                 return Results.StatusCode(StatusCodes.Status500InternalServerError);
             }
         });
@@ -477,16 +616,12 @@ static public class ChatRequestApis
         app.MapPost("/load", async (ServerDbContext db, HttpContext context, LoadChat load) =>
         {
             // For guests, return empty list (no persistence)
-            if (!context.Request.Cookies.ContainsKey("renux-server-token"))
+            if (!TryGetUserId(context, out Guid loadUserId))
             {
                 return Results.Ok(new List<ChatMessageDto>());
             }
 
             // 인증 사용자는 본인 소유 채팅방만 열람할 수 있다(IDOR 방지).
-            if (!TryGetUserId(context, out Guid loadUserId))
-            {
-                return Results.Unauthorized();
-            }
             if (!await UserOwnsChatAsync(db, load.ChatId, loadUserId))
             {
                 return Results.Forbid();
@@ -498,14 +633,8 @@ static public class ChatRequestApis
 
         app.MapDelete("/{chatId}", async (ServerDbContext db, HttpContext context, Guid chatId) =>
         {
-            if (context.Request.Cookies.ContainsKey("renux-server-token"))
+            if (TryGetUserId(context, out Guid userId))
             {
-                var userIdStr = context.User.FindFirstValue(Microsoft.IdentityModel.JsonWebTokens.JwtRegisteredClaimNames.Sub);
-                if (userIdStr == null || !Guid.TryParse(userIdStr, out var userId))
-                {
-                    return Results.Unauthorized();
-                }
-
                 var chat = await db.Chats.FirstOrDefaultAsync(c => c.Id == chatId && c.UserId == userId);
 
                 if (chat != null)
@@ -525,10 +654,166 @@ static public class ChatRequestApis
         });
     }
 
+    static private ActiveChatDto ToActiveChatDto(ActiveChat chat)
+    {
+        if (chat.Organization?.Major is null)
+        {
+            throw new InvalidOperationException($"Chat {chat.Id} has no organization/major relationship.");
+        }
+
+        return new ActiveChatDto
+        {
+            Id = chat.Id,
+            Title = chat.Title,
+            Organization = new OrganizationDto
+            {
+                Id = chat.Organization.Id,
+                Major = new MajorDto(chat.Organization.Major.Id, chat.Organization.Major.Majorname)
+            }
+        };
+    }
+
+    static private ChatMessage ToQuestionEntity(ChatMessageDto askDto, string content)
+    {
+        DateTime createdTime = askDto.CreatedTime == default
+            ? DateTime.UtcNow
+            : askDto.CreatedTime.Kind switch
+            {
+                DateTimeKind.Utc => askDto.CreatedTime,
+                DateTimeKind.Local => askDto.CreatedTime.ToUniversalTime(),
+                _ => DateTime.SpecifyKind(askDto.CreatedTime, DateTimeKind.Utc)
+            };
+
+        return new ChatMessage
+        {
+            Id = askDto.Id,
+            ChatId = askDto.ChatId,
+            IsAsk = true,
+            Content = content,
+            CreatedTime = createdTime,
+            IsCurrent = true
+        };
+    }
+
+    // PostgreSQL advisory locking serializes regenerations for one question. The
+    // partial unique indexes remain the final invariant guard in case another
+    // writer bypasses this application path.
+    private sealed record PersistReplyResult(bool Persisted, Guid? ReplyId);
+
+    static private async Task<PersistReplyResult> PersistReplyVersionAsync(
+        ServerDbContext db,
+        ChatMessage question,
+        string content,
+        List<ChatSourceDto>? sources,
+        bool isFallback,
+        string? fallbackReason,
+        bool replaceExistingCurrent,
+        string? requestId,
+        List<string>? suggestedQuestions,
+        bool? grounded,
+        double? groundingScore)
+    {
+        var strategy = db.Database.CreateExecutionStrategy();
+        Guid replyId = Guid.NewGuid();
+
+        return await strategy.ExecuteAsync(async () =>
+        {
+            // A transient retry can leave entities from the rolled-back attempt in
+            // the change tracker. Detach only answer-version writes owned here.
+            foreach (var entry in db.ChangeTracker.Entries<ChatMessage>()
+                         .Where(entry => !entry.Entity.IsAsk &&
+                                         entry.Entity.ParentQuestionId == question.Id)
+                         .ToList())
+            {
+                entry.State = EntityState.Detached;
+            }
+
+            await using var transaction = await db.Database.BeginTransactionAsync();
+            await db.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT pg_advisory_xact_lock(hashtextextended({question.Id.ToString()}, 0));");
+
+            // If a transient connection failure happened after PostgreSQL committed
+            // but before the client observed it, retrying with the same ID is
+            // idempotent and must not create yet another answer version.
+            if (await db.ChatMessages.AnyAsync(message => message.Id == replyId))
+            {
+                await transaction.CommitAsync();
+                return new PersistReplyResult(true, replyId);
+            }
+
+            var currentAnswers = await db.ChatMessages
+                .Where(message => !message.IsAsk &&
+                                  message.ParentQuestionId == question.Id &&
+                                  message.IsCurrent)
+                .ToListAsync();
+
+            if (currentAnswers.Count > 0 && !replaceExistingCurrent)
+            {
+                await transaction.CommitAsync();
+                return new PersistReplyResult(false, null);
+            }
+
+            int latestVersion = await db.ChatMessages
+                    .Where(message => !message.IsAsk &&
+                                      message.ParentQuestionId == question.Id &&
+                                      message.AnswerVersion != null)
+                    .Select(message => message.AnswerVersion)
+                    .MaxAsync()
+                ?? 0;
+
+            DateTime versionCreatedTime = DateTime.UtcNow;
+            DateTime conversationCreatedTime = await db.ChatMessages
+                    .Where(message => !message.IsAsk && message.ParentQuestionId == question.Id)
+                    .Select(message => (DateTime?)message.CreatedTime)
+                    .MinAsync()
+                ?? versionCreatedTime;
+
+            foreach (var currentAnswer in currentAnswers)
+            {
+                currentAnswer.IsCurrent = false;
+            }
+
+            // Flush the demotion before inserting the new current row. Both writes
+            // are still atomic because the transaction is committed only afterward.
+            if (currentAnswers.Count > 0)
+            {
+                await db.SaveChangesAsync();
+            }
+
+            ChatMessage reply = new()
+            {
+                Id = replyId,
+                ChatId = question.ChatId,
+                Content = content,
+                IsAsk = false,
+                // Preserve the original answer slot so regenerating an old answer
+                // does not move it to the bottom of the conversation on reload.
+                CreatedTime = conversationCreatedTime,
+                ParentQuestionId = question.Id,
+                AnswerVersion = latestVersion + 1,
+                VersionCreatedTime = versionCreatedTime,
+                IsCurrent = true,
+                SourcesJson = SerializeSources(sources),
+                RequestId = requestId,
+                SuggestedQuestionsJson = SerializeSuggestedQuestions(suggestedQuestions),
+                Grounded = grounded,
+                GroundingScore = groundingScore,
+                IsFallback = isFallback,
+                FallbackReason = fallbackReason
+            };
+
+            await db.ChatMessages.AddAsync(reply);
+            await db.SaveChangesAsync();
+            await transaction.CommitAsync();
+            return new PersistReplyResult(true, replyId);
+        });
+    }
+
     // JWT의 sub 클레임에서 사용자 GUID를 추출한다.
     static private bool TryGetUserId(HttpContext context, out Guid userId)
     {
         userId = Guid.Empty;
+        if (context.User.Identity?.IsAuthenticated != true) return false;
         var userIdStr = context.User.FindFirstValue(Microsoft.IdentityModel.JsonWebTokens.JwtRegisteredClaimNames.Sub);
         return userIdStr != null && Guid.TryParse(userIdStr, out userId);
     }
@@ -539,7 +824,10 @@ static public class ChatRequestApis
 
     static public async Task<List<ChatMessageDto>> MessagesToList(ServerDbContext db, DateTime lastTime, Guid chatId)
     {
-        var messages = await db.ChatMessages.Where(cm => Equals(cm.ChatId, chatId) && cm.CreatedTime < lastTime)
+        var messages = await db.ChatMessages
+                .Where(cm => Equals(cm.ChatId, chatId) &&
+                             cm.CreatedTime < lastTime &&
+                             (cm.IsAsk || cm.ParentQuestionId == null || cm.IsCurrent))
                 .OrderByDescending(cm => cm.CreatedTime)
                 .Take(20)
                 .ToListAsync();
@@ -547,7 +835,7 @@ static public class ChatRequestApis
         return messages.Select(message => ToDto(message)).ToList();
     }
 
-    static private ChatMessageDto ToDto(ChatMessage message, string? requestId = null)
+    static private ChatMessageDto ToDto(ChatMessage message)
     {
         return new ChatMessageDto
         {
@@ -557,7 +845,10 @@ static public class ChatRequestApis
             Content = message.Content,
             CreatedTime = message.CreatedTime,
             Sources = DeserializeSources(message.SourcesJson),
-            RequestId = requestId,
+            RequestId = message.RequestId,
+            SuggestedQuestions = DeserializeSuggestedQuestions(message.SuggestedQuestionsJson),
+            Grounded = message.Grounded,
+            GroundingScore = message.GroundingScore,
             IsFallback = message.IsFallback,
             FallbackReason = message.FallbackReason
         };
@@ -575,9 +866,25 @@ static public class ChatRequestApis
         return major;
     }
 
-    static private string? SerializeSources(List<ChatSourceDto> sources)
+    static private string? SerializeSources(List<ChatSourceDto>? sources)
     {
-        return sources.Count == 0 ? null : JsonSerializer.Serialize(sources, JsonOptions);
+        return sources is null ? null : JsonSerializer.Serialize(sources, JsonOptions);
+    }
+
+    static private string? SerializeSuggestedQuestions(List<string>? questions)
+        => questions is null ? null : JsonSerializer.Serialize(questions, JsonOptions);
+
+    static private List<string>? DeserializeSuggestedQuestions(string? questionsJson)
+    {
+        if (string.IsNullOrWhiteSpace(questionsJson)) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(questionsJson, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     static private List<ChatSourceDto>? DeserializeSources(string? sourcesJson)
@@ -620,77 +927,62 @@ static public class ChatRequestApis
         }).ToList();
     }
 
-    static private async Task<RagCallResult> CallRagAsync(
-        ToRag toRag,
-        HttpContext context,
-        IConfiguration configuration,
-        IHttpClientFactory httpClientFactory,
-        ILogger logger)
+    static private string? ReadBoundedString(JsonElement element, string propertyName, int maxLength)
     {
-        string requestId = context.TraceIdentifier;
-        var ragUrl = configuration["RagServiceUrl"] ?? configuration["RAG_SERVICE_URL"] ?? "http://rag-service:8000";
-        var timeoutSeconds = configuration.GetValue<int?>("RagServiceTimeoutSeconds") ?? 300;
-
-        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, timeoutCts.Token);
-
-        var client = httpClientFactory.CreateClient();
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{ragUrl}/ask")
+        if (!element.TryGetProperty(propertyName, out var property)
+            || property.ValueKind != JsonValueKind.String)
         {
-            Content = JsonContent.Create(toRag)
-        };
-        request.Headers.TryAddWithoutValidation("X-Request-ID", requestId);
-
-        try
-        {
-            var response = await client.SendAsync(request, linkedCts.Token);
-            var ragRequestId = response.Headers.TryGetValues("X-Request-ID", out var values)
-                ? values.FirstOrDefault() ?? requestId
-                : requestId;
-
-            if (!response.IsSuccessStatusCode)
-            {
-                var errorBody = await response.Content.ReadAsStringAsync(linkedCts.Token);
-                logger.LogWarning(
-                    "RAG request failed. RequestId={RequestId}, RagRequestId={RagRequestId}, StatusCode={StatusCode}, Retry={Retry}, Body={Body}",
-                    requestId,
-                    ragRequestId,
-                    (int)response.StatusCode,
-                    false,
-                    errorBody
-                );
-                return new RagCallResult(DefaultRagFailureMessage, ragRequestId, false, [], false, null);
-            }
-
-            var replyObj = await response.Content.ReadFromJsonAsync<Reply>(cancellationToken: linkedCts.Token);
-            return new RagCallResult(
-                replyObj?.Answer ?? DefaultRagFailureMessage,
-                ragRequestId,
-                replyObj != null,
-                MapSources(replyObj?.Sources),
-                replyObj?.FallbackTriggered ?? false,
-                replyObj?.FallbackReason
-            );
+            return null;
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !context.RequestAborted.IsCancellationRequested)
-        {
-            logger.LogWarning(
-                "RAG request timed out. RequestId={RequestId}, TimeoutSeconds={TimeoutSeconds}, Retry={Retry}",
-                requestId,
-                timeoutSeconds,
-                false
-            );
-            return new RagCallResult(DefaultRagFailureMessage, requestId, false, [], false, null);
-        }
-        catch (HttpRequestException ex)
-        {
-            logger.LogError(
-                ex,
-                "RAG request transport error. RequestId={RequestId}, Retry={Retry}",
-                requestId,
-                false
-            );
-            return new RagCallResult(DefaultRagFailureMessage, requestId, false, [], false, null);
-        }
+
+        string? value = property.GetString();
+        return string.IsNullOrWhiteSpace(value) || value.Length > maxLength ? null : value;
     }
+
+    static private bool? ReadNullableBoolean(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property)
+            || property.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            return null;
+        }
+        return property.GetBoolean();
+    }
+
+    static private double? ReadGroundingScore(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property)
+            || property.ValueKind != JsonValueKind.Number
+            || !property.TryGetDouble(out double score)
+            || double.IsNaN(score)
+            || double.IsInfinity(score)
+            || score < 0
+            || score > 1)
+        {
+            return null;
+        }
+        return score;
+    }
+
+    static private List<string> ReadSuggestedQuestions(
+        JsonElement element,
+        string propertyName = "questions",
+        List<string>? fallback = null)
+    {
+        if (!element.TryGetProperty(propertyName, out var property)
+            || property.ValueKind != JsonValueKind.Array)
+        {
+            return fallback ?? [];
+        }
+
+        return property.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String)
+            .Select(item => item.GetString()?.Trim())
+            .Where(item => !string.IsNullOrWhiteSpace(item) && item.Length <= 300)
+            .Select(item => item!)
+            .Distinct(StringComparer.Ordinal)
+            .Take(10)
+            .ToList();
+    }
+
 }

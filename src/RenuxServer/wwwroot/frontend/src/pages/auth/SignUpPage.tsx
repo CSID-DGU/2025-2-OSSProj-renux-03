@@ -378,6 +378,15 @@ const SignUpPage = () => {
               </div>
             )}
 
+            <p className="auth-privacy-note">
+              가입 시 입력하신 아이디·이름·전공은 회원 관리와 학과 맞춤 답변 제공을 위해 처리됩니다. 질문 내용은
+              답변 생성을 위해 국외(미국)로 전송되며, 자세한 내용은{' '}
+              <Link to="/privacy" target="_blank" rel="noopener noreferrer">
+                개인정보처리방침
+              </Link>
+              에서 확인하실 수 있습니다.
+            </p>
+
             <button className="auth-submit" type="submit" disabled={isSubmitting || isCheckingId}>
               {isSubmitting ? '처리 중...' : signupMode === 'council' ? '학생회 가입 요청 보내기' : '가입하기'}
             </button>
@@ -387,6 +396,9 @@ const SignUpPage = () => {
         <div className="auth-footer">
           <p>
             이미 계정이 있으신가요? <Link to="/auth/in">로그인</Link>
+          </p>
+          <p>
+            <Link to="/privacy">개인정보처리방침</Link>
           </p>
         </div>
       </div>

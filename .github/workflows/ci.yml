@@ -52,5 +52,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: src/RAG/requirements.txt
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install pytest -r requirements.txt
+        env:
+          PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+      - run: python scripts/golden_matrix.py --json
       - run: python -m py_compile api/rag_service.py src/services/router.py src/services/langchain_chat.py src/config.py
-
+      - run: python -m pytest tests/ -q
+      # No synthetic baseline is accepted. Until a complete clean-checkout HTTP
+      # run is stored here this step exits 3 and the release gate remains HOLD.
+      - run: python scripts/verify_golden_replay.py --replay-dir tests/replay/latest
+      - run: >-
+          python scripts/evaluate_golden_matrix.py
+          --results tests/replay/latest/results.jsonl
+          --manifest tests/replay/latest/manifest.json
+          --output-dir tests/replay/latest/report

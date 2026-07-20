@@ -39,5 +39,6 @@ tqdm>=4.66.4
 
 # === Optional (for local dev) ===
 requests>=2.31.0
+jsonschema>=4.22.0
 pydantic>=2.7.4
 sqlalchemy>=2.0.0

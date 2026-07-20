@@ -58,6 +58,13 @@ src/RAG/tests/evaluation_results_*.csv
 /SECURITY_LAUNCH_RUNBOOK.md
 /CLAUDE.md
 /docker-compose.yml
+/동똑이_수정_방향.md
+/동똑이_경쟁력_분석_보고서.docx
+/동똑이_런칭_플랜.docx
+# 런칭 플랜 .docx 생성용 스크립트(서비스 소스 아님)
+/build_launch_plan.py
+# 감사·기획 문서(소스 아님 — 위 *_REVIEW.md 와 같은 성격)
+/docs/
 
 # 어시스턴트/로컬 작업 디렉터리
 /.claude/

@@ -1,6 +1,20 @@
-import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { type ChangeEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import { apiFetch } from '../../api/client'
+import { mapRoleNameToUserRole } from '../../auth/roleMapping'
+import {
+  finalizeStoppedAssistant,
+  isAbortError,
+  normalizeAssistantRuns,
+  prepareRegeneration,
+  readGuestChatRecords,
+  resolveGuestChatRoute,
+  toChatPath,
+  updateGuestChatMessages,
+  upsertGuestChat,
+  writeGuestChatRecords,
+  type ChatViewMessage,
+} from '../../chat/chatState'
 import { useChatStream } from '../../hooks/useChatStream'
 import donggukLogo from '../../assets/images/dongguk-logo.png'
 import dongddokiLogo from '../../assets/images/dongddoki-logo.png'
@@ -9,36 +23,49 @@ import CopyButton from '../../components/chat/CopyButton'
 import MessageFeedback from '../../components/chat/MessageFeedback'
 import RegenerateButton from '../../components/chat/RegenerateButton'
 import SuggestedQuestions from '../../components/chat/SuggestedQuestions'
-import SourceCards, { type ChatSource } from '../../components/chat/SourceCards'
+import SourceCards from '../../components/chat/SourceCards'
 import type { Department } from '../../types/organization'
 import type { ActiveChat } from '../../types/chat'
 import type { AuthNameResponse, UserRole } from '../../types/auth'
 
-type ChatPageMessage = {
-  id: string
-  chatId: string
-  isAsk: boolean
-  content: string
-  createdTime: string | number
-  sources?: ChatSource[] | null
-  requestId?: string
-  isFallback?: boolean
-  fallbackReason?: string | null
-  suggestedQuestions?: string[]
-  grounded?: boolean
-  groundingScore?: number
+type AuthStatus = 'checking' | 'authenticated' | 'guest'
+
+// Keep this boundary in sync with the drawer media query in global.css.
+const MOBILE_LAYOUT_QUERY = '(max-width: 768px)'
+const CHAT_INPUT_MAX_LENGTH = 2000
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',')
+
+const getFocusableElements = (container: HTMLElement | null) => {
+  if (!container) return []
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+    .filter((element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true')
 }
 
-const mapRoleNameToUserRole = (roleName?: string | null): UserRole => {
-  if (!roleName) return 'STUDENT'
-  const normalized = roleName.trim().toLowerCase()
-  if (normalized.includes('관리자')) {
-    return 'UNIVERSITY_COUNCIL'
+const keepFocusInside = (event: globalThis.KeyboardEvent, container: HTMLElement | null) => {
+  if (event.key !== 'Tab') return
+  const focusable = getFocusableElements(container)
+  if (focusable.length === 0) {
+    event.preventDefault()
+    container?.focus()
+    return
   }
-  if (normalized.includes('학생회')) {
-    return 'DEPARTMENT_COUNCIL'
+
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
   }
-  return 'STUDENT'
 }
 
 const getFallbackLabel = (reason?: string | null) => {
@@ -50,7 +77,8 @@ const getFallbackLabel = (reason?: string | null) => {
 
 const HomePage = () => {
   const navigate = useNavigate()
-  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const { chatId: routeChatId } = useParams<{ chatId: string }>()
+  const [authStatus, setAuthStatus] = useState<AuthStatus>('checking')
   const [userName, setUserName] = useState<string | null>(null)
   const [departments, setDepartments] = useState<Department[]>([])
   const [departmentsLoading, setDepartmentsLoading] = useState(true)
@@ -62,9 +90,10 @@ const HomePage = () => {
   const [createChatError, setCreateChatError] = useState<string | null>(null)
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null)
   const [selectedChatTitle, setSelectedChatTitle] = useState<string | null>(null)
-  const [chatMessages, setChatMessages] = useState<ChatPageMessage[]>([])
+  const [chatMessages, setChatMessages] = useState<ChatViewMessage[]>([])
   const [chatLoading, setChatLoading] = useState(false)
   const [chatError, setChatError] = useState<string | null>(null)
+  const [unknownGuestChatId, setUnknownGuestChatId] = useState<string | null>(null)
   const [hasMoreMessages, setHasMoreMessages] = useState(true)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
   const [chatInput, setChatInput] = useState('')
@@ -77,15 +106,23 @@ const HomePage = () => {
     return 'STUDENT'
   })
   const [departmentName, setDepartmentName] = useState<string | null>(null)
-  const [entryYear, setEntryYear] = useState<string | null>(null)
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const skipLoadOnSelectRef = useRef(false)
+  const messagesEndRef = useRef<HTMLLIElement>(null)
+  const skipLoadOnSelectRef = useRef<string | null>(null)
   const isLoadingMoreRef = useRef(false)
-  const { streamMessage } = useChatStream()
+  const sidebarRef = useRef<HTMLElement | null>(null)
+  const mobileMenuButtonRef = useRef<HTMLButtonElement | null>(null)
+  const modalRef = useRef<HTMLDivElement | null>(null)
+  const modalReturnFocusRef = useRef<HTMLElement | null>(null)
+  const departmentSelectRef = useRef<HTMLSelectElement | null>(null)
+  const { streamMessage, stopStream } = useChatStream()
+  const isAuthenticated = authStatus === 'authenticated'
 
   // Mobile sidebar state
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
+  const [isMobileLayout, setIsMobileLayout] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia(MOBILE_LAYOUT_QUERY).matches,
+  )
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -94,10 +131,52 @@ const HomePage = () => {
   // Removed useEffect for auto-scrolling to bottom on chatMessages change
   // to prevent scrolling to bottom when loading older messages.
   
-  // Close sidebar when switching chats on mobile
+  const closeSidebar = useCallback((restoreFocus = true) => {
+    setIsSidebarOpen(false)
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => mobileMenuButtonRef.current?.focus())
+    }
+  }, [])
+
+  const openSidebar = () => {
+    setIsSidebarOpen(true)
+    window.requestAnimationFrame(() => getFocusableElements(sidebarRef.current)[0]?.focus())
+  }
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(MOBILE_LAYOUT_QUERY)
+    const updateLayout = () => setIsMobileLayout(mediaQuery.matches)
+    updateLayout()
+    mediaQuery.addEventListener('change', updateLayout)
+    return () => mediaQuery.removeEventListener('change', updateLayout)
+  }, [])
+
+  useEffect(() => {
+    if (!isMobileLayout) setIsSidebarOpen(false)
+  }, [isMobileLayout])
+
+  useEffect(() => {
+    if (!isMobileLayout || !isSidebarOpen || isModalOpen) return
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeSidebar()
+        return
+      }
+      keepFocusInside(event, sidebarRef.current)
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [closeSidebar, isMobileLayout, isModalOpen, isSidebarOpen])
+
+  // Close sidebar when switching chats on mobile.
   useEffect(() => {
     setIsSidebarOpen(false)
   }, [selectedChatId])
+
+  useEffect(() => () => stopStream(), [routeChatId, stopStream])
 
   const isNewChatDisabled = useMemo(() => {
     if (departmentsLoading) return true
@@ -129,7 +208,7 @@ const HomePage = () => {
       try {
         const data = await apiFetch<AuthNameResponse>('/auth/name', { method: 'GET' })
         if (data?.name) {
-          setIsAuthenticated(true)
+          setAuthStatus('authenticated')
           setUserName(data.name)
           
           const rawRole = data.roleName || data.role
@@ -143,16 +222,14 @@ const HomePage = () => {
           if (data.majorName) {
             setDepartmentName(data.majorName)
           }
-          if (data.entryYear) {
-            setEntryYear(String(data.entryYear))
-          }
+          return
         }
+        setAuthStatus('guest')
       } catch (error) {
         console.log('User is not logged in', error)
-        setIsAuthenticated(false)
+        setAuthStatus('guest')
         setUserName(null)
         setDepartmentName(null)
-        setEntryYear(null)
         setUserRole('STUDENT')
         window.localStorage.removeItem('renux-user-role')
       }
@@ -162,26 +239,24 @@ const HomePage = () => {
 
   useEffect(() => {
     const fetchActiveChats = async () => {
-      if (isAuthenticated) {
+      if (authStatus === 'checking') return
+
+      if (authStatus === 'authenticated') {
         try {
           const data = await apiFetch<ActiveChat[]>('/chat/active', { method: 'GET' })
           if (Array.isArray(data)) {
             setActiveChats(data)
-            if (!selectedChatId && data.length > 0) {
-              // 로그인 시에는 기존 선택 로직 유지 또는 필요 시 변경
-            }
           }
         } catch (error) {
           console.error('Failed to load active chats', error)
           setActiveChats([])
         }
       } else {
-        // 게스트인 경우 로컬 스토리지에서 불러오지 않음 (저장 안 함)
-        setActiveChats([])
+        setActiveChats(readGuestChatRecords(window.localStorage))
       }
     }
     fetchActiveChats()
-  }, [isAuthenticated, selectedChatId])
+  }, [authStatus])
 
   useEffect(() => {
     document.body.classList.toggle('modal-open', isModalOpen)
@@ -190,19 +265,66 @@ const HomePage = () => {
     }
   }, [isModalOpen])
 
-  const toggleModal = (open: boolean) => {
+  const resetNewChatForm = useCallback(() => {
     setCreateChatError(null)
     setSelectedDepartmentId('')
     setChatRoomTitle('')
-    setIsModalOpen(open)
-  }
+  }, [])
 
   const handleNewChatClick = () => {
-    toggleModal(true)
+    modalReturnFocusRef.current = isMobileLayout
+      ? mobileMenuButtonRef.current
+      : document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null
+    if (isMobileLayout) closeSidebar(false)
+    resetNewChatForm()
+    setIsModalOpen(true)
   }
 
-  const handleModalClose = () => {
-    toggleModal(false)
+  const handleModalClose = useCallback((restoreFocus = true) => {
+    setIsModalOpen(false)
+    resetNewChatForm()
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => modalReturnFocusRef.current?.focus())
+    }
+  }, [resetNewChatForm])
+
+  useEffect(() => {
+    if (!isModalOpen) return
+
+    window.requestAnimationFrame(() => departmentSelectRef.current?.focus())
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape' && !isCreatingChat) {
+        event.preventDefault()
+        handleModalClose()
+        return
+      }
+      keepFocusInside(event, modalRef.current)
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [handleModalClose, isCreatingChat, isModalOpen])
+
+  const storeGuestChat = useCallback((chat: ActiveChat) => {
+    const updated = upsertGuestChat(readGuestChatRecords(window.localStorage), chat)
+    writeGuestChatRecords(window.localStorage, updated)
+    setActiveChats(updated)
+  }, [])
+
+  const resizeChatInput = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      const textarea = chatInputRef.current
+      if (!textarea) return
+      textarea.style.height = 'auto'
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`
+    })
+  }, [])
+
+  const handleChatInputChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    setChatInput(event.target.value.slice(0, CHAT_INPUT_MAX_LENGTH))
+    resizeChatInput()
   }
 
   const handleCreateChat = async (event: FormEvent<HTMLFormElement>) => {
@@ -232,17 +354,20 @@ const HomePage = () => {
         method: 'POST',
         json: { org: selectedOrg, title: trimmedTitle },
       })
-      if (!isAuthenticated) {
-        saveGuestChat(chatRoom)
+      if (authStatus === 'guest') {
+        storeGuestChat(chatRoom)
+      } else {
+        setActiveChats((prev) => [chatRoom, ...prev])
       }
-
-      setActiveChats((prev) => [chatRoom, ...prev])
       
-      toggleModal(false)
-      setSelectedChatId(chatRoom.id)
-      setSelectedChatTitle(chatRoom.title ?? trimmedTitle)
+      handleModalClose(false)
       setChatMessages([])
       setChatError(null)
+      navigate(toChatPath(chatRoom.id))
+      window.requestAnimationFrame(() => {
+        resizeChatInput()
+        chatInputRef.current?.focus()
+      })
     } catch (error) {
       console.error('Failed to create chat room', error)
       setCreateChatError('채팅방을 생성하지 못했습니다. 잠시 후 다시 시도해주세요.')
@@ -285,10 +410,12 @@ const HomePage = () => {
   }
 
   const handleSelectChat = (chat: ActiveChat) => {
-    setSelectedChatId(chat.id)
-    setSelectedChatTitle(chat.title ?? '채팅방')
-    setChatMessages([])
-    setChatError(null)
+    if (chatSending) return
+    if (isMobileLayout) {
+      closeSidebar(false)
+      window.requestAnimationFrame(() => chatInputRef.current?.focus())
+    }
+    navigate(toChatPath(chat.id))
   }
 
   const loadMessages = useCallback(async (chatIdToLoad: string) => {
@@ -296,12 +423,12 @@ const HomePage = () => {
       setChatLoading(true)
       setChatError(null)
       setHasMoreMessages(true)
-      const data = await apiFetch<ChatPageMessage[]>('/chat/load', {
+      const data = await apiFetch<ChatViewMessage[]>('/chat/load', {
         method: 'POST',
         json: { chatId: chatIdToLoad, lastTime: new Date().toISOString() },
       })
       if (Array.isArray(data)) {
-        setChatMessages(data.reverse())
+        setChatMessages(normalizeAssistantRuns([...data].reverse()))
         if (data.length < 20) setHasMoreMessages(false)
         setTimeout(scrollToBottom, 100) 
       } else {
@@ -318,7 +445,7 @@ const HomePage = () => {
   }, [scrollToBottom])
 
   const loadMoreMessages = async () => {
-    if (!selectedChatId || isLoadingMoreRef.current || !hasMoreMessages || chatMessages.length === 0) return
+    if (!isAuthenticated || !selectedChatId || isLoadingMoreRef.current || !hasMoreMessages || chatMessages.length === 0) return
 
     const firstMessageTime = chatMessages[0].createdTime
     const container = document.querySelector('.home-chat__thread-wrapper') as HTMLDivElement
@@ -328,13 +455,13 @@ const HomePage = () => {
       setIsLoadingMore(true)
       isLoadingMoreRef.current = true
       
-      const data = await apiFetch<ChatPageMessage[]>('/chat/load', {
+      const data = await apiFetch<ChatViewMessage[]>('/chat/load', {
         method: 'POST',
         json: { chatId: selectedChatId, lastTime: firstMessageTime },
       })
       if (Array.isArray(data) && data.length > 0) {
-        const newMessages = data.reverse()
-        setChatMessages((prev) => [...newMessages, ...prev])
+        const newMessages = [...data].reverse()
+        setChatMessages((prev) => normalizeAssistantRuns([...newMessages, ...prev]))
         
         setTimeout(() => {
             if (container) {
@@ -358,56 +485,110 @@ const HomePage = () => {
   }
 
   useEffect(() => {
-    if (!selectedChatId) return
-    if (skipLoadOnSelectRef.current) {
-      skipLoadOnSelectRef.current = false
+    if (authStatus === 'checking') return
+
+    if (!routeChatId) {
+      setSelectedChatId(null)
+      setSelectedChatTitle(null)
+      setChatMessages([])
+      setChatError(null)
+      setUnknownGuestChatId(null)
+      setHasMoreMessages(false)
       return
     }
-    loadMessages(selectedChatId)
-  }, [loadMessages, selectedChatId])
 
-  const sendChatMessage = async (text: string, chatId: string | number) => {
-    const resolvedChatId = String(chatId)
-    const newMsg: ChatPageMessage = {
-      id: typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
-      chatId: resolvedChatId,
-      isAsk: true,
-      content: text,
-      createdTime: new Date().toISOString(),
+    if (skipLoadOnSelectRef.current === routeChatId) {
+      skipLoadOnSelectRef.current = null
+      setUnknownGuestChatId(null)
+      return
     }
 
-    // 스트리밍 토큰을 채워 넣을 빈 봇 말풍선을 미리 추가(내용이 비면 타이핑 인디케이터로 렌더)
-    const botMessageId = typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `bot-${Date.now()}`
-    const botPlaceholder: ChatPageMessage = {
-      id: botMessageId,
-      chatId: resolvedChatId,
-      isAsk: false,
-      content: '',
-      createdTime: new Date().toISOString(),
-      sources: [],
+    if (authStatus === 'guest') {
+      const records = readGuestChatRecords(window.localStorage)
+      const route = resolveGuestChatRoute(routeChatId, records)
+      setActiveChats(records)
+      setHasMoreMessages(false)
+      setChatLoading(false)
+      setChatError(null)
+
+      if (route.kind === 'unknown') {
+        setSelectedChatId(null)
+        setSelectedChatTitle(null)
+        setChatMessages([])
+        setUnknownGuestChatId(route.chatId)
+        return
+      }
+
+      if (route.kind === 'known') {
+        setSelectedChatId(route.chat.id)
+        setSelectedChatTitle(route.chat.title ?? '채팅방')
+        setChatMessages(normalizeAssistantRuns(route.chat.messages ?? []))
+        setUnknownGuestChatId(null)
+        setTimeout(scrollToBottom, 0)
+      }
+      return
     }
 
-    // 내 메시지 + 빈 봇 말풍선을 함께 추가
-    setChatMessages((prev) => [...prev, newMsg, botPlaceholder])
+    setSelectedChatId(routeChatId)
+    setSelectedChatTitle('채팅방')
+    setUnknownGuestChatId(null)
+    loadMessages(routeChatId)
+  }, [authStatus, loadMessages, routeChatId, scrollToBottom])
+
+  useEffect(() => {
+    if (!selectedChatId) return
+    const selected = activeChats.find((chat) => chat.id === selectedChatId)
+    if (selected?.title) setSelectedChatTitle(selected.title)
+  }, [activeChats, selectedChatId])
+
+  useEffect(() => {
+    if (
+      authStatus !== 'guest'
+      || !selectedChatId
+      || unknownGuestChatId
+      || chatLoading
+      || chatSending
+    ) return
+
+    const updated = updateGuestChatMessages(
+      readGuestChatRecords(window.localStorage),
+      selectedChatId,
+      chatMessages,
+    )
+    writeGuestChatRecords(window.localStorage, updated)
+    setActiveChats(updated)
+  }, [authStatus, chatLoading, chatMessages, chatSending, selectedChatId, unknownGuestChatId])
+
+  const streamIntoAssistant = async (
+    question: ChatViewMessage,
+    assistantId: string,
+    restoreInputOnError: boolean,
+  ) => {
     setChatSending(true)
     setChatError(null)
-
     setTimeout(scrollToBottom, 0)
 
     try {
       const { receivedAny } = await streamMessage(
-        { id: newMsg.id, chatId: resolvedChatId, content: text, createdTime: newMsg.createdTime },
+        {
+          id: question.id,
+          chatId: question.chatId,
+          content: question.content,
+          createdTime: typeof question.createdTime === 'string'
+            ? question.createdTime
+            : new Date().toISOString(),
+        },
         {
           onText: (accumulated) => {
             setChatMessages((prev) =>
-              prev.map((msg) => (msg.id === botMessageId ? { ...msg, content: accumulated } : msg)),
+              prev.map((msg) => (msg.id === assistantId ? { ...msg, content: accumulated } : msg)),
             )
             setTimeout(scrollToBottom, 0)
           },
           onMetadata: (meta) =>
             setChatMessages((prev) =>
               prev.map((msg) =>
-                msg.id === botMessageId
+                msg.id === assistantId
                   ? {
                       ...msg,
                       sources: meta.sources,
@@ -420,51 +601,85 @@ const HomePage = () => {
             ),
           onSuggestions: (questions) =>
             setChatMessages((prev) =>
-              prev.map((msg) => (msg.id === botMessageId ? { ...msg, suggestedQuestions: questions } : msg)),
+              prev.map((msg) => (msg.id === assistantId ? { ...msg, suggestedQuestions: questions } : msg)),
             ),
           onGrounding: ({ grounded, groundingScore }) =>
             setChatMessages((prev) =>
-              prev.map((msg) => (msg.id === botMessageId ? { ...msg, grounded, groundingScore } : msg)),
+              prev.map((msg) => (msg.id === assistantId ? { ...msg, grounded, groundingScore } : msg)),
             ),
-          onRetry: (attempt) => {
-            setChatError(`연결이 끊겨 재시도 중입니다. (${attempt}/2)`)
-            setChatMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === botMessageId
-                  ? { ...msg, content: '응답 연결을 다시 시도하고 있습니다...', isFallback: true }
-                  : msg,
-              ),
-            )
-            setTimeout(scrollToBottom, 0)
-          },
         },
       )
 
-      // 토큰을 하나도 받지 못하면 빈 말풍선 대신 안내 문구로 대체
       if (!receivedAny) {
         setChatMessages((prev) =>
           prev.map((msg) =>
-            msg.id === botMessageId
-              ? { ...msg, content: '응답을 받지 못했습니다. 잠시 후 다시 시도해주세요.', isFallback: true }
+            msg.id === assistantId
+              ? { ...msg, content: '응답을 받지 못했습니다. 다시 생성해주세요.', isFallback: true }
               : msg,
           ),
         )
       }
       setTimeout(scrollToBottom, 100)
     } catch (err) {
-      console.error('Failed to send message', err)
-      setChatError('메시지를 전송하지 못했습니다.')
-      setChatMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === botMessageId
-            ? { ...msg, content: '응답 연결이 끊겼습니다. 입력창의 메시지로 다시 시도해주세요.', isFallback: true }
-            : msg,
-        ),
-      )
-      setChatInput(text)
+      if (isAbortError(err)) {
+        setChatError(null)
+        setChatMessages((prev) => finalizeStoppedAssistant(prev, assistantId))
+      } else {
+        console.error('Failed to send message', err)
+        setChatError('메시지를 전송하지 못했습니다.')
+        setChatMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantId
+              ? { ...msg, content: '응답 연결이 끊겼습니다. 재생성 버튼으로 다시 시도해주세요.', isFallback: true }
+              : msg,
+          ),
+        )
+        if (restoreInputOnError) {
+          setChatInput(question.content)
+          resizeChatInput()
+        }
+      }
     } finally {
       setChatSending(false)
     }
+  }
+
+  const sendChatMessage = async (text: string, chatId: string | number) => {
+    const resolvedChatId = String(chatId)
+    const newMsg: ChatViewMessage = {
+      id: typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+      chatId: resolvedChatId,
+      isAsk: true,
+      content: text,
+      createdTime: new Date().toISOString(),
+    }
+
+    // 스트리밍 토큰을 채워 넣을 빈 봇 말풍선을 미리 추가(내용이 비면 타이핑 인디케이터로 렌더)
+    const botMessageId = typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `bot-${Date.now()}`
+    const botPlaceholder: ChatViewMessage = {
+      id: botMessageId,
+      chatId: resolvedChatId,
+      isAsk: false,
+      content: '',
+      createdTime: new Date().toISOString(),
+      sources: [],
+    }
+
+    // 내 메시지 + 빈 봇 말풍선을 함께 추가
+    setChatMessages((prev) => [...prev, newMsg, botPlaceholder])
+    await streamIntoAssistant(newMsg, botMessageId, true)
+  }
+
+  const regenerateChatMessage = async (assistantId: string) => {
+    if (chatSending) return
+    const prepared = prepareRegeneration(chatMessages, assistantId)
+    if (!prepared) {
+      setChatError('재생성할 질문을 찾지 못했습니다.')
+      return
+    }
+
+    setChatMessages(prepared.messages)
+    await streamIntoAssistant(prepared.question, prepared.assistant.id, false)
   }
 
   const handleChatSubmit = async (event: FormEvent<HTMLFormElement> | KeyboardEvent<HTMLTextAreaElement>) => {
@@ -473,6 +688,10 @@ const HomePage = () => {
     const trimmed = chatInput.trim()
     if (!trimmed) {
       setChatError('메시지를 입력해주세요.')
+      return
+    }
+    if (trimmed.length > CHAT_INPUT_MAX_LENGTH) {
+      setChatError(`메시지는 ${CHAT_INPUT_MAX_LENGTH.toLocaleString()}자까지 입력할 수 있습니다.`)
       return
     }
 
@@ -495,29 +714,29 @@ const HomePage = () => {
           json: { org: defaultOrg, title },
         })
 
-        if (!isAuthenticated) {
-          // 게스트도 새로고침 후 사이드바에서 채팅방을 다시 찾을 수 있도록 저장
-          // (수동 생성 경로 handleCreateChat과 동일한 동작으로 통일)
-          saveGuestChat(chatRoom)
+        if (authStatus === 'guest') {
+          storeGuestChat(chatRoom)
+        } else {
+          setActiveChats((prev) => [chatRoom, ...prev])
         }
 
         currentChatId = chatRoom.id
-        setActiveChats((prev) => [chatRoom, ...prev])
-        
-        // 중요: useEffect에 의한 loadMessages가 실행되지 않도록 플래그 설정
-        skipLoadOnSelectRef.current = true
+        // URL effect가 방금 준비한 메시지 상태를 다시 덮어쓰지 않게 한 번만 건너뛴다.
+        skipLoadOnSelectRef.current = chatRoom.id
         setSelectedChatId(chatRoom.id)
         setSelectedChatTitle(chatRoom.title ?? title)
+        setUnknownGuestChatId(null)
+        navigate(toChatPath(chatRoom.id))
 
         // 방금 생성된 방의 환영 메시지를 수동으로 가져옴
-        const initialData = await apiFetch<ChatPageMessage[]>('/chat/load', {
+        const initialData = await apiFetch<ChatViewMessage[]>('/chat/load', {
           method: 'POST',
           json: { chatId: chatRoom.id, lastTime: new Date().toISOString() },
         })
         
         // 환영 메시지 설정 (있다면)
         if (Array.isArray(initialData)) {
-           setChatMessages(initialData.reverse())
+           setChatMessages(normalizeAssistantRuns([...initialData].reverse()))
         } else {
            setChatMessages([])
         }
@@ -531,6 +750,7 @@ const HomePage = () => {
     }
 
     setChatInput('')
+    resizeChatInput()
     await sendChatMessage(trimmed, currentChatId)
   }
 
@@ -557,38 +777,10 @@ const HomePage = () => {
     return new Intl.DateTimeFormat('ko-KR', { hour: 'numeric', minute: '2-digit' }).format(date)
   }
 
-  const loadGuestChats = (): ActiveChat[] => {
-    if (typeof window === 'undefined') return []
-    try {
-      const stored = window.localStorage.getItem('renux-guest-chats')
-      return stored ? JSON.parse(stored) : []
-    } catch (e) {
-      console.error('Failed to load guest chats', e)
-      return []
-    }
-  }
-
-  const saveGuestChat = (chat: ActiveChat) => {
-    if (typeof window === 'undefined') return
-    try {
-      const current = loadGuestChats()
-      // 중복 방지
-      if (current.find((c) => c.id === chat.id)) return
-      const updated = [chat, ...current]
-      window.localStorage.setItem('renux-guest-chats', JSON.stringify(updated))
-    } catch (e) {
-      console.error('Failed to save guest chat', e)
-    }
-  }
-
   const starterQuestions = useMemo(() => {
     const dept = isAuthenticated ? (departmentName ?? '').trim() : ''
-    const year = isAuthenticated ? (entryYear ?? '').trim() : ''
     const questions: string[] = []
 
-    if (dept && year) {
-      questions.push(`${year}학번 ${dept} 졸업기준 알려줘`)
-    }
     if (dept) {
       questions.push(`${dept} 전공필수 과목 알려줘`)
       questions.push(`${dept} 사무실 연락처 알려줘`)
@@ -607,11 +799,12 @@ const HomePage = () => {
     }
 
     return Array.from(new Set(questions)).slice(0, 6)
-  }, [departmentName, entryYear, isAuthenticated, userRole])
+  }, [departmentName, isAuthenticated, userRole])
 
   const handleStarterQuestionSelect = (question: string) => {
     setChatInput(question)
     window.requestAnimationFrame(() => {
+      resizeChatInput()
       chatInputRef.current?.focus()
     })
   }
@@ -621,11 +814,21 @@ const HomePage = () => {
       {/* Mobile Backdrop */}
       <div 
         className={`mobile-backdrop ${isSidebarOpen ? 'open' : ''}`} 
-        onClick={() => setIsSidebarOpen(false)}
-        aria-hidden={!isSidebarOpen}
+        onClick={() => closeSidebar()}
+        aria-hidden="true"
       />
 
-      <aside className={`gpt-home__sidebar ${isSidebarOpen ? 'mobile-open' : ''}`}>
+      <aside
+        ref={sidebarRef}
+        id="chat-navigation-drawer"
+        className={`gpt-home__sidebar ${isSidebarOpen ? 'mobile-open' : ''}`}
+        role={isMobileLayout ? 'dialog' : undefined}
+        aria-label="채팅 목록 및 계정"
+        aria-modal={isMobileLayout && isSidebarOpen ? true : undefined}
+        aria-hidden={isMobileLayout && !isSidebarOpen ? true : undefined}
+        inert={isMobileLayout && !isSidebarOpen}
+        tabIndex={isMobileLayout ? -1 : undefined}
+      >
         <div className="gpt-home__brand">
           <div className="home-logo-row">
             <img src={donggukLogo} alt="Dongguk University" className="home-logo home-logo--univ" />
@@ -633,7 +836,7 @@ const HomePage = () => {
 
         </div>
 
-        <button type="button" className="gpt-home__new" onClick={handleNewChatClick} disabled={isHeroPrimaryDisabled}>
+        <button type="button" className="gpt-home__new" onClick={handleNewChatClick} disabled={isHeroPrimaryDisabled || chatSending}>
           + 새 대화
         </button>
 
@@ -643,9 +846,17 @@ const HomePage = () => {
           </div>
           <ul className="gpt-home__chat-list">
             {visibleChats.map((chat) => (
-              <li key={chat.id} className="gpt-home__chat-item" onClick={() => handleSelectChat(chat)}>
-                <span className="gpt-home__chat-title">{chat.title ?? '제목 없음'}</span>
-                <span className="gpt-home__chat-sub">대화 이어가기</span>
+              <li key={chat.id}>
+                <button
+                  type="button"
+                  className="gpt-home__chat-item"
+                  onClick={() => handleSelectChat(chat)}
+                  disabled={chatSending}
+                  aria-current={selectedChatId === chat.id ? 'page' : undefined}
+                >
+                  <span className="gpt-home__chat-title">{chat.title ?? '제목 없음'}</span>
+                  <span className="gpt-home__chat-sub">대화 이어가기</span>
+                </button>
               </li>
             ))}
             {visibleChats.length === 0 && (
@@ -699,11 +910,13 @@ const HomePage = () => {
       <div className="buddy-topbar">
           <div className="buddy-topbar__brand">
             <button 
+              ref={mobileMenuButtonRef}
               type="button" 
               className="mobile-menu-btn"
-              onClick={() => setIsSidebarOpen(true)}
+              onClick={openSidebar}
               aria-label="채팅 목록 열기"
               aria-expanded={isSidebarOpen}
+              aria-controls="chat-navigation-drawer"
             >
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="3" y1="12" x2="21" y2="12"></line>
@@ -779,6 +992,9 @@ const HomePage = () => {
 
             <div
               className="home-chat__thread-wrapper"
+              role="region"
+              aria-label="대화 내용"
+              aria-busy={chatLoading || chatSending}
               onScroll={(e) => {
                 const target = e.currentTarget
                 // 정확히 0이 아닌 근접 임계값 — 관성 스크롤로 0을 스치지 못해도 로드되도록
@@ -789,8 +1005,18 @@ const HomePage = () => {
             >
               {chatLoading ? (
                 <p className="home-chat__status">채팅을 불러오는 중...</p>
-              ) : chatError ? (
-                <p className="home-chat__status home-chat__status--error">{chatError}</p>
+              ) : unknownGuestChatId ? (
+                <div className="home-guide">
+                  <h3>이 기기에 저장된 대화가 아닙니다</h3>
+                  <p>게스트 대화는 대화를 시작한 기기의 브라우저에만 저장됩니다.</p>
+                  <button
+                    type="button"
+                    className="hero-btn hero-btn--primary"
+                    onClick={() => navigate('/')}
+                  >
+                    새 대화 시작
+                  </button>
+                </div>
               ) : !selectedChatId ? (
                 <div className="home-guide">
                   <div className="home-guide__starters">
@@ -834,7 +1060,7 @@ const HomePage = () => {
               ) : chatMessages.length === 0 ? (
                 <div className="home-chat__empty">아직 메시지가 없습니다. 첫 메시지를 보내보세요.</div>
               ) : (
-                <ul className="chat-bubbles">
+                <ul className="chat-bubbles" role="log" aria-live="polite" aria-busy={chatSending} aria-label="채팅 메시지">
                   {isLoadingMore && <li className="home-chat__status"><small>이전 대화 불러오는 중...</small></li>}
 
                   {chatMessages.map((message, index) => {
@@ -850,10 +1076,13 @@ const HomePage = () => {
                         className={`chat-bubble ${message.isAsk ? 'chat-bubble--user' : 'chat-bubble--bot'} ${!message.isAsk && message.isFallback ? 'chat-bubble--fallback' : ''}`}
                       >
                         {isStreamingPlaceholder ? (
-                          <div className="typing-indicator">
-                            <div className="typing-dot"></div>
-                            <div className="typing-dot"></div>
-                            <div className="typing-dot"></div>
+                          <div className="typing-indicator" role="status" aria-live="polite">
+                            <span className="visually-hidden">동똑이가 답변을 작성 중입니다.</span>
+                            <div className="typing-indicator__dots" aria-hidden="true">
+                              <span className="typing-dot"></span>
+                              <span className="typing-dot"></span>
+                              <span className="typing-dot"></span>
+                            </div>
                           </div>
                         ) : (
                           <>
@@ -882,13 +1111,16 @@ const HomePage = () => {
                             {!message.isAsk && message.content.trim().length > 0 && previousUserMessage && selectedChatId && (
                               <RegenerateButton
                                 disabled={chatSending}
-                                onRegenerate={() => sendChatMessage(previousUserMessage.content, selectedChatId)}
+                                onRegenerate={() => regenerateChatMessage(message.id)}
                               />
                             )}
-                            {!message.isAsk && message.requestId && <MessageFeedback requestId={message.requestId} />}
+                            {!message.isAsk && message.requestId && (
+                              <MessageFeedback requestId={message.requestId} disabled={chatSending} />
+                            )}
                             {!message.isAsk && (
                               <SuggestedQuestions
                                 questions={message.suggestedQuestions ?? []}
+                                requestId={message.requestId}
                                 disabled={chatSending}
                                 onSelect={(question) => {
                                   if (selectedChatId) {
@@ -903,20 +1135,22 @@ const HomePage = () => {
                       </li>
                     )
                   })}
-                  <div ref={messagesEndRef} />
+                  <li className="chat-bubbles__end" ref={messagesEndRef} aria-hidden="true" />
                 </ul>
               )}
             </div>
 
-            <form className="home-chat__composer" onSubmit={handleChatSubmit}>
+            <form className="home-chat__composer" onSubmit={handleChatSubmit} aria-busy={chatSending}>
               <div className="home-chat__input-wrapper">
                 <textarea
                   ref={chatInputRef}
                   aria-label="채팅 메시지"
+                  aria-describedby="chat-input-contract"
+                  aria-invalid={chatError ? true : undefined}
                   className="home-chat__input"
                   placeholder={selectedChatId ? '무엇이든 물어보세요' : '무엇이든 물어보세요 (새 대화가 자동으로 시작됩니다)'}
                   value={chatInput}
-                  onChange={(event) => setChatInput(event.target.value)}
+                  onChange={handleChatInputChange}
                   onKeyDown={(event) => {
                     // isComposing: 한글 조합 중 Enter가 글자 확정+전송으로 이중 동작하는 것 방지
                     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -924,38 +1158,63 @@ const HomePage = () => {
                       handleChatSubmit(event)
                     }
                   }}
-                  rows={3}
-                  disabled={chatSending || (departmentsLoading && !selectedChatId)}
+                  rows={1}
+                  maxLength={CHAT_INPUT_MAX_LENGTH}
+                  disabled={chatSending || Boolean(unknownGuestChatId) || (departmentsLoading && !selectedChatId)}
                 />
-                <button
-                  className="hero-btn hero-btn--primary home-chat__send-btn"
-                  type="submit"
-                  disabled={chatSending || (departmentsLoading && !selectedChatId)}
-                  aria-label="메시지 보내기"
-                >
-                  {chatSending ? '전송 중...' : '보내기'}
-                </button>
+                {chatSending ? (
+                  <button
+                    className="hero-btn hero-btn--primary home-chat__send-btn"
+                    type="button"
+                    onClick={stopStream}
+                    aria-label="답변 생성 중단"
+                  >
+                    중단
+                  </button>
+                ) : (
+                  <button
+                    className="hero-btn hero-btn--primary home-chat__send-btn"
+                    type="submit"
+                    disabled={Boolean(unknownGuestChatId) || (departmentsLoading && !selectedChatId)}
+                    aria-label="메시지 보내기"
+                  >
+                    보내기
+                  </button>
+                )}
               </div>
-              {chatError && <span className="home-chat__error">{chatError}</span>}
+              <div className="home-chat__composer-meta" id="chat-input-contract">
+                <span>Enter로 전송 · Shift+Enter로 줄바꿈</span>
+                <span aria-label={`${CHAT_INPUT_MAX_LENGTH}자 중 ${chatInput.length}자 입력`}>{chatInput.length}/{CHAT_INPUT_MAX_LENGTH}</span>
+              </div>
+              {chatError && <span className="home-chat__error" role="alert">{chatError}</span>}
             </form>
           </section>
         </main>
       {isModalOpen && (
-        <div className="modal fade show" style={{ display: 'block' }} role="dialog">
+        <div
+          ref={modalRef}
+          className="modal fade show"
+          style={{ display: 'block' }}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="new-chat-modal-title"
+          tabIndex={-1}
+        >
           <div className="modal-dialog">
             <div className="modal-content">
               <div className="modal-header">
-                <h5 className="modal-title">새 채팅 만들기</h5>
-                <button type="button" className="btn-close" aria-label="Close" onClick={handleModalClose} />
+                <h5 className="modal-title" id="new-chat-modal-title">새 채팅 만들기</h5>
+                <button type="button" className="btn-close" aria-label="새 채팅 창 닫기" onClick={() => handleModalClose()} />
               </div>
               <form onSubmit={handleCreateChat}>
                 <div className="modal-body">
-                  {createChatError && <div className="alert alert-danger">{createChatError}</div>}
+                  {createChatError && <div className="alert alert-danger" role="alert">{createChatError}</div>}
                   <div className="mb-3">
                     <label className="form-label" htmlFor="department-select">
                       학과 선택
                     </label>
                     <select
+                      ref={departmentSelectRef}
                       id="department-select"
                       className="form-select"
                       value={selectedDepartmentId}
@@ -986,7 +1245,7 @@ const HomePage = () => {
                   </div>
                 </div>
                 <div className="modal-footer">
-                  <button type="button" className="btn btn-secondary" onClick={handleModalClose}>
+                  <button type="button" className="btn btn-secondary" onClick={() => handleModalClose()}>
                     닫기
                   </button>
                   <button type="submit" className="btn btn-primary" disabled={isCreatingChat || isNewChatDisabled}>

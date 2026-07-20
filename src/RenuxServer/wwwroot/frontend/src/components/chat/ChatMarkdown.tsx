@@ -26,6 +26,11 @@ const ChatMarkdown = ({ content, onCitationClick }: ChatMarkdownProps) => {
       remarkPlugins={[remarkGfm]}
       rehypePlugins={[[rehypeExternalLinks, { target: '_blank', rel: ['noopener', 'noreferrer'] }]]}
       components={{
+        table: ({ node: _node, children, ...props }) => (
+          <div className="chat-markdown__table-scroll" role="region" aria-label="답변 표" tabIndex={0}>
+            <table {...props}>{children}</table>
+          </div>
+        ),
         a: ({ href, children, ...props }) => {
           if (href?.startsWith(CITATION_LINK_PREFIX)) {
             const citationNumber = Number(href.slice(CITATION_LINK_PREFIX.length))
@@ -51,7 +56,6 @@ const ChatMarkdown = ({ content, onCitationClick }: ChatMarkdownProps) => {
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              style={{ color: '#0d6efd', textDecoration: 'underline', pointerEvents: 'auto', cursor: 'pointer' }}
               onClick={(event) => event.stopPropagation()}
             >
               {children}

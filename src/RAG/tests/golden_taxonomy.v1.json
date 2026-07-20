@@ -1,0 +1,19 @@
+{
+  "version": "student-domain-app-intent-v1",
+  "app_intents": ["notices", "rules", "schedule", "staff", "courses", "meals", "unknown"],
+  "description": "Product domains describe student needs. App intents are the seven identifiers emitted/used by the current RAG service and are never treated as product-domain labels.",
+  "product_domain_to_app_intents": {
+    "academic-calendar": ["schedule", "notices", "rules"],
+    "registration": ["courses", "rules", "notices", "schedule"],
+    "graduation": ["rules", "notices", "courses", "schedule"],
+    "scholarship": ["notices", "rules", "staff"],
+    "academic-status": ["rules", "notices", "staff", "schedule"],
+    "campus-life": ["notices", "staff", "unknown"],
+    "dining": ["meals", "notices", "unknown"],
+    "housing": ["notices", "rules", "staff", "schedule"],
+    "career": ["notices", "staff", "rules", "courses", "schedule"],
+    "international": ["notices", "rules", "staff", "schedule"],
+    "people-services": ["staff", "notices"],
+    "student-community": ["notices", "rules", "unknown"]
+  }
+}

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using RenuxServer.DbContexts;
 using RenuxServer.Models;
+using RenuxServer.Services;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text.Json;
@@ -144,6 +145,29 @@ static public class AdminProxyApis
             response.StatusCode = (int)proxyRes.StatusCode;
             var contentStream = await proxyRes.Content.ReadAsStreamAsync();
             return Results.Stream(contentStream, contentType: proxyRes.Content.Headers.ContentType?.ToString() ?? "application/json");
+        }));
+
+        RequireUniversityLevel(app.MapGet("product-kpis", async (
+            DateTime? from,
+            DateTime? to,
+            ServerDbContext db,
+            HttpContext context) =>
+        {
+            DateTime safeTo = to ?? DateTime.UtcNow;
+            DateTime safeFrom = from ?? safeTo.AddDays(-30);
+            try
+            {
+                var report = await ProductTelemetry.BuildKpiReportAsync(
+                    db,
+                    safeFrom,
+                    safeTo,
+                    context.RequestAborted);
+                return Results.Ok(report);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return Results.BadRequest(new { message = "조회 기간은 1분 이상 366일 이하여야 합니다." });
+            }
         }));
 
         RequireUniversityLevel(app.MapGet("rag-logs-list", async (HttpRequest request, HttpResponse response, ServerDbContext db, IHttpClientFactory httpClientFactory, ILogger<Program> logger) =>

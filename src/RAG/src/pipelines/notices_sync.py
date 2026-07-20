@@ -34,7 +34,7 @@ from src.pipelines.ingest import (
 from src.utils.preprocess import standardize_date
 from src.vectorstore.chroma_client import count_items, delete_items, reset_collection, upsert_items
 
-NOTICE_SCHEMA_VERSION = 1
+NOTICE_SCHEMA_VERSION = 2
 NOTICE_COLLECTION = DATASET_ARTIFACTS["notices"].collection
 AUTO_NOTICE_FILTER = (Notice.is_manual == 0) | (Notice.is_manual.is_(None))
 NOTICE_REQUIRED_FIELDS = {
@@ -43,6 +43,7 @@ NOTICE_REQUIRED_FIELDS = {
     "board_name": "게시판명이 비어 있습니다.",
     "board_code": "게시판 코드가 비어 있습니다.",
 }
+BOARD_NAMES_BY_CODE = {code: name for name, code in BOARD_CODES.items()}
 
 
 @dataclass
@@ -117,6 +118,29 @@ def _hash_notice_content(record: dict[str, Any]) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
+def _canonical_notice_category(
+    category: Any,
+    board_name: Any,
+    board_code: Any,
+) -> tuple[str, str, str, str]:
+    """Return effective/original/source/fallback category values.
+
+    Board fallback is a coarse official board label, not an inferred detailed
+    topic. Existing list/detail categories always win.
+    """
+    original = str(category or "").strip()
+    if original:
+        return original, original, "list", ""
+    code = str(board_code or "").strip()
+    name = str(board_name or "").strip()
+    fallback = BOARD_NAMES_BY_CODE.get(code)
+    if fallback is None and name in BOARD_CODES:
+        fallback = name
+    if fallback:
+        return fallback, "", "board_fallback", fallback
+    return "", "", "missing", ""
+
+
 def _normalize_notice_record(row: pd.Series) -> tuple[dict[str, Any], bool]:
     detail_url = str(row.get("상세URL") or row.get("detail_url") or "").strip()
     board_name = str(row.get("게시판") or row.get("board_name") or "").strip()
@@ -127,6 +151,11 @@ def _normalize_notice_record(row: pd.Series) -> tuple[dict[str, Any], bool]:
     attachments, attachments_parse_failed = _normalize_attachments(row.get("첨부파일") or row.get("attachments"))
 
     published_at = standardize_date(row.get("게시일") or row.get("posted_at"))
+    effective_category, original_category, category_source, category_fallback = _canonical_notice_category(
+        row.get("카테고리") or row.get("category"),
+        board_name,
+        board_code,
+    )
     normalized = {
         "document_key": document_key,
         "dataset": "notices",
@@ -136,7 +165,10 @@ def _normalize_notice_record(row: pd.Series) -> tuple[dict[str, Any], bool]:
         "board_code": board_code,
         "article_id": article_id,
         "title": str(row.get("제목") or row.get("title") or "").strip(),
-        "category": str(row.get("카테고리") or row.get("category") or "").strip(),
+        "category": effective_category,
+        "category_original": original_category,
+        "category_source": category_source,
+        "category_board_fallback": category_fallback,
         "published_at": published_at or "",
         "detail_url": detail_url,
         "content_text": str(row.get("본문") or row.get("content_text") or "").strip(),
@@ -280,6 +312,9 @@ def _export_active_notices_csv(session) -> None:
                 "원문글ID": normalized.get("article_id", ""),
                 "제목": normalized.get("title", ""),
                 "카테고리": normalized.get("category", ""),
+                "카테고리원본": normalized.get("category_original", normalized.get("category", "")),
+                "카테고리출처": normalized.get("category_source", "list" if normalized.get("category") else "missing"),
+                "카테고리게시판대체": normalized.get("category_board_fallback", ""),
                 "게시일": normalized.get("published_at", ""),
                 "상단고정": normalized.get("is_pinned", False),
                 "상세URL": normalized.get("detail_url", ""),
@@ -303,6 +338,9 @@ def _normalized_notice_to_notice_row(normalized: dict[str, Any], *, db_id: int |
         "문서키": normalized.get("document_key", ""),
         "제목": normalized.get("title", ""),
         "카테고리": normalized.get("category", ""),
+        "카테고리원본": normalized.get("category_original", normalized.get("category", "")),
+        "카테고리출처": normalized.get("category_source", "list" if normalized.get("category") else "missing"),
+        "카테고리게시판대체": normalized.get("category_board_fallback", ""),
         "게시일": normalized.get("published_at", ""),
         "상단고정": normalized.get("is_pinned", False),
         "상세URL": normalized.get("detail_url", ""),

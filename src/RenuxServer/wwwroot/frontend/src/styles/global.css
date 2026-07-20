@@ -337,7 +337,7 @@
     height: 100vh; /* min-height 대신 height로 고정 */
     height: 100dvh;
     display: grid;
-    grid-template-columns: 280px 1fr;
+    grid-template-columns: clamp(220px, 24vw, 280px) minmax(0, 1fr);
     grid-template-rows: auto 1fr;
     grid-template-areas:
         "sidebar topbar"
@@ -360,6 +360,7 @@
     gap: 10px;
     flex: 1; /* 남은 공간 모두 차지 */
     min-height: 0; /* 중요: Flex 아이템 축소 허용 */
+    min-width: 0;
 }
 .home-chat {
     height: 100%; /* 부모 높이에 맞춤 */
@@ -371,6 +372,7 @@
         radial-gradient(circle at 80% 0%, rgba(249, 115, 22, 0.12), transparent 34%),
         linear-gradient(180deg, #fff7ed 0%, #f8fafc 45%, #ffffff 100%);
     width: 100%;
+    min-width: 0;
     box-sizing: border-box;
     overflow: hidden; /* 내부 스크롤 제어 */
 }
@@ -505,11 +507,16 @@
 }
 
 .gpt-home__chat-item {
+    display: block;
+    width: 100%;
     padding: 12px 14px;
     border-radius: 14px;
     background: rgba(255, 255, 255, 0.1);
     border: 1px solid rgba(255, 255, 255, 0.14);
+    color: inherit;
     cursor: pointer;
+    font: inherit;
+    text-align: left;
     transition: all 0.18s ease;
 }
 
@@ -517,6 +524,16 @@
     transform: translateY(-1px);
     border-color: rgba(255, 255, 255, 0.3);
     background: rgba(255, 255, 255, 0.16);
+}
+
+.gpt-home__chat-item[aria-current="page"] {
+    border-color: rgba(255, 255, 255, 0.56);
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.gpt-home__chat-item:disabled {
+    cursor: not-allowed;
+    opacity: 0.62;
 }
 
 .gpt-home__chat-title {
@@ -599,12 +616,14 @@
     background: rgba(255, 255, 255, 0.86);
     border: 1px solid rgba(15, 23, 42, 0.08);
     box-shadow: var(--buddy-shadow-soft);
+    min-width: 0;
 }
 
 .buddy-topbar__brand {
     display: flex;
     align-items: center;
     gap: 10px;
+    min-width: 0;
 }
 
 .buddy-topbar__icon {
@@ -640,6 +659,7 @@
     font-size: 1.2rem;
     font-weight: 800;
     color: #0f172a;
+    overflow-wrap: anywhere;
 }
 
 .buddy-topbar__meta {
@@ -949,10 +969,13 @@
     display: flex;
     flex-direction: column;
     gap: 18px;
+    width: 100%;
+    min-width: 0;
 }
 
 .chat-bubble {
-    max-width: clamp(280px, 70%, 620px);
+    max-width: min(100%, clamp(280px, 70%, 620px));
+    min-width: 0;
     padding: 16px 20px;
     border-radius: 18px;
     display: flex;
@@ -960,11 +983,12 @@
     gap: 12px;
     line-height: 1.6;
     box-shadow: var(--buddy-shadow-soft);
+    box-sizing: border-box;
 }
 
 .chat-bubble--user {
     align-self: flex-end;
-    background: linear-gradient(135deg, var(--buddy-primary), #fb923c);
+    background: linear-gradient(135deg, #c2410c, #9a3412);
     color: white;
 }
 
@@ -983,12 +1007,14 @@
 .chat-bubble__text {
     white-space: pre-wrap;
     word-break: break-word;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .chat-citation-link {
     display: inline-flex;
     align-items: center;
-    min-height: 20px;
+    min-height: 44px;
     margin: 0 2px;
     padding: 1px 6px;
     border: 1px solid rgba(249, 115, 22, 0.32);
@@ -1022,11 +1048,24 @@
 .chat-bubble__time {
     align-self: flex-end;
     font-size: 0.75rem;
-    color: rgba(255, 255, 255, 0.75);
+    color: rgba(255, 255, 255, 0.9);
 }
 
 .chat-bubble--bot .chat-bubble__time {
     color: rgba(15, 23, 42, 0.45);
+}
+
+.chat-bubble--user .chat-bubble__text a {
+    color: #ffffff !important;
+    text-decoration-thickness: 2px !important;
+}
+
+.chat-bubbles__end {
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
 }
 
 .source-cards {
@@ -1034,6 +1073,8 @@
     flex-direction: column;
     gap: 10px;
     padding-top: 4px;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .source-cards__header {
@@ -1086,6 +1127,9 @@
     border: 1px solid rgba(15, 23, 42, 0.09);
     border-radius: 8px;
     background: rgba(248, 250, 252, 0.94);
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 
 .source-card--active {
@@ -1204,8 +1248,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 32px;
-    height: 32px;
+    width: 44px;
+    height: 44px;
     border: 1px solid rgba(15, 23, 42, 0.1);
     border-radius: 999px;
     background: rgba(248, 250, 252, 0.9);
@@ -1382,6 +1426,11 @@
 }
 
 @media (max-width: 640px) {
+    .chat-bubble {
+        max-width: 100%;
+        padding: 14px 16px;
+    }
+
     .source-card__meta,
     .source-card__footer {
         align-items: flex-start;
@@ -1392,6 +1441,62 @@
     .source-card__date,
     .source-card__score {
         white-space: normal;
+    }
+}
+
+/* Shared keyboard focus and touch target contract. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 3px solid #1d4ed8 !important;
+    outline-offset: 3px !important;
+}
+
+:where(
+    .mobile-menu-btn,
+    .gpt-home__new,
+    .gpt-home__chat-item,
+    .hero-btn,
+    .ghost-btn,
+    .copy-button,
+    .regenerate-button,
+    .message-feedback__button,
+    .message-feedback__submit,
+    .message-feedback__reason,
+    .suggested-questions__chip,
+    .source-cards__header,
+    .chat-citation-link,
+    .btn,
+    .btn-close
+) {
+    min-height: 44px;
+}
+
+.mobile-menu-btn,
+.copy-button,
+.chat-citation-link,
+.message-feedback__button,
+.btn-close {
+    min-width: 44px;
+}
+
+@media (max-width: 768px) {
+    .home-chat__composer {
+        padding-bottom: calc(8px + env(safe-area-inset-bottom));
+    }
+
+    .home-chat__input,
+    .message-feedback__comment {
+        font-size: 16px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
     }
 }
 
@@ -2116,6 +2221,7 @@
         radial-gradient(circle at 80% 0%, rgba(249, 115, 22, 0.12), transparent 34%),
         linear-gradient(180deg, #fff7ed 0%, #f8fafc 45%, #ffffff 100%);
     width: 100%;
+    min-width: 0;
     box-sizing: border-box;
 }
 
@@ -2192,6 +2298,9 @@
     overflow-y: auto;
     padding-right: 4px;
     min-height: 0;
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .home-chat__intro h1 {
@@ -2208,12 +2317,14 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    min-width: 0;
 }
 
 .home-chat__input-wrapper {
     position: relative;
     display: flex;
     width: 100%;
+    min-width: 0;
 }
 
 .home-chat__input {
@@ -2221,10 +2332,14 @@
     padding: 14px 100px 14px 14px;
     border-radius: 16px;
     border: 1px solid rgba(15, 23, 42, 0.18);
-    min-height: 60px;
-    resize: vertical;
+    min-height: 52px;
+    max-height: 180px;
+    resize: none;
+    overflow-y: auto;
     font-family: inherit;
-    font-size: 1rem;
+    font-size: 16px;
+    line-height: 1.5;
+    box-sizing: border-box;
 }
 
 .home-chat__send-btn {
@@ -2238,9 +2353,21 @@
 }
 
 .home-chat__error {
-    color: #f87171;
+    color: #b91c1c;
     font-size: 0.85rem;
     margin-left: 4px;
+    font-weight: 700;
+}
+
+.home-chat__composer-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 4px;
+    color: #475569;
+    font-size: 0.76rem;
+    flex-wrap: wrap;
 }
 
 .chat-preview-card {
@@ -2450,7 +2577,29 @@
     pointer-events: auto;
 }
 
-@media (max-width: 1080px) {
+@media (min-width: 769px) and (max-width: 1100px) {
+    .gpt-home {
+        grid-template-columns: 220px minmax(0, 1fr);
+        gap: 16px;
+        padding: 16px;
+    }
+
+    .gpt-home__sidebar {
+        gap: 12px;
+        padding: 14px;
+    }
+
+    .buddy-topbar {
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .buddy-topbar__meta:not(.buddy-topbar__meta--actions) {
+        display: none;
+    }
+}
+
+/* Keep this boundary in sync with MOBILE_LAYOUT_QUERY in HomePage.tsx. */
+@media (max-width: 768px) {
     .mobile-only {
         display: block;
     }
@@ -2461,6 +2610,7 @@
 
     .gpt-home {
         grid-template-columns: 1fr;
+        grid-template-rows: auto minmax(0, 1fr);
         grid-template-areas:
             "topbar"
             "main";
@@ -2475,7 +2625,7 @@
         left: 0;
         bottom: 0;
         height: 100dvh;
-        width: 280px;
+        width: min(280px, calc(100vw - 40px));
         z-index: 1000;
         transform: translateX(-100%); /* Hidden by default */
         transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -2524,23 +2674,22 @@
         z-index: 10;
         background: rgba(255, 255, 255, 0.95); /* Slightly transparent background */
         backdrop-filter: blur(10px); /* Glassmorphism effect */
-        padding: 12px 16px; /* Reduce padding */
+        padding: 12px max(16px, env(safe-area-inset-right)) 12px max(16px, env(safe-area-inset-left));
     }
 
     .gpt-home__main {
         padding: 0;
         gap: 0;
         height: auto;
-        min-height: calc(100vh - 65px); /* Adjust based on topbar height */
-        min-height: calc(100dvh - 65px);
+        min-height: 0;
     }
     
     .home-chat {
         border-radius: 0;
         border: none;
-        height: calc(100vh - 65px); /* Fill remaining height */
-        height: calc(100dvh - 65px);
-        padding: 16px;
+        height: 100%;
+        min-height: 0;
+        padding: 16px max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
     }
 
     .mobile-menu-btn {
@@ -3011,9 +3160,15 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
   padding: 6px 2px;
   min-width: 40px;
+}
+
+.typing-indicator__dots {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
 }
 
 .typing-dot {
@@ -3180,11 +3335,13 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
-    height: 100%;
+    justify-content: flex-start;
+    min-height: 100%;
+    height: auto;
     text-align: center;
     color: var(--buddy-foreground);
     padding: 2rem;
+    box-sizing: border-box;
 }
 
 .home-guide__starters {
@@ -3295,5 +3452,253 @@
         align-items: flex-start;
         flex-direction: column;
         gap: 4px;
+    }
+}
+
+/* ── 개인정보처리방침 등 법적 고지 문서 ───────────────────────────── */
+
+.policy-page {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 40px 24px 64px;
+}
+
+.policy-page__header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    gap: 16px;
+}
+
+.policy-page__eyebrow {
+    margin: 0 0 6px;
+    color: var(--buddy-primary);
+    font-size: 0.78rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+}
+
+/* 헤더는 .app-shell(#0f172a) 위에 직접 얹히므로 본문 카드와 달리 밝은 색을 쓴다. */
+.policy-page__header h1 {
+    margin: 0;
+    color: #f8fafc;
+    font-size: 1.7rem;
+}
+
+.policy-page__actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.policy-page__back {
+    padding: 8px 16px;
+    border: 1px solid var(--border-color);
+    background-color: white;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.policy-doc {
+    padding: 32px;
+    background-color: white;
+    border-radius: 8px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+    color: var(--text-color);
+    line-height: 1.75;
+    font-size: 0.95rem;
+    word-break: keep-all;
+}
+
+.policy-doc__lead {
+    margin: 0 0 12px;
+    color: var(--secondary-text);
+}
+
+.policy-section {
+    margin-top: 36px;
+    padding-top: 28px;
+    border-top: 1px solid #eceef1;
+}
+
+.policy-section h2 {
+    margin: 0 0 14px;
+    color: var(--buddy-foreground);
+    font-size: 1.15rem;
+    font-weight: 800;
+}
+
+.policy-section h3 {
+    margin: 22px 0 8px;
+    color: var(--buddy-foreground);
+    font-size: 1rem;
+    font-weight: 700;
+}
+
+.policy-section p {
+    margin: 0 0 10px;
+}
+
+.policy-section ul,
+.policy-section ol {
+    margin: 0 0 12px;
+    padding-left: 22px;
+}
+
+.policy-section li {
+    margin-bottom: 6px;
+}
+
+/* 국외 이전처럼 이용자가 반드시 인지해야 하는 절은 시각적으로 분리한다. */
+.policy-section--highlight {
+    margin-top: 36px;
+    padding: 24px;
+    border: 1px solid rgba(249, 115, 22, 0.35);
+    border-radius: 10px;
+    background: rgba(249, 115, 22, 0.05);
+}
+
+.policy-note {
+    margin: 10px 0 0;
+    padding: 12px 14px;
+    border-radius: 8px;
+    background: #f6f7f9;
+    color: var(--secondary-text);
+    font-size: 0.9rem;
+}
+
+.policy-warning {
+    margin: 14px 0;
+    padding: 12px 14px;
+    border-left: 3px solid var(--buddy-primary);
+    background: rgba(249, 115, 22, 0.1);
+    font-weight: 600;
+}
+
+.policy-table-wrap {
+    margin: 12px 0 16px;
+    overflow-x: auto;
+}
+
+.policy-table {
+    width: 100%;
+    min-width: 420px;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
+.policy-table th,
+.policy-table td {
+    padding: 10px 12px;
+    border: 1px solid #e3e6ea;
+    text-align: left;
+    vertical-align: top;
+}
+
+.policy-table thead th {
+    background: #f6f7f9;
+    font-weight: 700;
+}
+
+.policy-table tbody th {
+    width: 34%;
+    background: #fafbfc;
+    font-weight: 600;
+    color: var(--buddy-foreground);
+}
+
+.policy-contact {
+    margin: 12px 0;
+    padding: 16px 18px;
+    border-radius: 8px;
+    background: #f6f7f9;
+}
+
+.policy-contact__title {
+    margin: 0 0 8px !important;
+    font-weight: 700;
+    color: var(--buddy-foreground);
+}
+
+.policy-contact ul {
+    margin: 0;
+    padding-left: 18px;
+}
+
+.policy-agency-list li {
+    margin-bottom: 14px;
+    line-height: 1.6;
+}
+
+.policy-doc a {
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.policy-doc__footer {
+    margin-top: 36px;
+    padding-top: 20px;
+    border-top: 1px solid #eceef1;
+    color: var(--secondary-text);
+    font-size: 0.9rem;
+}
+
+.policy-doc__footer p {
+    margin: 0 0 6px;
+}
+
+/* 회원가입 화면의 개인정보 처리 고지 */
+.auth-privacy-note {
+    margin: 4px 0 16px;
+    color: var(--secondary-text);
+    font-size: 0.82rem;
+    line-height: 1.6;
+    word-break: keep-all;
+}
+
+.auth-privacy-note a {
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.settings-page__footer {
+    margin-top: 8px;
+    padding: 16px 0 0;
+    text-align: center;
+    font-size: 0.88rem;
+}
+
+.settings-page__footer a {
+    color: var(--secondary-text);
+    text-decoration: none;
+}
+
+.settings-page__footer a:hover {
+    text-decoration: underline;
+}
+
+@media (max-width: 640px) {
+    .policy-page {
+        padding: 24px 16px 48px;
+    }
+
+    .policy-page__header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .policy-page__actions {
+        justify-content: flex-start;
+    }
+
+    .policy-doc {
+        padding: 20px 18px;
+    }
+
+    .policy-section--highlight {
+        padding: 18px 16px;
     }
 }

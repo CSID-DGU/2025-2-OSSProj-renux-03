@@ -70,6 +70,10 @@ namespace RenuxServer.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("chat_id");
 
+                    b.Property<int?>("AnswerVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("answer_version");
+
                     b.Property<string>("Content")
                         .IsRequired()
                         .HasColumnType("text")
@@ -83,6 +87,14 @@ namespace RenuxServer.Migrations
                         .HasColumnType("text")
                         .HasColumnName("fallback_reason");
 
+                    b.Property<bool?>("Grounded")
+                        .HasColumnType("boolean")
+                        .HasColumnName("grounded");
+
+                    b.Property<double?>("GroundingScore")
+                        .HasColumnType("double precision")
+                        .HasColumnName("grounding_score");
+
                     b.Property<bool>("IsFallback")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
@@ -93,15 +105,49 @@ namespace RenuxServer.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("is_ask");
 
+                    b.Property<bool>("IsCurrent")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_current");
+
+                    b.Property<Guid?>("ParentQuestionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("parent_question_id");
+
+                    b.Property<string>("RequestId")
+                        .HasColumnType("text")
+                        .HasColumnName("request_id");
+
                     b.Property<string>("SourcesJson")
                         .HasColumnType("text")
                         .HasColumnName("sources_json");
+
+                    b.Property<string>("SuggestedQuestionsJson")
+                        .HasColumnType("text")
+                        .HasColumnName("suggested_questions_json");
+
+                    b.Property<DateTime?>("VersionCreatedTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("version_created_time");
 
                     b.HasKey("Id");
 
                     b.HasIndex("ChatId");
 
                     b.HasIndex("CreatedTime");
+
+                    b.HasIndex("ParentQuestionId")
+                        .IsUnique()
+                        .HasFilter("parent_question_id IS NOT NULL AND is_ask = FALSE AND is_current = TRUE");
+
+                    b.HasIndex("ParentQuestionId", "AnswerVersion")
+                        .IsUnique()
+                        .HasFilter("parent_question_id IS NOT NULL AND answer_version IS NOT NULL AND is_ask = FALSE");
+
+                    b.HasIndex("RequestId")
+                        .IsUnique()
+                        .HasFilter("request_id IS NOT NULL");
 
                     b.ToTable("chat_messages", (string)null);
                 });
@@ -164,6 +210,58 @@ namespace RenuxServer.Migrations
                     b.HasIndex("UserId");
 
                     b.ToTable("council_signup_requests", (string)null);
+                });
+
+            modelBuilder.Entity("RenuxServer.Models.NotificationPreference", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Channel")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("in_app")
+                        .HasColumnName("channel");
+
+                    b.Property<DateTime>("CreatedTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_time");
+
+                    b.Property<bool>("Enabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("enabled");
+
+                    b.Property<string>("RemindDaysBefore")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("7,1,0")
+                        .HasColumnName("remind_days_before");
+
+                    b.Property<string>("Topic")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("topic");
+
+                    b.Property<DateTime>("UpdatedTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_time");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "Topic")
+                        .IsUnique();
+
+                    b.ToTable("notification_preferences", (string)null);
                 });
 
             modelBuilder.Entity("RenuxServer.Models.GuestChat", b =>
@@ -260,6 +358,93 @@ namespace RenuxServer.Migrations
                     b.ToTable("organizations", (string)null);
                 });
 
+            modelBuilder.Entity("RenuxServer.Models.ProductEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AnswerKey")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("answer_key");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("event_type");
+
+                    b.Property<string>("ExclusionReason")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("exclusion_reason");
+
+                    b.Property<bool?>("Grounded")
+                        .HasColumnType("boolean")
+                        .HasColumnName("grounded");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<bool>("IsExcluded")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_excluded");
+
+                    b.Property<bool?>("IsFallback")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_fallback");
+
+                    b.Property<DateTime>("OccurredTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_time");
+
+                    b.Property<int?>("Rating")
+                        .HasColumnType("integer")
+                        .HasColumnName("rating");
+
+                    b.Property<string>("SessionKey")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("session_key");
+
+                    b.Property<int?>("SourceCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("source_count");
+
+                    b.Property<string>("SubjectKey")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("subject_key");
+
+                    b.Property<int?>("SuggestionCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("suggestion_count");
+
+                    b.Property<int?>("SuggestionIndex")
+                        .HasColumnType("integer")
+                        .HasColumnName("suggestion_index");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AnswerKey", "EventType");
+
+                    b.HasIndex("EventType", "OccurredTime");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("SubjectKey", "OccurredTime");
+
+                    b.ToTable("product_events", (string)null);
+                });
+
             modelBuilder.Entity("RenuxServer.Models.Role", b =>
                 {
                     b.Property<Guid>("Id")
@@ -352,6 +537,89 @@ namespace RenuxServer.Migrations
                     b.ToTable("users", (string)null);
                 });
 
+            modelBuilder.Entity("RenuxServer.Models.UserNotification", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("body");
+
+                    b.Property<DateTime>("CreatedTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_time");
+
+                    b.Property<string>("DedupKey")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("dedup_key");
+
+                    b.Property<bool>("IsRead")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_read");
+
+                    b.Property<DateTime?>("ReadTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("read_time");
+
+                    b.Property<DateTime>("ReminderDate")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("reminder_date");
+
+                    b.Property<int>("ReminderDaysBefore")
+                        .HasColumnType("integer")
+                        .HasColumnName("reminder_days_before");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("source");
+
+                    b.Property<string>("SourceId")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("source_id");
+
+                    b.Property<DateTime>("TargetDate")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("target_date");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("title");
+
+                    b.Property<string>("Topic")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("topic");
+
+                    b.Property<string>("Url")
+                        .HasColumnType("text")
+                        .HasColumnName("url");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DedupKey")
+                        .IsUnique();
+
+                    b.HasIndex("TargetDate");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("user_notifications", (string)null);
+                });
+
             modelBuilder.Entity("RenuxServer.Models.ActiveChat", b =>
                 {
                     b.HasOne("RenuxServer.Models.Organization", "Organization")
@@ -379,7 +647,14 @@ namespace RenuxServer.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("RenuxServer.Models.ChatMessage", "ParentQuestion")
+                        .WithMany()
+                        .HasForeignKey("ParentQuestionId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.Navigation("Chat");
+
+                    b.Navigation("ParentQuestion");
                 });
 
             modelBuilder.Entity("RenuxServer.Models.CouncilSignupRequest", b =>
@@ -415,6 +690,17 @@ namespace RenuxServer.Migrations
                     b.Navigation("Major");
                 });
 
+            modelBuilder.Entity("RenuxServer.Models.NotificationPreference", b =>
+                {
+                    b.HasOne("RenuxServer.Models.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("RenuxServer.Models.User", b =>
                 {
                     b.HasOne("RenuxServer.Models.Major", "Major")
@@ -432,6 +718,17 @@ namespace RenuxServer.Migrations
                     b.Navigation("Major");
 
                     b.Navigation("Role");
+                });
+
+            modelBuilder.Entity("RenuxServer.Models.UserNotification", b =>
+                {
+                    b.HasOne("RenuxServer.Models.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
                 });
 #pragma warning restore 612, 618
         }

@@ -36,6 +36,7 @@ const datasetLabels: Record<string, string> = {
   schedule: '학사일정',
   courses: '강의/수업',
   staff: '전화번호부',
+  meals: '학식',
 }
 
 const formatDate = (value?: string | null) => {

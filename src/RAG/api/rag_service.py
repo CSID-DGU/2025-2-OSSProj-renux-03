@@ -1,4 +1,5 @@
 import csv
+import copy
 import functools
 import io
 from importlib.metadata import PackageNotFoundError, version
@@ -11,16 +12,17 @@ import threading
 import time
 import uuid
 import json
-from datetime import datetime
+import os
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from dataclasses import dataclass, replace
-from typing import Dict, List, Tuple
+from typing import AsyncIterator, Dict, List, Tuple
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 from scipy.sparse import vstack
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -37,10 +39,11 @@ from src.config import (
     QUERY_ANALYSIS_MAX_QUERIES,
     RAG_COLLEGE_SCOPE_ENABLED,
     RAG_DECOMPOSE_ENABLED,
+    RAG_EVIDENCE_CANDIDATES_PER_DATASET,
+    RAG_EVIDENCE_MAX_CANDIDATES,
     RAG_GROUNDING_CHECK_ENABLED,
     RAG_GROUNDING_MIN_SCORE,
     RAG_MAX_SUBQUERIES,
-    RAG_SEARCH_ALL_DATASETS,
     RAG_SEMANTIC_CACHE_ENABLED,
     RAG_SINGLE_QUERY_RETRIEVAL,
     RAG_SUGGEST_FOLLOWUPS,
@@ -71,6 +74,7 @@ from src.database import (
 from src.pipelines.ingest import (
     DATASET_ARTIFACTS,
     build_notice_chunks,
+    _extract_notice_apply_deadline,
     ingest_courses,
     ingest_meals,
     ingest_notices,
@@ -91,8 +95,17 @@ from src.services.langchain_chat import (
 )
 from src.services.grounding import check_answer_grounding
 from src.services.query_analysis import QueryAnalysisResult, analyze_query
+from src.services.evidence_selector import EvidenceSelectionDecision, select_evidence_groups
+from src.services.campus_scope import (
+    apply_campus_safety_boundary,
+    query_explicitly_requests_wise,
+)
+from src.services.data_quality import (
+    build_notice_linkage_summary,
+    build_source_document_quality_report,
+    data_quality_mode,
+)
 from src.models.embedding import get_embedder, encode_texts
-from src.services.router import route_query
 from src.utils.date_parser import QueryDateFilter, extract_date_filter_from_query
 from src.utils.query_expansion import expand_query
 from src.utils.dept_college import college_grad_queries, college_of, college_scope_queries, personalized_grad_queries, user_scope_label
@@ -208,12 +221,267 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 
+class NotificationCandidate(BaseModel):
+    id: str
+    source: str
+    source_id: str | None = None
+    chunk_id: str | None = None
+    title: str
+    topic: str
+    category: str | None = None
+    target_date: str
+    start_date: str | None = None
+    end_date: str | None = None
+    d_day: int
+    published_at: str | None = None
+    url: str | None = None
+    snippet: str | None = None
+    confidence: float | None = None
+    date_source: str | None = None
+    metadata: dict[str, str | None] = Field(default_factory=dict)
+
+
+def _candidate_str(value) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
+
+
+def _parse_candidate_date(value: str | None, field_name: str, fallback: date) -> date:
+    if not value:
+        return fallback
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}. Use YYYY-MM-DD.") from exc
+
+
+def _notification_topic(source: str, title: str, topic: str, category: str | None) -> str:
+    haystack = f"{source} {title} {topic} {category or ''}".lower()
+    if "장학" in haystack:
+        return "scholarship"
+    if any(keyword in haystack for keyword in ("수강신청", "수강 신청", "수강정정", "수강 정정", "수강취소", "수강 취소")):
+        return "course_registration"
+    if any(keyword in haystack for keyword in ("등록금", "납부")):
+        return "tuition_payment"
+    if any(keyword in haystack for keyword in ("서류", "제출", "접수", "신청")):
+        return "document_submission"
+    return "academic_schedule"
+
+
+def _notification_source_id(row: pd.Series, source: str) -> str:
+    if source == "schedule":
+        for column in ("schedule_id", "doc_id", "chunk_id"):
+            value = _candidate_str(row.get(column))
+            if value:
+                return value
+    for column in ("notice_id", "doc_id", "document_key", "url", "chunk_id"):
+        value = _candidate_str(row.get(column))
+        if value:
+            return value
+    return _candidate_str(row.name)
+
+
+def _candidate_snippet(text: object, limit: int = 180) -> str:
+    raw = _candidate_str(text).replace("\n", " ")
+    return re.sub(r"\s+", " ", raw)[:limit]
+
+
+def _candidate_notice_deadline(row: pd.Series) -> str:
+    existing = _candidate_str(row.get("apply_deadline"))
+    if existing:
+        return existing
+    return _extract_notice_apply_deadline(
+        _candidate_str(row.get("title")),
+        _candidate_str(row.get("chunk_text")),
+        _candidate_str(row.get("published_at")),
+    ) or ""
+
+
+def _build_notification_candidates_from_frames(
+    notices_df: pd.DataFrame,
+    schedule_df: pd.DataFrame,
+    start: date,
+    end: date,
+    sources: set[str],
+    limit: int,
+    today: date,
+) -> list[NotificationCandidate]:
+    candidates: list[NotificationCandidate] = []
+
+    if "notices" in sources and not notices_df.empty:
+        notices = notices_df.copy()
+        if "apply_deadline" not in notices.columns:
+            notices["apply_deadline"] = notices.apply(_candidate_notice_deadline, axis=1)
+        else:
+            missing = notices["apply_deadline"].isna() | notices["apply_deadline"].astype(str).str.strip().eq("")
+            if missing.any():
+                notices.loc[missing, "apply_deadline"] = notices.loc[missing].apply(_candidate_notice_deadline, axis=1)
+
+        notices["_target_ts"] = pd.to_datetime(notices["apply_deadline"], errors="coerce")
+        notices = notices[notices["_target_ts"].notna()].copy()
+        if not notices.empty:
+            notices["_target_date"] = notices["_target_ts"].dt.date
+            notices = notices[(notices["_target_date"] >= start) & (notices["_target_date"] <= end)].copy()
+            if "position" in notices.columns:
+                notices["_position"] = pd.to_numeric(notices["position"], errors="coerce").fillna(0)
+            else:
+                notices["_position"] = 0
+            notices["_source_key"] = notices.apply(lambda row: _notification_source_id(row, "notices"), axis=1)
+            notices.sort_values(
+                by=["_target_ts", "_source_key", "_position"],
+                ascending=[True, True, True],
+                kind="stable",
+                inplace=True,
+            )
+            notices.drop_duplicates(subset=["_source_key"], keep="first", inplace=True)
+
+            for _, row in notices.iterrows():
+                target_date = row["_target_date"]
+                title = _candidate_str(row.get("title")) or _extract_chunk_title(row.get("chunk_text"))
+                raw_topic = _candidate_str(row.get("topics"))
+                category = _candidate_str(row.get("category")) or None
+                source_id = _notification_source_id(row, "notices")
+                candidates.append(
+                    NotificationCandidate(
+                        id=f"notices:{source_id}",
+                        source="notices",
+                        source_id=source_id,
+                        chunk_id=_candidate_str(row.get("chunk_id")) or None,
+                        title=title,
+                        topic=_notification_topic("notices", title, raw_topic, category),
+                        category=category,
+                        target_date=target_date.isoformat(),
+                        start_date=None,
+                        end_date=target_date.isoformat(),
+                        d_day=(target_date - today).days,
+                        published_at=_candidate_str(row.get("published_at")) or None,
+                        url=_candidate_str(row.get("url")) or None,
+                        snippet=_candidate_snippet(row.get("chunk_text")),
+                        confidence=0.78,
+                        date_source="apply_deadline_parsed",
+                        metadata={
+                            "raw_topic": raw_topic or None,
+                            "board_code": _candidate_str(row.get("board_code")) or None,
+                            "article_id": _candidate_str(row.get("article_id")) or None,
+                            "attachments": _candidate_str(row.get("attachments")) or None,
+                        },
+                    )
+                )
+
+    if "schedule" in sources and not schedule_df.empty:
+        schedule = schedule_df.copy()
+        for column in ("schedule_start", "schedule_end"):
+            if column not in schedule.columns:
+                schedule[column] = ""
+        schedule["_start_ts"] = pd.to_datetime(schedule["schedule_start"], errors="coerce")
+        schedule["_end_ts"] = pd.to_datetime(schedule["schedule_end"], errors="coerce")
+        schedule["_target_ts"] = schedule["_end_ts"].where(schedule["_end_ts"].notna(), schedule["_start_ts"])
+        schedule = schedule[schedule["_target_ts"].notna()].copy()
+        if not schedule.empty:
+            schedule["_target_date"] = schedule["_target_ts"].dt.date
+            schedule = schedule[(schedule["_target_date"] >= start) & (schedule["_target_date"] <= end)].copy()
+            schedule["_source_key"] = schedule.apply(lambda row: _notification_source_id(row, "schedule"), axis=1)
+            schedule.sort_values(
+                by=["_target_ts", "_source_key"],
+                ascending=[True, True],
+                kind="stable",
+                inplace=True,
+            )
+            schedule.drop_duplicates(subset=["_source_key"], keep="first", inplace=True)
+
+            for _, row in schedule.iterrows():
+                target_date = row["_target_date"]
+                title = _candidate_str(row.get("title")) or _extract_chunk_title(row.get("chunk_text"))
+                category = _candidate_str(row.get("category")) or None
+                source_id = _notification_source_id(row, "schedule")
+                candidates.append(
+                    NotificationCandidate(
+                        id=f"schedule:{source_id}",
+                        source="schedule",
+                        source_id=source_id,
+                        chunk_id=_candidate_str(row.get("chunk_id")) or None,
+                        title=title,
+                        topic="academic_schedule",
+                        category=category,
+                        target_date=target_date.isoformat(),
+                        start_date=_candidate_str(row.get("schedule_start")) or None,
+                        end_date=_candidate_str(row.get("schedule_end")) or None,
+                        d_day=(target_date - today).days,
+                        published_at=_candidate_str(row.get("published_at")) or None,
+                        url=_candidate_str(row.get("url")) or None,
+                        snippet=_candidate_snippet(row.get("chunk_text")),
+                        confidence=0.95,
+                        date_source="schedule_end" if _candidate_str(row.get("schedule_end")) else "schedule_start",
+                        metadata={
+                            "department": _candidate_str(row.get("department")) or None,
+                            "raw_topic": _candidate_str(row.get("topics")) or None,
+                        },
+                    )
+                )
+
+    return sorted(candidates, key=lambda item: (item.target_date, item.source, item.title))[:limit]
+
+
 @app.get("/notifications")
 async def notifications_dummy():
     return []
 
+
+@app.get("/notifications/candidates", response_model=list[NotificationCandidate])
+async def notification_candidates(
+    from_date: str | None = Query(None, alias="from"),
+    to: str | None = None,
+    sources: str = "notices,schedule",
+    limit: int = 100,
+):
+    today = kst_now().date()
+    start = _parse_candidate_date(from_date, "from", today)
+    end = _parse_candidate_date(to, "to", today + timedelta(days=60))
+    if end < start:
+        raise HTTPException(status_code=400, detail="to must be on or after from.")
+
+    requested_sources = {
+        source.strip().lower()
+        for source in sources.split(",")
+        if source.strip()
+    }
+    allowed_sources = {"notices", "schedule"}
+    requested_sources &= allowed_sources
+    if not requested_sources:
+        raise HTTPException(status_code=400, detail="sources must include notices or schedule.")
+
+    notices_df = pd.DataFrame()
+    schedule_df = pd.DataFrame()
+    if "notices" in requested_sources:
+        notices_df, _, _, _ = await run_in_threadpool(_ensure_dataset, "notices")
+    if "schedule" in requested_sources:
+        schedule_df, _, _, _ = await run_in_threadpool(_ensure_dataset, "schedule")
+
+    return await run_in_threadpool(
+        _build_notification_candidates_from_frames,
+        notices_df=notices_df,
+        schedule_df=schedule_df,
+        start=start,
+        end=end,
+        sources=requested_sources,
+        limit=max(1, min(limit, 300)),
+        today=today,
+    )
+
+
 @app.options("/notifications")
 async def notifications_options_dummy():
+    return {}
+
+
+@app.options("/notifications/candidates")
+async def notification_candidates_options_dummy():
     return {}
 
 @app.options("/token")
@@ -260,6 +528,78 @@ class QueryAnalysisMeta:
 _datasets: Dict[str, DatasetCache] = {}
 # admin 리로드(del/재로드)와 검색 스레드의 _ensure_dataset 경합 방지용 락
 _datasets_lock = threading.Lock()
+# 로컬/운영 인덱스에 실제 데이터가 존재하는 6개 검색 데이터셋은 모두 서비스 준비에 필수다.
+# scheduler는 데이터 신선도를 높이는 선택 기능이므로 readiness 필수 항목에서 제외한다.
+_REQUIRED_DATASETS: tuple[str, ...] = tuple(_DATASET_LOADERS.keys())
+_readiness_lock = threading.Lock()
+
+
+def _new_readiness_state() -> dict:
+    return {
+        "startup_complete": False,
+        "checks": {
+            "configuration": {"required": True, "ready": False, "detail": "not_checked"},
+            "database": {"required": True, "ready": False, "detail": "not_checked"},
+            "data_quality": {
+                "required": os.getenv("RAG_DATA_QUALITY_MODE", "observe").strip().lower() == "strict",
+                "ready": False,
+                "detail": "not_checked",
+            },
+            "datasets": {
+                "required": True,
+                "ready": False,
+                "detail": "not_checked",
+                "required_datasets": list(_REQUIRED_DATASETS),
+                "counts": {},
+                "errors": {},
+            },
+            "embedder": {"required": True, "ready": False, "detail": "not_checked"},
+            "scheduler": {"required": False, "ready": False, "detail": "not_checked"},
+        },
+    }
+
+
+_readiness_state = _new_readiness_state()
+
+
+def _reset_startup_readiness() -> None:
+    global _readiness_state
+    with _readiness_lock:
+        _readiness_state = _new_readiness_state()
+
+
+def _readiness_error(code: str, exc: Exception) -> dict[str, str]:
+    return {
+        "code": code,
+        "type": type(exc).__name__,
+        "message": str(exc)[:500],
+    }
+
+
+def _set_readiness_check(name: str, **values) -> None:
+    with _readiness_lock:
+        _readiness_state["checks"][name].update(values)
+
+
+def _set_startup_complete() -> None:
+    with _readiness_lock:
+        _readiness_state["startup_complete"] = True
+
+
+def _readiness_snapshot() -> dict:
+    with _readiness_lock:
+        snapshot = copy.deepcopy(_readiness_state)
+
+    required_checks = [check for check in snapshot["checks"].values() if check["required"]]
+    snapshot["ready"] = snapshot["startup_complete"] and all(check["ready"] for check in required_checks)
+    snapshot["status"] = "ready" if snapshot["ready"] else "not_ready"
+    snapshot["failures"] = [
+        {"component": name, "error": check.get("error"), "detail": check.get("detail")}
+        for name, check in snapshot["checks"].items()
+        if check["required"] and not check["ready"]
+    ]
+    return snapshot
+
 # 라우팅 없이 전체 검색을 할 때 대상이 되는 모든 데이터셋(인덱싱된 순서 유지).
 SEARCHABLE_DATASETS: List[str] = list(DATASET_ARTIFACTS.keys())
 FALLBACK_REASON_NO_RESULTS = "no_results"
@@ -270,10 +610,21 @@ FALLBACK_REASON_SCORE_BELOW_THRESHOLD = "score_below_threshold"
 _NO_MAJOR_SENTINELS = {"Default", "Unknown"}
 
 
-def _semantic_cache_namespace(major: str) -> str:
+def _routerless_retrieval_route() -> list[str]:
+    """The sole RAG retrieval scope: every indexed dataset, in stable order."""
+    return list(SEARCHABLE_DATASETS)
+
+
+def _semantic_cache_namespace(major: str, *, allow_wise: bool = False) -> str:
     # 실제 학과명과 값 공간이 겹치지 않도록 접두사로 구분한다(가령 major=="__anon__" 같은
     # 입력이 익명 버킷과 충돌하는 일을 막는다). 답변은 학과별로 달라지므로 네임스페이스는 학과 기준.
-    return f"major:{major}" if major and major not in _NO_MAJOR_SENTINELS else "anon"
+    user_scope = f"major:{major}" if major and major not in _NO_MAJOR_SENTINELS else "anon"
+    # A WISE-explicit answer must never be a semantic-cache candidate for the
+    # default Seoul/BMC product scope (or vice versa).
+    campus_scope = "wise_allowed" if allow_wise else "seoul_bmc"
+    # v2 invalidates answers cached before identity-priority and neighbor-scope
+    # enforcement, which may contain WISE-only parent context.
+    return f"{user_scope}|campus-safety-v2:{campus_scope}"
 
 
 def _should_cache_answer(
@@ -298,6 +649,16 @@ def _should_cache_answer(
     if answer is not None and not answer.strip():
         return False
     return True
+
+
+def _grounding_allows_followups(grounding_enabled: bool, grounding_result) -> bool:
+    """Suggestions require a completed, positive grounding check."""
+    return bool(
+        grounding_enabled
+        and grounding_result is not None
+        and grounding_result.checked
+        and grounding_result.grounded
+    )
 
 
 DATASET_REASON_EMPTY_COLLECTION = "empty_collection"
@@ -404,6 +765,43 @@ class SourceChunk(BaseModel):
     recency_score: float | None = None
     final_score: float | None = None
     sort_date: str | None = None
+
+
+_SOURCE_SCORE_COLUMNS = {
+    "vector_score",
+    "sparse_score",
+    "hybrid_score",
+    "norm_recency",
+    "final_score",
+}
+_SOURCE_INTERNAL_COLUMNS = {
+    "chunk_text",
+    "dataset",
+    "sort_date",
+    "sort_timestamp",
+    "norm_hybrid",
+    "recent_notice_priority",
+    "matched_query_count",
+    "query_match_bonus",
+    "date_unknown_auxiliary",
+    "notice_topic_match",
+    "matched_queries",
+    "candidate_id",
+    "dataset_rank",
+    "retrieval_fusion_score",
+    "evidence_group",
+    "citation_number",
+    "selector_fallback",
+    "campus_allow_wise",
+} | _SOURCE_SCORE_COLUMNS
+
+
+def _source_metadata(row: pd.Series) -> dict:
+    return {
+        column: _clean_response_value(row.get(column))
+        for column in row.index
+        if column not in _SOURCE_INTERNAL_COLUMNS
+    }
 
 
 class AskResponse(BaseModel):
@@ -1129,6 +1527,13 @@ def _expand_chunk_with_neighbors(row: pd.Series) -> str:
             return chunk_text
         positions = siblings["position"].astype(float).astype(int)
         window = siblings[positions.isin([pos - 1, pos, pos + 1])].copy()
+        allow_wise_value = row.get("campus_allow_wise", False)
+        allow_wise = allow_wise_value is True or str(allow_wise_value).strip().lower() in {"1", "true", "yes"}
+        # Parent expansion reads from the unfiltered dataset cache, so every
+        # sibling must cross the exact same campus boundary as the original hit.
+        window, _ = apply_campus_safety_boundary(window, allow_wise=allow_wise)
+        if window.empty:
+            return ""
         window["_pos"] = window["position"].astype(float).astype(int)
         window.sort_values("_pos", inplace=True)
 
@@ -1162,6 +1567,74 @@ def _build_context_text(context_parts: List[str], limit: int, prefix: str = "") 
         included.append(part)
         used += extra
     return (prefix + sep.join(included))[:limit]
+
+
+def _build_document_context_part(row: pd.Series, citation_number: int) -> str:
+    source = _clean_response_str(row.get("source")) or _clean_response_str(row.get("dataset")) or "알 수 없음"
+    part = f"문서 {citation_number} [출처: {source}]:\n"
+    title = _clean_response_str(row.get("title"))
+    published_at = _clean_response_str(row.get("published_at"))
+    url = _clean_response_str(row.get("url"))
+    if title:
+        part += f"제목: {title}\n"
+    if published_at:
+        part += f"게시일: {published_at}\n"
+    if url:
+        part += f"URL: {url}\n"
+    campus_scope = _clean_response_str(row.get("campus_scope"))
+    if campus_scope:
+        part += f"캠퍼스 범위: {campus_scope}\n"
+    part += f"내용:\n{_expand_chunk_with_neighbors(row)}\n"
+
+    attachments_str = row.get("attachments")
+    if isinstance(attachments_str, str) and attachments_str.strip():
+        try:
+            attachments = json.loads(attachments_str)
+            if isinstance(attachments, list):
+                links = [
+                    f"- [{attachment['name']}]({attachment['url']})"
+                    for attachment in attachments
+                    if isinstance(attachment, dict) and "name" in attachment and "url" in attachment
+                ]
+                if links:
+                    part += "\n첨부파일:\n" + "\n".join(links) + "\n"
+        except (json.JSONDecodeError, TypeError) as exc:
+            _log_event(logging.WARNING, "attachment_parse_failed", error=str(exc))
+    return part
+
+
+def _build_selected_evidence_context(selected: pd.DataFrame, prefix: str = "") -> str:
+    if selected.empty:
+        return prefix[:MAX_CONTEXT_LENGTH]
+    group_count = int(pd.to_numeric(selected["evidence_group"], errors="coerce").max())
+    if group_count <= 1:
+        parts = [
+            _build_document_context_part(row, int(row.get("citation_number") or index))
+            for index, (_, row) in enumerate(selected.iterrows(), start=1)
+        ]
+        if "selector_fallback" in selected.columns and selected["selector_fallback"].astype(bool).any():
+            remaining = max(0, MAX_CONTEXT_LENGTH - len(prefix))
+            per_document_budget = max(1, remaining // len(parts))
+            return (prefix + "\n\n---\n\n".join(part[:per_document_budget] for part in parts))[:MAX_CONTEXT_LENGTH]
+        return _build_context_text(parts, MAX_CONTEXT_LENGTH, prefix=prefix)
+
+    remaining = max(0, MAX_CONTEXT_LENGTH - len(prefix))
+    per_group_budget = max(1, remaining // group_count)
+    blocks: list[str] = []
+    for group_number in range(1, group_count + 1):
+        group_frame = selected[selected["evidence_group"] == group_number]
+        parts = [
+            _build_document_context_part(row, int(row.get("citation_number") or index))
+            for index, (_, row) in enumerate(group_frame.iterrows(), start=1)
+        ]
+        blocks.append(
+            _build_context_text(
+                parts,
+                per_group_budget,
+                prefix=f"[근거 그룹 {group_number}]\n",
+            )
+        )
+    return (prefix + "\n\n".join(blocks))[:MAX_CONTEXT_LENGTH]
 
 
 def _build_grounding_confirmation_answer(result, sources: List[SourceChunk]) -> str:
@@ -1198,6 +1671,7 @@ async def _retrieve_frames(
     entry_year: int | None,
     request_id: str,
     recent_notice_query: bool = False,
+    allow_wise: bool = False,
 ) -> tuple[List[pd.DataFrame], bool, List[str]]:
     frames: List[pd.DataFrame] = []
     date_filter_eliminated_any = False
@@ -1274,6 +1748,16 @@ async def _retrieve_frames(
             )
             hits = await run_in_threadpool(search_func)
             hits, eliminated = _apply_date_filter(hits, dataset, date_filter)
+        hits, campus_blocked = apply_campus_safety_boundary(hits, allow_wise=allow_wise)
+        if campus_blocked:
+            _log_event(
+                logging.INFO,
+                "retrieval_campus_blocked",
+                request_id=request_id,
+                dataset=dataset,
+                blocked_count=campus_blocked,
+                allow_wise=allow_wise,
+            )
         date_filter_eliminated_any = date_filter_eliminated_any or eliminated
 
         _log_event(
@@ -1303,6 +1787,7 @@ async def _retrieve_frames_for_queries(
     entry_year: int | None,
     request_id: str,
     recent_notice_query: bool = False,
+    allow_wise: bool = False,
 ) -> tuple[List[pd.DataFrame], bool, List[str]]:
     all_frames: List[pd.DataFrame] = []
     date_filter_eliminated_any = False
@@ -1318,6 +1803,7 @@ async def _retrieve_frames_for_queries(
             entry_year=entry_year,
             request_id=request_id,
             recent_notice_query=recent_notice_query,
+            allow_wise=allow_wise,
         )
         for frame in frames:
             if frame.empty:
@@ -1368,6 +1854,187 @@ def _merge_query_hits(frames: List[pd.DataFrame]) -> pd.DataFrame:
         aggregated_rows.append(row)
 
     return pd.DataFrame(aggregated_rows)
+
+
+def _build_balanced_shortlist(
+    frames: List[pd.DataFrame],
+    *,
+    per_dataset: int = RAG_EVIDENCE_CANDIDATES_PER_DATASET,
+    max_candidates: int = RAG_EVIDENCE_MAX_CANDIDATES,
+) -> pd.DataFrame:
+    """Fuse query ranks within each dataset, then interleave dataset-local winners.
+
+    Hybrid scores from different corpora are intentionally never compared directly. Each
+    query result contributes reciprocal-rank evidence inside its own dataset; a fixed quota
+    and round-robin ordering keep one corpus from consuming the whole OpenAI shortlist.
+    """
+    per_dataset = max(1, min(int(per_dataset), 5))
+    max_candidates = max(1, min(int(max_candidates), 30))
+    ranked_frames: list[pd.DataFrame] = []
+    for frame_order, frame in enumerate(frames):
+        if frame.empty or "dataset" not in frame.columns:
+            continue
+        ranked = frame.copy()
+        if "hybrid_score" in ranked.columns:
+            ranked["_numeric_hybrid"] = pd.to_numeric(ranked["hybrid_score"], errors="coerce").fillna(-1.0)
+            ranked.sort_values("_numeric_hybrid", ascending=False, kind="stable", inplace=True)
+        else:
+            ranked["_numeric_hybrid"] = -1.0
+        ranked["_retrieval_rank"] = range(1, len(ranked) + 1)
+        ranked["_rrf_contribution"] = 1.0 / (60.0 + ranked["_retrieval_rank"])
+        ranked["_frame_order"] = frame_order
+        ranked_frames.append(ranked)
+
+    if not ranked_frames:
+        return pd.DataFrame()
+
+    combined = pd.concat(ranked_frames, ignore_index=True)
+    combined["_dataset_key"] = combined["dataset"].astype(str)
+    if "chunk_id" not in combined.columns:
+        combined["chunk_id"] = ""
+    chunk_keys = combined["chunk_id"].fillna("").astype(str).str.strip()
+    missing_key = chunk_keys.eq("")
+    chunk_keys.loc[missing_key] = [f"row-{index}" for index in combined.index[missing_key]]
+    combined["_candidate_key"] = combined["_dataset_key"] + ":" + chunk_keys
+
+    rows: list[pd.Series] = []
+    for _, group in combined.groupby("_candidate_key", sort=False):
+        best = group.sort_values(
+            ["_rrf_contribution", "_numeric_hybrid"],
+            ascending=[False, False],
+            kind="stable",
+        ).iloc[0].copy()
+        best["retrieval_fusion_score"] = float(group["_rrf_contribution"].sum())
+        matched_queries: list[str] = []
+        if "matched_query" in group.columns:
+            for value in group["matched_query"].tolist():
+                if isinstance(value, str) and value and value not in matched_queries:
+                    matched_queries.append(value)
+        best["matched_queries"] = matched_queries
+        best["matched_query_count"] = len(matched_queries) or 1
+        rows.append(best)
+
+    fused = pd.DataFrame(rows)
+    selected: list[pd.DataFrame] = []
+    dataset_order = {name: index for index, name in enumerate(SEARCHABLE_DATASETS)}
+    for dataset, group in fused.groupby("dataset", sort=False):
+        local = group.sort_values(
+            ["retrieval_fusion_score", "_numeric_hybrid"],
+            ascending=[False, False],
+            kind="stable",
+        ).head(max(1, per_dataset)).copy()
+        local["dataset_rank"] = range(1, len(local) + 1)
+        local["_dataset_order"] = dataset_order.get(str(dataset), len(dataset_order))
+        selected.append(local)
+
+    shortlist = pd.concat(selected, ignore_index=True)
+    shortlist.sort_values(
+        ["dataset_rank", "_dataset_order", "retrieval_fusion_score"],
+        ascending=[True, True, False],
+        kind="stable",
+        inplace=True,
+    )
+    shortlist = shortlist.head(max(1, max_candidates)).reset_index(drop=True)
+    shortlist["candidate_id"] = [f"c{index}" for index in range(1, len(shortlist) + 1)]
+    return shortlist.drop(
+        columns=[
+            "_numeric_hybrid",
+            "_retrieval_rank",
+            "_rrf_contribution",
+            "_frame_order",
+            "_dataset_key",
+            "_candidate_key",
+            "_dataset_order",
+        ],
+        errors="ignore",
+    )
+
+
+def _normalize_evidence_groups(
+    decision: EvidenceSelectionDecision,
+    allowed_ids: set[str],
+) -> list[list[str]]:
+    groups: list[list[str]] = []
+    globally_used: set[str] = set()
+    for group in decision.groups[:5]:
+        document_ids: list[str] = []
+        for candidate_id in group.document_ids:
+            clean_id = str(candidate_id).strip()
+            if clean_id not in allowed_ids or clean_id in globally_used or clean_id in document_ids:
+                continue
+            document_ids.append(clean_id)
+            globally_used.add(clean_id)
+            if len(document_ids) >= 3:
+                break
+        if document_ids:
+            groups.append(document_ids)
+    return groups
+
+
+def _materialize_evidence_groups(shortlist: pd.DataFrame, groups: list[list[str]]) -> pd.DataFrame:
+    rows: list[pd.DataFrame] = []
+    for group_number, candidate_ids in enumerate(groups, start=1):
+        by_id = shortlist.set_index("candidate_id", drop=False)
+        valid_ids = [candidate_id for candidate_id in candidate_ids if candidate_id in by_id.index]
+        if not valid_ids:
+            continue
+        group_frame = by_id.loc[valid_ids].copy()
+        if isinstance(group_frame, pd.Series):
+            group_frame = group_frame.to_frame().T
+        group_frame["evidence_group"] = group_number
+        rows.append(group_frame.reset_index(drop=True))
+    if not rows:
+        return pd.DataFrame(columns=list(shortlist.columns) + ["evidence_group"])
+    selected = pd.concat(rows, ignore_index=True)
+    selected["citation_number"] = range(1, len(selected) + 1)
+    return selected
+
+
+async def _select_evidence_for_answer(
+    question: str,
+    shortlist: pd.DataFrame,
+    usage_collector: list[dict],
+) -> tuple[pd.DataFrame, bool]:
+    """Return selected evidence and whether OpenAI selection fell back deterministically."""
+    if shortlist.empty:
+        return shortlist, False
+    candidates = [
+        {
+            "candidate_id": row.get("candidate_id"),
+            "dataset": row.get("dataset"),
+            "title": _clean_response_str(row.get("title")) or "",
+            "published_at": _clean_response_str(row.get("published_at")) or "",
+            "text": _expand_chunk_with_neighbors(row),
+        }
+        for _, row in shortlist.iterrows()
+    ]
+    decision = await select_evidence_groups(question, candidates, usage_collector)
+    if decision is None:
+        # 점수 분포를 직접 비교할 수 없으므로 selector 장애 시에도 각 데이터셋의
+        # 1위 후보를 하나씩 유지하고, 하나의 답변 컨텍스트로만 전달한다.
+        fallback_ids = (
+            shortlist[shortlist["dataset_rank"] == 1]["candidate_id"].astype(str).tolist()
+        )
+        fallback = _materialize_evidence_groups(shortlist, [fallback_ids])
+        fallback["selector_fallback"] = 1
+        return fallback, True
+
+    groups = _normalize_evidence_groups(decision, set(shortlist["candidate_id"].astype(str)))
+    selected = _materialize_evidence_groups(shortlist, groups)
+    selected["selector_fallback"] = 0
+    return selected, False
+
+
+def _multiple_evidence_response_instructions(group_count: int) -> str | None:
+    if group_count <= 1:
+        return None
+    return (
+        f"검색된 근거가 {group_count}개의 독립적인 그룹으로 구분되었습니다. "
+        f"정확히 {group_count}개 섹션을 '## 확인된 정보 1'부터 순서대로 작성하세요. "
+        "모든 섹션은 동등한 위상이며 순위나 선호를 부여하지 마세요. "
+        "각 섹션에서는 같은 번호의 [근거 그룹]에 속한 문서만 사용하고, 핵심 사실마다 [문서N] 출처를 표시하세요. "
+        "그룹 간 내용이 충돌하면 그 사실을 숨기지 말고 객관적으로 밝혀 주세요."
+    )
 
 
 def _collect_matched_queries(merged: pd.DataFrame) -> List[str]:
@@ -1743,15 +2410,7 @@ def _build_notices_ingestion_status(session) -> dict:
         .filter(SourceDocument.dataset == "notices", SourceDocument.normalized_path.isnot(None))
         .count()
     )
-    indexed_count = (
-        session.query(SourceDocument)
-        .filter(
-            SourceDocument.dataset == "notices",
-            SourceDocument.last_indexed_at.isnot(None),
-            SourceDocument.status.in_(["active", "updated", "hidden"]),
-        )
-        .count()
-    )
+    linkage = build_notice_linkage_summary(session)
 
     return {
         "last_collection_at": None if latest_collection is None else latest_collection.collected_at.isoformat(),
@@ -1771,7 +2430,10 @@ def _build_notices_ingestion_status(session) -> dict:
         "stage_summary": {
             "raw_documents": raw_count,
             "normalized_documents": normalized_count,
-            "indexed_documents": indexed_count,
+            "indexed_documents": linkage["indexable_linked_documents"],
+            "active_documents": linkage["active_documents"],
+            "updated_documents": linkage["updated_documents"],
+            "index_mismatch": linkage["index_mismatch"],
         },
         "quality_summary": {
             "parse_failed": parse_failed_count,
@@ -1861,10 +2523,140 @@ def _ensure_dataset_locked(key: str) -> Tuple[pd.DataFrame, object, object, list
     )
     return chunks_df, vectorizer, matrix, tfidf_chunk_ids
 
+def _validate_required_configuration() -> str:
+    """명시적으로 필수 설정된 구성만 startup을 중단한다."""
+    from src.config import OPENAI_API_KEY, RAG_REQUIRE_OPENAI_API_KEY
+
+    if not OPENAI_API_KEY:
+        message = (
+            "OPENAI_API_KEY가 설정되지 않았습니다. 라우터/질의분석/기본 생성 프로바이더가 "
+            "정상 동작하지 않을 수 있습니다."
+        )
+        if RAG_REQUIRE_OPENAI_API_KEY:
+            raise RuntimeError(message)
+        logging.warning("⚠️ %s", message)
+        return "openai_key_optional_missing"
+    return "ok"
+
+
+def _run_required_startup_checks() -> None:
+    """필수 컴포넌트를 준비하고 실패를 readiness 상태에 누적한다.
+
+    DB·인덱스·임베딩 오류는 프로세스를 종료하지 않는다. liveness를 유지해야 `/ready`의
+    구조화된 원인을 확인할 수 있고, 오케스트레이터는 503으로 트래픽을 차단할 수 있다.
+    """
+    try:
+        config_detail = _validate_required_configuration()
+        _set_readiness_check("configuration", ready=True, detail=config_detail, error=None)
+    except Exception as exc:
+        error = _readiness_error("required_configuration_invalid", exc)
+        _set_readiness_check("configuration", ready=False, detail="failed", error=error)
+        _log_event(logging.ERROR, "startup_component_failed", component="configuration", error=error)
+        raise
+
+    try:
+        init_db()
+        _set_readiness_check("database", ready=True, detail="initialized", error=None)
+        logging.info("✅ Database tables initialized.")
+    except Exception as exc:
+        error = _readiness_error("database_initialization_failed", exc)
+        _set_readiness_check("database", ready=False, detail="failed", error=error)
+        _log_event(logging.ERROR, "startup_component_failed", component="database", error=error, exc_info=True)
+
+    try:
+        mode = data_quality_mode()
+        session = SessionLocal()
+        try:
+            quality_report = build_source_document_quality_report(session, retry_limit=0)
+        finally:
+            session.close()
+        gate_passed = bool(quality_report["gate_passed"])
+        _set_readiness_check(
+            "data_quality",
+            required=mode == "strict",
+            ready=gate_passed,
+            detail="passed" if gate_passed else f"{mode}_threshold_exceeded",
+            mode=mode,
+            counts=quality_report["counts"],
+            ratios=quality_report["ratios"],
+            violations=quality_report["violations"],
+            error=None,
+        )
+    except Exception as exc:
+        mode = os.getenv("RAG_DATA_QUALITY_MODE", "observe").strip().lower()
+        error = _readiness_error("data_quality_report_failed", exc)
+        _set_readiness_check(
+            "data_quality",
+            required=mode == "strict",
+            ready=False,
+            detail="failed",
+            mode=mode,
+            error=error,
+        )
+        _log_event(
+            logging.ERROR if mode == "strict" else logging.WARNING,
+            "startup_component_failed",
+            component="data_quality",
+            error=error,
+            exc_info=True,
+        )
+
+    dataset_counts: dict[str, int] = {}
+    dataset_errors: dict[str, dict[str, str]] = {}
+    for key in _REQUIRED_DATASETS:
+        try:
+            chunks, _, _, _ = _ensure_dataset(key)
+            count = len(chunks)
+            if count <= 0:
+                raise ValueError(f"required dataset '{key}' contains no chunks")
+            dataset_counts[key] = count
+            logging.info(f"✅ Dataset '{key}' successfully loaded.")
+        except Exception as exc:
+            error = _readiness_error("required_dataset_warmup_failed", exc)
+            dataset_errors[key] = error
+            _log_event(
+                logging.ERROR,
+                "startup_component_failed",
+                component="dataset",
+                dataset=key,
+                error=error,
+                exc_info=True,
+            )
+    _set_readiness_check(
+        "datasets",
+        ready=not dataset_errors and len(dataset_counts) == len(_REQUIRED_DATASETS),
+        detail="loaded" if not dataset_errors else "failed",
+        counts=dataset_counts,
+        errors=dataset_errors,
+    )
+
+    try:
+        logging.info("⏳ Warming up embedding model...")
+        embedder = get_embedder()
+        if embedder is None:
+            raise RuntimeError("embedding model loader returned no model")
+        _set_readiness_check("embedder", ready=True, detail="loaded", error=None)
+        logging.info("✅ Embedding model warmup completed.")
+    except Exception as exc:
+        error = _readiness_error("embedder_warmup_failed", exc)
+        _set_readiness_check("embedder", ready=False, detail="failed", error=error)
+        _log_event(logging.ERROR, "startup_component_failed", component="embedder", error=error, exc_info=True)
+
+    _set_startup_complete()
+    snapshot = _readiness_snapshot()
+    _log_event(
+        logging.INFO if snapshot["ready"] else logging.ERROR,
+        "startup_readiness_completed",
+        ready=snapshot["ready"],
+        failures=snapshot["failures"],
+    )
+
+
 @app.on_event("startup")
 def bootstrap_artifacts() -> None:
     """애플리케이션 시작 시 데이터셋과 분류기 등 주요 아티팩트를 미리 로드합니다."""
     logging.basicConfig(level=logging.INFO)
+    _reset_startup_readiness()
 
     _log_event(
         logging.INFO,
@@ -1874,49 +2666,18 @@ def bootstrap_artifacts() -> None:
         sentence_transformers_version=_safe_package_version("sentence-transformers"),
         sklearn_version=_safe_package_version("scikit-learn"),
     )
-    
-    # OpenAI 키 검증: 라우터/질의분석은 항상 OpenAI를 쓰므로 키가 없으면 첫 요청에서 실패한다.
-    # health check를 통과하고도 무음 장애가 나는 것을 막기 위해 startup에서 명시 경고.
-    from src.config import OPENAI_API_KEY, RAG_REQUIRE_OPENAI_API_KEY
-    if not OPENAI_API_KEY:
-        message = (
-            "OPENAI_API_KEY가 설정되지 않았습니다. 라우터/질의분석/기본 생성 프로바이더가 "
-            "정상 동작하지 않을 수 있습니다."
-        )
-        if RAG_REQUIRE_OPENAI_API_KEY:
-            raise RuntimeError(message)
-        logging.warning("⚠️ %s", message)
 
-    # Ensure DB tables exist
-    try:
-        init_db()
-        logging.info("✅ Database tables initialized.")
-    except Exception as e:
-        logging.error(f"❌ Failed to initialize database: {e}")
-    
-    for key in _DATASET_LOADERS:
-        try:
-            _ensure_dataset(key)
-            logging.info(f"✅ Dataset '{key}' successfully loaded.")
-        except (KeyError, FileNotFoundError, ValueError) as exc:
-            logging.error(f"⚠️ Failed to warmup dataset '{key}': {exc}", exc_info=True)
-            # 데이터셋 로드 실패는 심각한 문제일 수 있으므로,
-            # 필요에 따라 여기서 애플리케이션을 종료시키는 로직을 추가할 수 있습니다.
-            # Ex: raise RuntimeError(f"Critical failure loading dataset {key}") from exc
-
-    try:
-        logging.info("⏳ Warming up embedding model...")
-        get_embedder()
-        logging.info("✅ Embedding model warmup completed.")
-    except Exception as exc:
-        logging.warning(f"⚠️ Embedding model warmup failed: {exc}", exc_info=True)
+    _run_required_startup_checks()
 
     # 공지/학식 데이터 주기적 자동 갱신(RAG_SCHEDULER_ENABLED=1일 때만).
     try:
         from src.services.scheduler import start_scheduler
         start_scheduler()
+        _set_readiness_check("scheduler", ready=True, detail="started", error=None)
     except Exception as exc:  # noqa: BLE001 — 스케줄러 실패가 서빙 부팅을 막지 않도록
-        logging.warning(f"⚠️ Data refresh scheduler failed to start: {exc}", exc_info=True)
+        error = _readiness_error("scheduler_start_failed", exc)
+        _set_readiness_check("scheduler", ready=False, detail="failed", error=error)
+        _log_event(logging.WARNING, "startup_component_failed", component="scheduler", error=error, exc_info=True)
 
 
 @app.on_event("shutdown")
@@ -2674,6 +3435,100 @@ async def reject_pending(item_id: int):
         session.close()
 
 
+async def _stream_with_terminal_event(
+    body: AsyncIterator[str],
+    request_id: str,
+) -> AsyncIterator[str]:
+    """Emit exactly one ``done`` event after a successful stream body.
+
+    Plain EOF is not a success signal: an upstream connection can close after
+    only part of an answer. Exceptions therefore emit ``error`` and never
+    ``done``, while client cancellation remains a cancellation.
+    """
+    completion_seen = False
+    try:
+        async for event in body:
+            event_type = None
+            try:
+                data_line = next(
+                    line for line in event.splitlines() if line.startswith("data: ")
+                )
+                payload = json.loads(data_line.removeprefix("data: "))
+                event_type = payload.get("type") if isinstance(payload, dict) else None
+            except (StopIteration, json.JSONDecodeError, AttributeError):
+                event_type = None
+
+            if completion_seen:
+                _log_event(
+                    logging.ERROR,
+                    "stream_protocol_violation",
+                    request_id=request_id,
+                    reason="event_after_completion",
+                    event_type=event_type,
+                )
+                fail_msg = "답변 완료 신호가 올바르지 않습니다. 다시 시도해 주세요."
+                yield f"data: {json.dumps({'type': 'error', 'content': fail_msg}, ensure_ascii=False)}\n\n"
+                return
+            if event_type == "done":
+                _log_event(
+                    logging.ERROR,
+                    "stream_protocol_violation",
+                    request_id=request_id,
+                    reason="body_emitted_done",
+                )
+                fail_msg = "답변 완료 신호가 올바르지 않습니다. 다시 시도해 주세요."
+                yield f"data: {json.dumps({'type': 'error', 'content': fail_msg}, ensure_ascii=False)}\n\n"
+                return
+            if event_type == "completion":
+                completion_seen = True
+            yield event
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _log_event(
+            logging.ERROR, "ask_stream_failed",
+            request_id=request_id, error=str(exc),
+        )
+        fail_msg = "답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
+        yield f"data: {json.dumps({'type': 'error', 'content': fail_msg}, ensure_ascii=False)}\n\n"
+        return
+
+    if completion_seen:
+        yield f"data: {json.dumps({'type': 'done', 'request_id': request_id}, ensure_ascii=False)}\n\n"
+    else:
+        _log_event(
+            logging.WARNING,
+            "stream_ended_without_completion",
+            request_id=request_id,
+        )
+
+
+def _completion_stream_event(
+    *,
+    request_id: str,
+    grounded: bool | None,
+    grounding_score: float | None,
+    suggested_questions: list[str],
+    fallback_reason: str | None,
+    sources: list[SourceChunk] | list[dict],
+) -> str:
+    """Build final persistence metadata; callers emit it immediately before ``done``."""
+    serialized_sources = [
+        source.dict() if hasattr(source, "dict") else source
+        for source in sources
+    ]
+    payload = {
+        "type": "completion",
+        "request_id": request_id,
+        "grounded": grounded,
+        "grounding_score": grounding_score,
+        "suggested_questions": suggested_questions,
+        "fallback_reason": fallback_reason,
+        "sources": serialized_sources,
+    }
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
 @app.post("/ask/stream")
 async def ask_stream(req: AskRequest, request: Request):
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
@@ -2688,7 +3543,8 @@ async def ask_stream(req: AskRequest, request: Request):
 
     async def _stream_body():
         user_major = req.major
-        semantic_cache_ns = _semantic_cache_namespace(user_major)
+        allow_wise = query_explicitly_requests_wise(raw_query)
+        semantic_cache_ns = _semantic_cache_namespace(user_major, allow_wise=allow_wise)
         # 후속질문은 대화 이력으로 해소되므로(맥락 의존) 이력이 있으면 시맨틱 캐시를 건너뛴다.
         # raw_query만으로는 직전 맥락이 달라 잘못된 캐시 답을 줄 수 있기 때문(첫 턴만 캐시 대상).
         history_text = ""
@@ -2710,6 +3566,14 @@ async def ask_stream(req: AskRequest, request: Request):
                     yield "data: " + json.dumps({"type": "grounding", "grounded": False, "score": hit.get("grounding_score"), "reason": None}, ensure_ascii=False) + "\n\n"
                 await run_in_threadpool(append_manual_history, session_id, raw_query, hit["answer"])
                 _log_event(logging.INFO, "semantic_cache_hit", request_id=request_id, namespace=semantic_cache_ns)
+                yield _completion_stream_event(
+                    request_id=request_id,
+                    grounded=hit.get("grounded"),
+                    grounding_score=hit.get("grounding_score"),
+                    suggested_questions=hit.get("suggested_questions", []),
+                    fallback_reason=None,
+                    sources=hit.get("sources", []),
+                )
                 return
 
         analysis_meta = QueryAnalysisMeta(result=None, used=False, failed=False)
@@ -2759,6 +3623,14 @@ async def ask_stream(req: AskRequest, request: Request):
                 analysis_meta.used, analysis_meta.failed, None, None, [],
                 stage_timings, llm_usage,
             )
+            yield _completion_stream_event(
+                request_id=request_id,
+                grounded=None,
+                grounding_score=None,
+                suggested_questions=[],
+                fallback_reason=None,
+                sources=[],
+            )
             return
 
         # 2. RAG 검색 프로세스
@@ -2786,33 +3658,9 @@ async def ask_stream(req: AskRequest, request: Request):
                 final_where_filter["major"] = {"$eq": user_major}
 
         stage_started_at = time.perf_counter()
-        if RAG_SEARCH_ALL_DATASETS:
-            # 라우터를 건너뛰고 전체 데이터셋을 검색한다(오분류 회피). 점수 병합이 선별한다.
-            routed = list(SEARCHABLE_DATASETS)
-            route = list(SEARCHABLE_DATASETS)
-        else:
-            routed = await route_query(semantic_query)
-            route = _merge_routes(analysis_meta, routed)
-            if _should_append_rules_route(semantic_query, route):
-                route.append("rules")
+        # 질의분석 intent와 무관하게 항상 전체 데이터셋을 검색한다.
+        route = _routerless_retrieval_route()
         _mark_stage(stage_timings, "routing", stage_started_at)
-        # RAG_SEARCH_ALL_DATASETS=True のとき route は全データセットを含むため
-        # policy/cache の meals・notices 有無チェックが正しく機能しない。
-        # _policy_route は「この質問が何について」を表し、検索範囲(route)とは独立。
-        if RAG_SEARCH_ALL_DATASETS:
-            _raw_policy = _merge_routes(analysis_meta, [])
-            # _merge_routes 는 analysis 결과가 없거나 intent 가 인식 불가일 때 ["notices"] 를 fallback으로 반환.
-            # 이 기본값은 분석이 실제로 notices 로 분류한 경우에만 사용해야 한다.
-            _notices_by_default = (
-                _raw_policy == ["notices"]
-                and (
-                    analysis_meta.result is None
-                    or analysis_meta.result.intent not in {"notices", "rules", "schedule", "courses", "staff", "meals"}
-                )
-            )
-            _policy_route = [] if _notices_by_default else _raw_policy
-        else:
-            _policy_route = route
 
         entry_year = _extract_entry_year_from_query(semantic_query) or _extract_entry_year_from_query(raw_query)
         stage_started_at = time.perf_counter()
@@ -2820,28 +3668,16 @@ async def ask_stream(req: AskRequest, request: Request):
         _mark_stage(stage_timings, "date_filter_parse", stage_started_at)
         date_filter_applied = date_filter is not None
         date_filter_relaxed = False
-        recent_notice_query = (
-            _is_recent_notice_query(semantic_query, _policy_route)
-            or _is_recent_notice_query(raw_query, _policy_route)
-        )
-        notice_board_filter = (
-            _extract_notice_board_filter(semantic_query, _policy_route)
-            or _extract_notice_board_filter(raw_query, _policy_route)
-        )
-        retrieval_policy = _resolve_retrieval_policy(semantic_query, _policy_route)
-        if recent_notice_query and not retrieval_policy.prefer_notices_with_dates:
-            retrieval_policy = replace(
-                retrieval_policy,
-                name='recent_notices',
-                allow_recency_override=True,
-                prefer_notices_with_dates=True,
-            )
+        recent_notice_query = False
+        notice_board_filter = None
+        retrieval_policy = RetrievalPolicy(name="all_datasets", min_score=MIN_RETRIEVAL_SCORE)
 
         stage_started_at = time.perf_counter()
         frames, date_filter_eliminated_any, unavailable_datasets = await _retrieve_frames_for_queries(
             route=route, queries=retrieval_queries, final_where_filter=final_where_filter,
             notice_board_filter=notice_board_filter, date_filter=date_filter, entry_year=entry_year,
             request_id=request_id, recent_notice_query=recent_notice_query,
+            allow_wise=allow_wise,
         )
 
         if not frames and date_filter is not None and date_filter.relaxed_start and date_filter.relaxed_end:
@@ -2855,35 +3691,22 @@ async def ask_stream(req: AskRequest, request: Request):
                 route=route, queries=retrieval_queries, final_where_filter=final_where_filter,
                 notice_board_filter=notice_board_filter, date_filter=relaxed_filter, entry_year=entry_year,
                 request_id=request_id, recent_notice_query=recent_notice_query,
+                allow_wise=allow_wise,
             )
             if relaxed_frames:
                 frames = relaxed_frames
             unavailable_datasets = list(dict.fromkeys(unavailable_datasets + relaxed_unavailable))
 
-        if not frames:
-            merged = pd.DataFrame()
-        else:
-            merged = _merge_query_hits(frames)
-
-        merged = _prepare_merged_results(merged, recent_notice_query, retrieval_policy, semantic_query, entry_year=entry_year, user_major=req.major)
-        merged = merged.head(DEFAULT_TOP_K).reset_index(drop=True)
-        _mark_stage(stage_timings, "retrieval_and_rerank", stage_started_at)
+        merged = _build_balanced_shortlist(frames)
+        _mark_stage(stage_timings, "retrieval_and_fusion", stage_started_at)
 
         # 3. Fallback 체크
         top_hybrid_score = None
         if not merged.empty and "hybrid_score" in merged.columns:
             top_hybrid_score = _clean_response_float(merged["hybrid_score"].max())
 
-        topic_aligned = _has_notice_topic_alignment(merged, semantic_query)
+        topic_aligned = False
         min_score = retrieval_policy.min_score
-        if recent_notice_query and retrieval_policy.allow_recency_override and not topic_aligned:
-            min_score = max(MIN_RETRIEVAL_SCORE, retrieval_policy.min_score)
-        allow_recent_answer = (
-            retrieval_policy.allow_recency_override
-            and recent_notice_query
-            and not merged.empty
-            and topic_aligned
-        )
 
         fallback_reason = None
         if merged.empty:
@@ -2894,8 +3717,24 @@ async def ask_stream(req: AskRequest, request: Request):
             else:
                 fallback_reason = FALLBACK_REASON_NO_RESULTS
         # 결과가 있어도 최고 점수가 임계 미만이면 환각 방지를 위해 폴백 처리한다(비스트리밍 경로와 동일).
-        elif top_hybrid_score is not None and not allow_recent_answer and top_hybrid_score < min_score:
+        elif top_hybrid_score is not None and top_hybrid_score < min_score:
             fallback_reason = FALLBACK_REASON_SCORE_BELOW_THRESHOLD
+
+        selector_fallback = False
+        if fallback_reason is None:
+            stage_started_at = time.perf_counter()
+            merged, selector_fallback = await _select_evidence_for_answer(semantic_query, merged, llm_usage)
+            _mark_stage(stage_timings, "evidence_selection", stage_started_at)
+            _log_event(
+                logging.WARNING if selector_fallback else logging.INFO,
+                "evidence_selection_completed",
+                request_id=request_id,
+                fallback=selector_fallback,
+                group_count=0 if merged.empty else int(merged["evidence_group"].nunique()),
+                document_count=len(merged),
+            )
+            if merged.empty:
+                fallback_reason = FALLBACK_REASON_NO_RESULTS
 
         if fallback_reason is not None:
             fallback_answer = _build_retrieval_fallback_answer(
@@ -2922,49 +3761,32 @@ async def ask_stream(req: AskRequest, request: Request):
                 llm_usage,
             )
             await run_in_threadpool(append_manual_history, session_id, raw_query, fallback_answer)
+            yield _completion_stream_event(
+                request_id=request_id,
+                grounded=None,
+                grounding_score=None,
+                suggested_questions=[],
+                fallback_reason=fallback_reason,
+                sources=[],
+            )
             return
 
         # 4. 컨텍스트 구성 및 스트리밍 시작
         stage_started_at = time.perf_counter()
-        context_parts = []
-        citation_numbers: dict[object, int] = {}
-        for citation_number, (row_index, row) in enumerate(merged.iterrows(), start=1):
-            citation_numbers[row_index] = citation_number
-            part = f"문서 {citation_number} [출처: {row.get('source', '알 수 없음')}]:\n"
-            if row.get('title'): part += f"제목: {row.get('title')}\n"
-            if row.get('published_at'): part += f"게시일: {row.get('published_at')}\n"
-            if row.get('url'): part += f"URL: {row.get('url')}\n"
-            part += f"내용:\n{_expand_chunk_with_neighbors(row)}\n"
-            
-            # attachments는 결측 시 NaN(float)일 수 있으므로 문자열인 경우에만 파싱한다.
-            attachments_str = row.get('attachments')
-            if isinstance(attachments_str, str) and attachments_str.strip():
-                try:
-                    attachments = json.loads(attachments_str)
-                    if isinstance(attachments, list):
-                        links = [f"- [{a['name']}]({a['url']})" for a in attachments if isinstance(a, dict) and 'name' in a and 'url' in a]
-                        if links: part += "\n첨부파일:\n" + "\n".join(links) + "\n"
-                except (json.JSONDecodeError, TypeError) as exc:
-                    _log_event(logging.WARNING, "attachment_parse_failed", error=str(exc))
-            context_parts.append(part)
-
-        guide_prefix = _build_guide_context_prefix(merged, route, entry_year)
-        # 로그인 사용자 소속 학과를 컨텍스트 상단에 명시(개인 맞춤형) + 학번 가이드 프리픽스
-        context_prefix = _user_profile_prefix(req.major) + guide_prefix
-        # 문서 경계를 존중하며 MAX_CONTEXT_LENGTH 이내로 구성(마지막 문서 중간 절단 방지)
-        context_text = _build_context_text(context_parts, MAX_CONTEXT_LENGTH, prefix=context_prefix)
+        group_count = int(pd.to_numeric(merged["evidence_group"], errors="coerce").max())
+        context_text = _build_selected_evidence_context(merged, prefix=_user_profile_prefix(req.major))
+        response_instructions = _multiple_evidence_response_instructions(group_count)
+        selected_route = list(dict.fromkeys(merged["dataset"].astype(str).tolist()))
         _mark_stage(stage_timings, "context_build", stage_started_at)
         current_date = _get_current_kst_string()
 
         # 소스 데이터 정리
-        score_cols = {"vector_score", "sparse_score", "hybrid_score", "norm_recency", "final_score"}
-        internal_cols = {"chunk_text", "dataset", "sort_date", "sort_timestamp", "norm_hybrid", "recent_notice_priority", "matched_query_count", "query_match_bonus", "date_unknown_auxiliary", "notice_topic_match", "matched_queries"} | score_cols
         sources = [
             SourceChunk(
                 source=_clean_response_str(row.get("dataset")) or "",
-                metadata={col: _clean_response_value(row.get(col)) for col in row.index if col not in internal_cols},
+                metadata=_source_metadata(row),
                 snippet=_clean_response_str(row.get("chunk_text")) or "",
-                citation_number=citation_numbers.get(row_index),
+                citation_number=int(row.get("citation_number")),
                 chunk_id=_clean_response_str(row.get("chunk_id")),
                 title=_clean_response_str(row.get("title")),
                 url=_clean_response_str(row.get("url")),
@@ -2987,11 +3809,6 @@ async def ask_stream(req: AskRequest, request: Request):
 
         # 답변 스트리밍 시작
         full_answer = []
-        guide_ans_prefix = _build_guide_answer_prefix(merged, route, entry_year)
-        if guide_ans_prefix:
-            full_answer.append(guide_ans_prefix)
-            yield f"data: {json.dumps({'type': 'text', 'content': guide_ans_prefix}, ensure_ascii=False)}\n\n"
-
         stage_started_at = time.perf_counter()
         async for chunk in generate_langchain_answer_stream(
             question=semantic_query,
@@ -2999,6 +3816,7 @@ async def ask_stream(req: AskRequest, request: Request):
             session_id=session_id,
             current_date=current_date,
             usage_collector=llm_usage,
+            response_instructions=response_instructions,
         ):
             full_answer.append(chunk)
             yield f"data: {json.dumps({'type': 'text', 'content': chunk}, ensure_ascii=False)}\n\n"
@@ -3007,25 +3825,6 @@ async def ask_stream(req: AskRequest, request: Request):
         # 최종 로깅
         final_answer = "".join(full_answer)
         suggested_questions: list[str] = []
-        if RAG_SUGGEST_FOLLOWUPS:
-            try:
-                stage_started_at = time.perf_counter()
-                suggested_questions = await generate_followup_questions(
-                    raw_query,
-                    final_answer,
-                    RAG_SUGGEST_FOLLOWUPS_COUNT,
-                    usage_collector=llm_usage,
-                )
-                _mark_stage(stage_timings, "followup_generation", stage_started_at)
-                if suggested_questions:
-                    yield f"data: {json.dumps({'type': 'suggestions', 'questions': suggested_questions}, ensure_ascii=False)}\n\n"
-            except Exception as exc:  # noqa: BLE001
-                _log_event(
-                    logging.WARNING,
-                    "followup_suggestions_failed",
-                    request_id=request_id,
-                    error=str(exc),
-                )
         grounding_result = None
         grounded_flag: bool | None = None
         grounding_score: float | None = None
@@ -3060,6 +3859,32 @@ async def ask_stream(req: AskRequest, request: Request):
                     error=str(exc),
                 )
         final_answer = "".join(full_answer)
+        grounding_allows_followups = _grounding_allows_followups(
+            RAG_GROUNDING_CHECK_ENABLED,
+            grounding_result,
+        )
+        if RAG_SUGGEST_FOLLOWUPS and grounding_allows_followups:
+            try:
+                stage_started_at = time.perf_counter()
+                suggested_questions = await generate_followup_questions(
+                    raw_query,
+                    final_answer,
+                    RAG_SUGGEST_FOLLOWUPS_COUNT,
+                    usage_collector=llm_usage,
+                    source_context=sources,
+                    campus_scope="wise" if allow_wise else "seoul_bmc",
+                    supported_domains=selected_route,
+                )
+                _mark_stage(stage_timings, "followup_generation", stage_started_at)
+                if suggested_questions:
+                    yield f"data: {json.dumps({'type': 'suggestions', 'questions': suggested_questions}, ensure_ascii=False)}\n\n"
+            except Exception as exc:  # noqa: BLE001
+                _log_event(
+                    logging.WARNING,
+                    "followup_suggestions_failed",
+                    request_id=request_id,
+                    error=str(exc),
+                )
         _mark_stage(stage_timings, "total", request_started_at)
         await run_in_threadpool(
             _save_rag_evaluation_log,
@@ -3081,7 +3906,7 @@ async def ask_stream(req: AskRequest, request: Request):
         if grounding_result is not None and grounding_result.checked:
             await run_in_threadpool(_update_grounding_log, request_id, grounding_result)
         if RAG_SEMANTIC_CACHE_ENABLED and _should_cache_answer(
-            _policy_route,
+            selected_route,
             False,
             date_filter_applied,
             grounded_flag,
@@ -3102,25 +3927,19 @@ async def ask_stream(req: AskRequest, request: Request):
                     "grounding_score": grounding_score,
                 },
             )
+        yield _completion_stream_event(
+            request_id=request_id,
+            grounded=grounded_flag,
+            grounding_score=grounding_score,
+            suggested_questions=suggested_questions,
+            fallback_reason=None,
+            sources=sources,
+        )
 
-    async def stream_generator():
-        """본문 스트림을 감싸 중간 예외(OpenAI 5xx·타임아웃·Chroma 오류 등)를
-        조용한 끊김 대신 SSE error 이벤트로 전달한다(클라이언트가 실패를 인지·복구 가능)."""
-        try:
-            async for event in _stream_body():
-                yield event
-        except asyncio.CancelledError:
-            # 클라이언트 연결 종료 — 정상 취소이므로 조용히 끝낸다.
-            raise
-        except Exception as exc:  # noqa: BLE001
-            _log_event(
-                logging.ERROR, "ask_stream_failed",
-                request_id=request_id, error=str(exc),
-            )
-            fail_msg = "답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
-            yield f"data: {json.dumps({'type': 'error', 'content': fail_msg}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(stream_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        _stream_with_terminal_event(_stream_body(), request_id),
+        media_type="text/event-stream",
+    )
 
 @app.post("/ask", response_model=AskResponse)
 async def ask(req: AskRequest, request: Request) -> AskResponse:
@@ -3134,7 +3953,8 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
     llm_usage: list[dict] = []
     request_started_at = time.perf_counter()
     user_major = req.major
-    semantic_cache_ns = _semantic_cache_namespace(user_major)
+    allow_wise = query_explicitly_requests_wise(raw_query)
+    semantic_cache_ns = _semantic_cache_namespace(user_major, allow_wise=allow_wise)
     # 후속질문은 대화 이력으로 해소되므로(맥락 의존) 이력이 있으면 시맨틱 캐시를 건너뛴다(첫 턴만 대상).
     history_text = ""
     if USE_QUERY_ANALYSIS or RAG_SEMANTIC_CACHE_ENABLED:
@@ -3266,24 +4086,8 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
 
     _log_event(logging.INFO, "ask_filters", request_id=request_id, filters=final_where_filter)
     stage_started_at = time.perf_counter()
-    if RAG_SEARCH_ALL_DATASETS:
-        # 라우터를 건너뛰고 전체 데이터셋을 검색한다(오분류 회피). 점수 병합이 선별한다.
-        routed = list(SEARCHABLE_DATASETS)
-        route = list(SEARCHABLE_DATASETS)
-    else:
-        routed = await route_query(
-            analysis_meta.result.normalized_question
-            if analysis_meta.result is not None
-            else expanded_query
-        )
-        route = _merge_routes(analysis_meta, routed)
-        if _should_append_rules_route(semantic_query, route):
-            route.append("rules")
+    route = _routerless_retrieval_route()
     _mark_stage(stage_timings, "routing", stage_started_at)
-    # RAG_SEARCH_ALL_DATASETS=True のとき route は全データセットを含むため
-    # policy/cache の meals・notices 有無チェックが正しく機能しない。
-    # _policy_route は「この質問が何について」を表し、検索範囲(route)とは独立。
-    _policy_route = _merge_routes(analysis_meta, []) if RAG_SEARCH_ALL_DATASETS else route
     entry_year = _extract_entry_year_from_query(semantic_query) or _extract_entry_year_from_query(raw_query)
     stage_started_at = time.perf_counter()
     date_filter = await run_in_threadpool(
@@ -3293,22 +4097,9 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
     _mark_stage(stage_timings, "date_filter_parse", stage_started_at)
     date_filter_applied = date_filter is not None
     date_filter_relaxed = False
-    recent_notice_query = (
-        _is_recent_notice_query(semantic_query, _policy_route)
-        or _is_recent_notice_query(raw_query, _policy_route)
-    )
-    notice_board_filter = (
-        _extract_notice_board_filter(semantic_query, _policy_route)
-        or _extract_notice_board_filter(raw_query, _policy_route)
-    )
-    retrieval_policy = _resolve_retrieval_policy(semantic_query, _policy_route)
-    if recent_notice_query and not retrieval_policy.prefer_notices_with_dates:
-        retrieval_policy = replace(
-            retrieval_policy,
-            name='recent_notices',
-            allow_recency_override=True,
-            prefer_notices_with_dates=True,
-        )
+    recent_notice_query = False
+    notice_board_filter = None
+    retrieval_policy = RetrievalPolicy(name="all_datasets", min_score=MIN_RETRIEVAL_SCORE)
 
     stage_started_at = time.perf_counter()
     frames, date_filter_eliminated_any, unavailable_datasets = await _retrieve_frames_for_queries(
@@ -3320,6 +4111,7 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
         entry_year=entry_year,
         request_id=request_id,
         recent_notice_query=recent_notice_query,
+        allow_wise=allow_wise,
     )
 
     if not frames and date_filter is not None and date_filter.relaxed_start and date_filter.relaxed_end:
@@ -3340,35 +4132,23 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
             entry_year=entry_year,
             request_id=request_id,
             recent_notice_query=recent_notice_query,
+            allow_wise=allow_wise,
         )
         if relaxed_frames:
             frames = relaxed_frames
         unavailable_datasets = list(dict.fromkeys(unavailable_datasets + relaxed_unavailable))
 
-    if not frames:
+    merged = _build_balanced_shortlist(frames)
+    if merged.empty:
         _log_event(logging.INFO, "retrieval_no_results", request_id=request_id, route=route)
-        merged = pd.DataFrame()
-    else:
-        merged = _merge_query_hits(frames)
-
-    merged = _prepare_merged_results(merged, recent_notice_query, retrieval_policy, semantic_query, entry_year=entry_year, user_major=req.major)
-    merged = merged.head(DEFAULT_TOP_K).reset_index(drop=True)
 
     def _evaluate_fallback(current_merged: pd.DataFrame) -> tuple[float | None, bool, float, str | None]:
         top_score = None
         if not current_merged.empty and "hybrid_score" in current_merged.columns:
             top_score = _clean_response_float(current_merged["hybrid_score"].max())
 
-        topic_aligned = _has_notice_topic_alignment(current_merged, semantic_query)
-        allow_recent_answer = (
-            retrieval_policy.allow_recency_override
-            and recent_notice_query
-            and not current_merged.empty
-            and topic_aligned
-        )
+        topic_aligned = False
         min_score = retrieval_policy.min_score
-        if recent_notice_query and retrieval_policy.allow_recency_override and not topic_aligned:
-            min_score = max(MIN_RETRIEVAL_SCORE, retrieval_policy.min_score)
 
         reason = None
         if current_merged.empty:
@@ -3380,31 +4160,29 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
                 reason = FALLBACK_REASON_NO_RESULTS
         # 결과가 있어도 최고 점수가 임계 미만이면 환각 방지를 위해 폴백 처리한다.
         # 단, 최신 공지 질의에서 recency override가 허용되고 주제가 일치하면 낮은 점수도 통과시킨다.
-        elif top_score is not None and not allow_recent_answer and top_score < min_score:
+        elif top_score is not None and top_score < min_score:
             reason = FALLBACK_REASON_SCORE_BELOW_THRESHOLD
         return top_score, topic_aligned, min_score, reason
 
     top_hybrid_score, notice_topic_aligned, effective_min_score, fallback_reason = _evaluate_fallback(merged)
 
-    if fallback_reason is not None and "courses" in route and "rules" not in route:
-        guide_frames, _, guide_unavailable = await _retrieve_frames_for_queries(
-            route=["rules"],
-            queries=retrieval_queries,
-            final_where_filter=final_where_filter,
-            notice_board_filter=None,
-            date_filter=None,
-            entry_year=entry_year,
+    _mark_stage(stage_timings, "retrieval_and_fusion", stage_started_at)
+
+    selector_fallback = False
+    if fallback_reason is None:
+        stage_started_at = time.perf_counter()
+        merged, selector_fallback = await _select_evidence_for_answer(semantic_query, merged, llm_usage)
+        _mark_stage(stage_timings, "evidence_selection", stage_started_at)
+        _log_event(
+            logging.WARNING if selector_fallback else logging.INFO,
+            "evidence_selection_completed",
             request_id=request_id,
+            fallback=selector_fallback,
+            group_count=0 if merged.empty else int(merged["evidence_group"].nunique()),
+            document_count=len(merged),
         )
-        unavailable_datasets = list(dict.fromkeys(unavailable_datasets + guide_unavailable))
-        if guide_frames:
-            frames.extend(guide_frames)
-            route.append("rules")
-            merged = _merge_query_hits(frames)
-            merged = _prepare_merged_results(merged, recent_notice_query, retrieval_policy, semantic_query, entry_year=entry_year, user_major=req.major)
-            merged = merged.head(DEFAULT_TOP_K).reset_index(drop=True)
-            top_hybrid_score, notice_topic_aligned, effective_min_score, fallback_reason = _evaluate_fallback(merged)
-    _mark_stage(stage_timings, "retrieval_and_rerank", stage_started_at)
+        if merged.empty:
+            fallback_reason = FALLBACK_REASON_NO_RESULTS
 
     matched_queries = _collect_matched_queries(merged)
 
@@ -3476,50 +4254,10 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
         )
 
     stage_started_at = time.perf_counter()
-    context_parts = []
-    citation_numbers: dict[object, int] = {}
-    for citation_number, (row_index, row) in enumerate(merged.iterrows(), start=1):
-        citation_numbers[row_index] = citation_number
-        part = f"문서 {citation_number} [출처: {row.get('source', '알 수 없음')}]:\n"
-        if row.get('title'):
-            part += f"제목: {row.get('title')}\n"
-        if row.get('published_at'): # 공지사항, 일정 등 날짜 정보가 있는 경우
-            part += f"게시일: {row.get('published_at')}\n"
-        if row.get('url'): # URL 정보가 있는 경우
-            part += f"URL: {row.get('url')}\n"
-        part += f"내용:\n{_expand_chunk_with_neighbors(row)}\n"
-        
-        # --- NEW ATTACHMENT PROCESSING ---
-        # attachments는 결측 시 NaN(float)일 수 있으므로 문자열인 경우에만 파싱한다.
-        attachments_str = row.get('attachments')
-        if isinstance(attachments_str, str) and attachments_str.strip():
-            try:
-                attachments = json.loads(attachments_str)
-
-                if isinstance(attachments, list):
-                    pdf_links = []
-                    for att in attachments:
-                        if isinstance(att, dict) and 'name' in att and 'url' in att:
-                            file_name = att['name']
-                            file_url = att['url']
-                            # Check if it's a PDF or a file link
-                            # For now, include all attachments as clickable links, not just PDFs
-                            pdf_links.append(f"- [{file_name}]({file_url})")
-                    if pdf_links:
-                        part += "\n첨부파일:\n" + "\n".join(pdf_links) + "\n"
-            except json.JSONDecodeError:
-                logging.warning(f"Failed to decode attachments JSON: {attachments_str}")
-        # --- END NEW ATTACHMENT PROCESSING ---
-
-        context_parts.append(part)
-    
-    # 로그인 사용자 소속 학과를 컨텍스트 상단에 명시(개인 맞춤형) + 학번 가이드 프리픽스
-    guide_context_prefix = _user_profile_prefix(req.major) + _build_guide_context_prefix(merged, route, entry_year)
-    if context_parts:
-        # 문서 경계를 존중하며 MAX_CONTEXT_LENGTH 이내로 구성(마지막 문서 중간 절단 방지)
-        context_text = _build_context_text(context_parts, MAX_CONTEXT_LENGTH, prefix=guide_context_prefix)
-    else:
-        context_text = (guide_context_prefix + "검색된 관련 문서가 없습니다. 일반적인 대화로 응답해주세요.")[:MAX_CONTEXT_LENGTH]
+    group_count = int(pd.to_numeric(merged["evidence_group"], errors="coerce").max())
+    context_text = _build_selected_evidence_context(merged, prefix=_user_profile_prefix(req.major))
+    response_instructions = _multiple_evidence_response_instructions(group_count)
+    selected_route = list(dict.fromkeys(merged["dataset"].astype(str).tolist()))
     _mark_stage(stage_timings, "context_build", stage_started_at)
     # LLM에게 현재 날짜를 전달하여 "오늘", "이번 학기" 등의 표현을 해석하도록 돕습니다.
     current_date = _get_current_kst_string()
@@ -3532,15 +4270,12 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
             session_id=session_id,
             current_date=current_date,
             usage_collector=llm_usage,
+            response_instructions=response_instructions,
         )
         _mark_stage(stage_timings, "generation", stage_started_at)
     except Exception as e:
         _log_event(logging.ERROR, "llm_generation_failed", exc_info=True, request_id=request_id)
         answer = "죄송합니다. 답변을 생성하는 도중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
-
-    guide_answer_prefix = _build_guide_answer_prefix(merged, route, entry_year)
-    if guide_answer_prefix and not answer.startswith(guide_answer_prefix):
-        answer = guide_answer_prefix + answer
 
     # 후처리: 과도한 볼드체 제거 대신 가독성 유지 (필요 시 최소화)
     # answer = answer.replace("**", "")
@@ -3548,14 +4283,12 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
     citations_raw = await run_in_threadpool(format_citations, merged)
     citations = re.sub(r'<[^>]+>', '', citations_raw)
 
-    score_columns = {"vector_score", "sparse_score", "hybrid_score", "norm_recency", "final_score"}
-    internal_columns = {"chunk_text", "dataset", "sort_date", "sort_timestamp", "norm_hybrid", "recent_notice_priority", "matched_query_count", "query_match_bonus", "date_unknown_auxiliary", "notice_topic_match", "matched_queries"} | score_columns
     sources = [
         SourceChunk(
             source=_clean_response_str(row.get("dataset")) or "",
-            metadata={col: _clean_response_value(row.get(col)) for col in row.index if col not in internal_columns},
+            metadata=_source_metadata(row),
             snippet=_clean_response_str(row.get("chunk_text")) or "",
-            citation_number=citation_numbers.get(row_index),
+            citation_number=int(row.get("citation_number")),
             chunk_id=_clean_response_str(row.get("chunk_id")),
             title=_clean_response_str(row.get("title")),
             url=_clean_response_str(row.get("url")),
@@ -3571,24 +4304,6 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
     ]
 
     suggested_questions: list[str] = []
-    if RAG_SUGGEST_FOLLOWUPS:
-        try:
-            stage_started_at = time.perf_counter()
-            suggested_questions = await generate_followup_questions(
-                raw_query,
-                answer,
-                RAG_SUGGEST_FOLLOWUPS_COUNT,
-                usage_collector=llm_usage,
-            )
-            _mark_stage(stage_timings, "followup_generation", stage_started_at)
-        except Exception as exc:  # noqa: BLE001
-            _log_event(
-                logging.WARNING,
-                "followup_suggestions_failed",
-                request_id=request_id,
-                error=str(exc),
-            )
-
     grounding_result = None
     grounded: bool | None = None
     grounding_score: float | None = None
@@ -3613,6 +4328,30 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
             _log_event(
                 logging.WARNING,
                 "grounding_check_failed",
+                request_id=request_id,
+                error=str(exc),
+            )
+    grounding_allows_followups = _grounding_allows_followups(
+        RAG_GROUNDING_CHECK_ENABLED,
+        grounding_result,
+    )
+    if RAG_SUGGEST_FOLLOWUPS and grounding_allows_followups:
+        try:
+            stage_started_at = time.perf_counter()
+            suggested_questions = await generate_followup_questions(
+                raw_query,
+                answer,
+                RAG_SUGGEST_FOLLOWUPS_COUNT,
+                usage_collector=llm_usage,
+                source_context=[source.dict() for source in sources],
+                campus_scope="wise" if allow_wise else "seoul_bmc",
+                supported_domains=selected_route,
+            )
+            _mark_stage(stage_timings, "followup_generation", stage_started_at)
+        except Exception as exc:  # noqa: BLE001
+            _log_event(
+                logging.WARNING,
+                "followup_suggestions_failed",
                 request_id=request_id,
                 error=str(exc),
             )
@@ -3665,7 +4404,7 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
     )
 
     if RAG_SEMANTIC_CACHE_ENABLED and _should_cache_answer(
-        _policy_route,
+        selected_route,
         False,
         date_filter_applied,
         grounded,
@@ -3752,8 +4491,14 @@ async def reindex_dataset(target: str):
 
 @app.get("/health")
 def health() -> dict:
-    status = {}
-    for key in _DATASET_LOADERS:
-        cache = _datasets.get(key)
-        status[key] = 0 if cache is None else len(cache.chunks)
-    return {"status": "ok", "datasets": status}
+    """프로세스가 HTTP 요청에 응답할 수 있는지만 나타내는 liveness."""
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+def ready():
+    """필수 startup 컴포넌트가 모두 준비됐을 때만 2xx를 반환한다."""
+    snapshot = _readiness_snapshot()
+    if not snapshot["ready"]:
+        return JSONResponse(status_code=503, content=snapshot)
+    return snapshot
