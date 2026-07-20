@@ -1,21 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../../api/client'
-import type { DepartmentKnowledge } from '../../types/admin'
+import { toDepartmentKnowledge } from '../../admin/adminData'
+import type { AdminItemResponse, DepartmentKnowledge } from '../../types/admin'
 
 interface UserInfoResponse {
   name?: string;
   Name?: string;
   majorName?: string;
   MajorName?: string;
-}
-
-interface AdminItemResponse {
-  id: number | string;
-  data: string;
-  source_type: string;
-  status: string;
-  created_at: string;
 }
 
 interface KnowledgePayload {
@@ -109,40 +102,7 @@ const DepartmentAdminPage = () => {
         const itemsData = await apiFetch<AdminItemResponse[]>('/admin/items');
         
         if (Array.isArray(itemsData)) {
-          const mappedList: DepartmentKnowledge[] = itemsData.map((item) => {
-             let title = '제목 없음';
-             let content = '';
-             let parsedData: Record<string, string | undefined> = {};
-             
-             try {
-                parsedData = JSON.parse(item.data);
-             } catch(e) { console.error('JSON parse error', e); }
-
-             if (item.source_type === 'custom_knowledge') {
-                 title = parsedData.question || '질문 없음';
-                 content = parsedData.answer || '';
-             } else if (item.source_type === 'event') {
-                 title = `[행사] ${parsedData.title || ''}`;
-                 content = `일시: ${parsedData.start_date} ~ ${parsedData.end_date}\n장소: ${parsedData.location}\n\n${parsedData.description}`;
-             } else if (item.source_type === 'announcement') {
-                 title = `[공지] ${parsedData.title || ''}`;
-                 content = `게시일: ${parsedData.date}\n분류: ${parsedData.category}\n\n${parsedData.content}`;
-             }
-             
-             // Map backend status to frontend status
-             let status: 'PENDING' | 'APPROVED' | 'REJECTED' = 'PENDING';
-             if (item.status === 'approved' || item.status === 'approved_manually') status = 'APPROVED';
-             else if (item.status === 'rejected') status = 'REJECTED';
-             else status = 'PENDING';
-
-             return {
-               id: item.id.toString(),
-               title: title,
-               content: content,
-               status: status,
-               createdAt: item.created_at
-             };
-          });
+          const mappedList: DepartmentKnowledge[] = itemsData.map(toDepartmentKnowledge);
           setKnowledgeList(mappedList);
         }
       } catch (e) {

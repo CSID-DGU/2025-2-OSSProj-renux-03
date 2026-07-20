@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { apiFetch } from '../../api/client'
+import { apiFetch, resolveApiUrl, withNgrokHeader } from '../../api/client'
+import { getCsvFilename, triggerBlobDownload } from '../../admin/csvDownload'
 import type { RagChatLog } from '../../types/admin'
 
 const formatDateTime = (value?: string | null) => {
@@ -21,6 +22,9 @@ const ChatLogPage = () => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [exportNotice, setExportNotice] = useState<string | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
   // 200건 일괄 렌더링 방지: 검색 필터 + 점진 표시
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedUser, setSelectedUser] = useState<string>('')
@@ -74,6 +78,46 @@ const ChatLogPage = () => {
     setRefreshing(false)
   }
 
+  const handleExport = async () => {
+    setExporting(true)
+    setExportNotice(null)
+    setExportError(null)
+
+    try {
+      const url = resolveApiUrl('/admin/rag-logs/export?limit=1000')
+      const response = await fetch(url, {
+        method: 'GET',
+        credentials: 'include',
+        headers: withNgrokHeader(url, { Accept: 'text/csv' }),
+      })
+
+      if (!response.ok) {
+        let message = `CSV 내보내기 요청이 실패했습니다. (Status: ${response.status})`
+        try {
+          const body = await response.json() as { detail?: string; message?: string }
+          message = body.detail ?? body.message ?? message
+        } catch {
+          // JSON 오류 본문이 아닌 경우에는 상태 코드가 포함된 기본 메시지를 사용한다.
+        }
+        throw new Error(message)
+      }
+
+      const blob = await response.blob()
+      if (blob.size === 0) {
+        throw new Error('서버가 빈 CSV 파일을 반환했습니다.')
+      }
+
+      const filename = getCsvFilename(response.headers.get('Content-Disposition'))
+      triggerBlobDownload(blob, filename)
+      setExportNotice(`${filename} 다운로드를 시작했습니다.`)
+    } catch (error) {
+      console.error('Failed to export RAG logs:', error)
+      setExportError(error instanceof Error ? error.message : 'CSV 파일을 내려받지 못했습니다.')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   useEffect(() => {
     fetchLogs()
   }, [fetchLogs])
@@ -95,6 +139,15 @@ const ChatLogPage = () => {
               <h1 className="admin-title compact" style={{ margin: 0 }}>전체 질문 로그</h1>
             </div>
             <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={handleExport}
+                disabled={exporting || loading}
+                aria-describedby="rag-log-export-status"
+              >
+                {exporting ? 'CSV 생성 중...' : '최근 1,000건 CSV'}
+              </button>
               <button type="button" className="ghost-btn" onClick={handleRefresh} disabled={refreshing || loading}>
                 {refreshing ? '새로고침 중...' : '새로고침'}
               </button>
@@ -104,6 +157,18 @@ const ChatLogPage = () => {
             </div>
           </div>
         </header>
+
+        <div id="rag-log-export-status" aria-live="polite">
+          {exportNotice ? (
+            <div className="admin-alert" role="status" style={{ marginTop: '12px', color: '#15803d', background: '#f0fdf4', borderColor: '#bbf7d0' }}>
+              {exportNotice}
+            </div>
+          ) : exportError ? (
+            <div className="admin-alert admin-alert--danger" role="alert" style={{ marginTop: '12px' }}>
+              {exportError}
+            </div>
+          ) : null}
+        </div>
 
         <section className="admin-content glass-panel" style={{ marginTop: '20px', padding: '20px', maxHeight: 'calc(100vh - 150px)', overflowY: 'auto' }}>
           <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap' }}>
@@ -136,7 +201,7 @@ const ChatLogPage = () => {
           {loading ? (
             <div className="admin-table__empty">로딩 중...</div>
           ) : error ? (
-            <div className="admin-alert admin-alert--danger">{error}</div>
+            <div className="admin-alert admin-alert--danger" role="alert">{error}</div>
           ) : filteredLogs.length === 0 ? (
             <div className="admin-table__empty">{searchTerm ? '검색 결과가 없습니다.' : '기록된 질문 로그가 없습니다.'}</div>
           ) : (

@@ -3,6 +3,7 @@ import { apiFetch } from '../../api/client'
 
 type MessageFeedbackProps = {
   requestId: string
+  disabled?: boolean
 }
 
 type ReasonOption = {
@@ -18,7 +19,7 @@ const reasonOptions: ReasonOption[] = [
   { value: 'other', label: '기타' },
 ]
 
-const MessageFeedback = ({ requestId }: MessageFeedbackProps) => {
+const MessageFeedback = ({ requestId, disabled = false }: MessageFeedbackProps) => {
   const [mode, setMode] = useState<'idle' | 'down' | 'submitting' | 'confirmed'>('idle')
   const [selectedReason, setSelectedReason] = useState<string>('')
   const [comment, setComment] = useState('')
@@ -36,6 +37,7 @@ const MessageFeedback = ({ requestId }: MessageFeedbackProps) => {
   }
 
   const handleUp = async () => {
+    if (disabled) return
     setMode('confirmed')
     try {
       await submitFeedback(1)
@@ -46,6 +48,7 @@ const MessageFeedback = ({ requestId }: MessageFeedbackProps) => {
   }
 
   const handleDownSubmit = async () => {
+    if (disabled) return
     setMode('submitting')
     try {
       await submitFeedback(-1, selectedReason, comment.trim() || undefined)
@@ -67,7 +70,7 @@ const MessageFeedback = ({ requestId }: MessageFeedbackProps) => {
           type="button"
           className="message-feedback__button"
           onClick={handleUp}
-          disabled={mode === 'submitting'}
+          disabled={disabled || mode === 'submitting'}
           aria-label="좋은 답변"
         >
           👍
@@ -76,7 +79,7 @@ const MessageFeedback = ({ requestId }: MessageFeedbackProps) => {
           type="button"
           className="message-feedback__button"
           onClick={() => setMode('down')}
-          disabled={mode === 'submitting'}
+          disabled={disabled || mode === 'submitting'}
           aria-label="아쉬운 답변"
         >
           👎
@@ -94,7 +97,7 @@ const MessageFeedback = ({ requestId }: MessageFeedbackProps) => {
                   value={option.value}
                   checked={selectedReason === option.value}
                   onChange={(event) => setSelectedReason(event.target.value)}
-                  disabled={mode === 'submitting'}
+                  disabled={disabled || mode === 'submitting'}
                 />
                 <span>{option.label}</span>
               </label>
@@ -106,7 +109,7 @@ const MessageFeedback = ({ requestId }: MessageFeedbackProps) => {
             onChange={(event) => setComment(event.target.value)}
             maxLength={2000}
             rows={2}
-            disabled={mode === 'submitting'}
+            disabled={disabled || mode === 'submitting'}
             aria-label="추가 의견"
             placeholder="추가 의견"
           />
@@ -114,7 +117,7 @@ const MessageFeedback = ({ requestId }: MessageFeedbackProps) => {
             type="button"
             className="message-feedback__submit"
             onClick={handleDownSubmit}
-            disabled={!selectedReason || mode === 'submitting'}
+            disabled={disabled || !selectedReason || mode === 'submitting'}
           >
             {mode === 'submitting' ? '전송 중' : '제출'}
           </button>

@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { CouncilOrganization, PendingAnswerReview, RagFeedbackItem } from '../../types/admin'
+import type {
+  AdminItemResponse,
+  ApiRagFeedbackItem,
+  CouncilOrganization,
+  CouncilSignupRequest,
+  PendingAnswerReview,
+  RagAdminStatus,
+  RagFeedbackItem,
+} from '../../types/admin'
 import { apiFetch } from '../../api/client'
+import { toPendingAnswerReview } from '../../admin/adminData'
 
 // Interfaces for API responses
-interface ApiPendingItem {
-  id: number
-  source_type: string
-  data: string // JSON string
-  status: string
-  created_at: string
-}
-
 interface ApiOrganization {
     id: string
     major: {
@@ -21,18 +22,6 @@ interface ApiOrganization {
     }
     managerName?: string
     ManagerName?: string
-}
-
-interface CouncilSignupRequest {
-  id: string
-  userId: string
-  username: string
-  majorId: string
-  majorName?: string | null
-  status: string
-  createdTime: string
-  reviewedTime?: string | null
-  reviewNote?: string | null
 }
 
 interface ApiMessageResponse {
@@ -60,91 +49,6 @@ interface AdminUserAccount {
   roleName?: string | null
   createdTime: string
   updatedTime: string
-}
-
-interface ApiRagFeedbackItem {
-  id: number
-  rating: number
-  reason: string | null
-  comment: string | null
-  major: string | null
-  created_at: string | null
-  question: string | null
-  answer: string | null
-}
-
-interface RagDatasetStatus {
-  key: string
-  collection: string
-  chroma_count: number | null
-  cached_chunk_count: number
-  chunk_artifact_exists: boolean
-  chunk_artifact_mtime: string | null
-  latest_document_published_at?: string | null
-  vectorizer_exists: boolean
-  vectorizer_mtime: string | null
-  last_successful_indexed_at?: string | null
-  vectorizer_sklearn_version?: string | null
-  status: 'ok' | 'degraded' | 'error'
-  error?: string | null
-}
-
-interface RagAdminStatus {
-  status: 'ok' | 'degraded' | 'error'
-  generated_at: string
-  datasets: RagDatasetStatus[]
-  pending_items: {
-    pending: number
-    approved: number
-    rejected: number
-  }
-  rag_logs: {
-    total_queries: number
-    fallback_count: number
-    latest_query_at: string | null
-    fallback_reasons?: Record<string, number>
-  }
-  visitor_stats?: {
-    today: number | null
-    total: number | null
-  }
-  feedback?: {
-    total: number
-    up: number
-    down: number
-    satisfaction: number | null
-    downReasons?: Record<string, number>
-    down_reasons?: Record<string, number>
-  }
-  notices_ingestion?: {
-    last_collection_at: string | null
-    last_successful_ingestion_at: string | null
-    ingestion_summary: {
-      status: string | null
-      documents_seen: number
-      documents_new: number
-      documents_updated: number
-      documents_deleted: number
-      documents_failed: number
-    }
-    stage_summary: {
-      raw_documents: number
-      normalized_documents: number
-      indexed_documents: number
-    }
-    quality_summary: {
-      parse_failed: number
-      severities: Record<string, number>
-      recent_checks: Array<{
-        document_key: string
-        check_type: string
-        severity: string
-        message: string
-        created_at: string
-      }>
-    }
-  }
-  error?: string
 }
 
 const getStatusLabel = (status?: string) => {
@@ -238,6 +142,7 @@ const UniversityAdminPage = () => {
 
   const [actionNotice, setActionNotice] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [reviewAction, setReviewAction] = useState<{ id: string; action: 'approve' | 'reject' } | null>(null)
   const [refreshing, setRefreshing] = useState(false)
 
   // 성공 알림 자동 소거: 3초 후 사라지도록
@@ -278,71 +183,48 @@ const UniversityAdminPage = () => {
                 // Don't set global error for orgs fetch failure, it might not be critical
             }
 
-            // 2. Fetch Pending Reviews (ALL items for history)
-            try {
-                const pendingData = await apiFetch<ApiPendingItem[]>(`/admin/items?t=${new Date().getTime()}`)
-                if (Array.isArray(pendingData)) {
-                    const mappedReviews: PendingAnswerReview[] = pendingData
-                        .map(item => {
-                            let title = '제목 없음';
-                            let content = '';
-                            let category = '공통';
-                            let parsedData: Record<string, string | undefined> = {};
-                            
-                            try {
-                                parsedData = JSON.parse(item.data);
-                                
-                                if (item.source_type === 'custom_knowledge') {
-                                    title = parsedData.question || '질문 없음';
-                                    content = parsedData.answer || '';
-                                    category = parsedData.category || '공통';
-                                } else if (item.source_type === 'event') {
-                                    title = `[행사] ${parsedData.title || ''}`;
-                                    content = `일시: ${parsedData.start_date} ~ ${parsedData.end_date}\n장소: ${parsedData.location}\n\n${parsedData.description}`;
-                                    category = parsedData.department || '공통';
-                                } else if (item.source_type === 'announcement') {
-                                    title = `[공지] ${parsedData.title || ''}`;
-                                    content = `게시일: ${parsedData.date}\n분류: ${parsedData.category}\n\n${parsedData.content}`;
-                                    category = parsedData.department || '공통';
-                                }
-                            } catch (e) { 
-                                console.error('JSON parse error for item data:', item.data, e);
-                            }
-                            
-                            return {
-                                id: item.id.toString(),
-                                departmentName: category,
-                                submittedAt: item.created_at,
-                                handler: parsedData.requester || '정보 없음', // Name or 'Info Missing'
-                                question: title,
-                                answer: content,
-                                status: item.status 
-                            }
-                        })
-                    // Sort: Pending first, then by date desc
-                    mappedReviews.sort((a, b) => {
-                        const isAPending = a.status === 'pending';
-                        const isBPending = b.status === 'pending';
-                        if (isAPending && !isBPending) return -1;
-                        if (!isAPending && isBPending) return 1;
-                        return new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime();
-                    });
-                    
-                    setPendingReviews(mappedReviews)
-                    setPendingReviewsError(null)
-                    if (mappedReviews.length > 0) {
-                        // Keep selection if exists, else select first
-                        setSelectedReviewId((prev) => prev ?? mappedReviews[0].id)
-                    } else {
-                        setSelectedReviewId(null)
-                    }
-                }
-            } catch (e) {
-                console.error('Failed to fetch pending reviews:', e);
-                setPendingReviews([])
-                setSelectedReviewId(null)
-                setPendingReviewsError('검수 대기 데이터를 불러오는데 실패했습니다.')
+            // 2. 승인 대기 큐는 전용 계약을 사용하고, 처리 이력만 전체 목록에서 병합한다.
+            const cacheBust = new Date().getTime()
+            const [pendingResult, historyResult] = await Promise.allSettled([
+                apiFetch<AdminItemResponse[]>(`/admin/pending?t=${cacheBust}`),
+                apiFetch<AdminItemResponse[]>(`/admin/items?t=${cacheBust}`),
+            ])
+            const reviewErrors: string[] = []
+            const mappedReviews: PendingAnswerReview[] = []
+
+            if (pendingResult.status === 'fulfilled' && Array.isArray(pendingResult.value)) {
+                mappedReviews.push(...pendingResult.value.map(toPendingAnswerReview))
+            } else {
+                console.error('Failed to fetch pending review queue:', pendingResult.status === 'rejected' ? pendingResult.reason : pendingResult.value)
+                reviewErrors.push('검수 대기 목록을 불러오지 못했습니다.')
             }
+
+            if (historyResult.status === 'fulfilled' && Array.isArray(historyResult.value)) {
+                mappedReviews.push(
+                    ...historyResult.value
+                        .filter((item) => item.status !== 'pending')
+                        .map(toPendingAnswerReview),
+                )
+            } else {
+                console.error('Failed to fetch review history:', historyResult.status === 'rejected' ? historyResult.reason : historyResult.value)
+                reviewErrors.push('처리 이력을 불러오지 못했습니다.')
+            }
+
+            mappedReviews.sort((a, b) => {
+                const isAPending = a.status === 'pending'
+                const isBPending = b.status === 'pending'
+                if (isAPending && !isBPending) return -1
+                if (!isAPending && isBPending) return 1
+                return new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
+            })
+
+            setPendingReviews(mappedReviews)
+            setPendingReviewsError(reviewErrors.length > 0 ? reviewErrors.join(' ') : null)
+            setSelectedReviewId((previousId) => (
+                previousId && mappedReviews.some((review) => review.id === previousId)
+                    ? previousId
+                    : mappedReviews[0]?.id ?? null
+            ))
 
             // 3. Fetch Council signup requests
             try {
@@ -593,6 +475,7 @@ const UniversityAdminPage = () => {
 
     setActionNotice(null)
     setActionError(null)
+    setReviewAction({ id: reviewId, action })
     try {
         await apiFetch(`/admin/${action}/${reviewId}`, { method: 'POST' })
 
@@ -613,6 +496,8 @@ const UniversityAdminPage = () => {
         }
         // setError는 전체 페이지를 에러 화면으로 교체하므로 액션 실패는 인라인으로만 표시
         setActionError(message)
+    } finally {
+        setReviewAction(null)
     }
   }
 
@@ -954,13 +839,16 @@ const UniversityAdminPage = () => {
           </section>
 
           {/* Right Panel: Reviews */}
-          <section className="admin-panel admin-panel--split glass-panel full-height">
+          <section
+            className="admin-panel admin-panel--split glass-panel full-height"
+            aria-busy={reviewAction !== null}
+          >
             <div className="admin-panel__column full-height">
               <h2 className="admin-panel__title">검수 대기 내역</h2>
               <p className="admin-panel__subtitle">제출된 답변 승인/반려</p>
               <div className="admin-review-list-scroll">
                   {pendingReviewsError && (
-                    <div className="admin-alert admin-alert--danger" style={{ marginBottom: '12px' }}>
+                    <div className="admin-alert admin-alert--danger" role="alert" style={{ marginBottom: '12px' }}>
                       {pendingReviewsError}
                     </div>
                   )}
@@ -1032,12 +920,12 @@ const UniversityAdminPage = () => {
                       </div>
 
                       {actionNotice && (
-                        <div className="admin-alert" style={{ marginTop: '12px', color: '#15803d', background: '#f0fdf4', padding: '10px 14px', borderRadius: '8px' }}>
+                        <div className="admin-alert" role="status" aria-live="polite" style={{ marginTop: '12px', color: '#15803d', background: '#f0fdf4', padding: '10px 14px', borderRadius: '8px' }}>
                           {actionNotice}
                         </div>
                       )}
                       {actionError && (
-                        <div className="admin-alert admin-alert--danger" style={{ marginTop: '12px' }}>
+                        <div className="admin-alert admin-alert--danger" role="alert" style={{ marginTop: '12px' }}>
                           {actionError}
                         </div>
                       )}
@@ -1048,15 +936,17 @@ const UniversityAdminPage = () => {
                               className="ghost-btn ghost-btn--muted"
                               type="button"
                               onClick={() => handleReviewAction(selectedReview.id, 'reject')}
+                              disabled={reviewAction !== null}
                             >
-                              반려
+                              {reviewAction?.id === selectedReview.id && reviewAction.action === 'reject' ? '반려 중...' : '반려'}
                             </button>
                             <button
                               className="hero-btn hero-btn--primary"
                               type="button"
                               onClick={() => handleReviewAction(selectedReview.id, 'approve')}
+                              disabled={reviewAction !== null}
                             >
-                              승인
+                              {reviewAction?.id === selectedReview.id && reviewAction.action === 'approve' ? '승인 중...' : '승인'}
                             </button>
                           </div>
                       )}

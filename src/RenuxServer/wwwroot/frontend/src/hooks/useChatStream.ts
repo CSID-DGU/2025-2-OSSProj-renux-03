@@ -30,8 +30,6 @@ export interface ChatStreamHandlers {
   onSuggestions?: (questions: string[]) => void
   /** 답변 근거성 경고 수신 시 호출 */
   onGrounding?: (grounding: ChatStreamGrounding) => void
-  /** 첫 토큰 수신 전 연결 실패가 발생해 같은 payload로 재연결할 때 호출 */
-  onRetry?: (attempt: number, delayMs: number) => void
 }
 
 export interface ChatStreamResult {
@@ -40,17 +38,24 @@ export interface ChatStreamResult {
 }
 
 /**
- * /chat/stream(SSE) 송신·파싱을 한 곳에 모은 훅.
- * HomePage·ChatPage가 동일한 스트리밍 구현을 공유하도록 한다.
+ * /chat/stream(SSE) 송신·파싱을 canonical 채팅 셸용 훅 한 곳에 모은다.
  * 네트워크 청크가 줄 중간에서 잘려도 토큰이 유실되지 않도록 버퍼로 이월하며,
  * 언마운트 시 진행 중인 reader를 취소해 누수를 막는다.
  */
 export const useChatStream = () => {
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null)
+  const controllerRef = useRef<AbortController | null>(null)
+
+  const stopStream = useCallback(() => {
+    controllerRef.current?.abort()
+    readerRef.current?.cancel().catch(() => {})
+  }, [])
 
   useEffect(() => {
     return () => {
+      controllerRef.current?.abort()
       readerRef.current?.cancel().catch(() => {})
+      controllerRef.current = null
       readerRef.current = null
     }
   }, [])
@@ -58,10 +63,9 @@ export const useChatStream = () => {
   const streamMessage = useCallback(
     async (payload: ChatStreamPayload, handlers: ChatStreamHandlers): Promise<ChatStreamResult> => {
       const url = resolveApiUrl('/chat/stream')
-      const maxRetries = 2
-      let attempt = 0
-
-      const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
+      const controller = new AbortController()
+      controllerRef.current?.abort()
+      controllerRef.current = controller
 
       const openStream = async () => {
         const response = await fetch(url, {
@@ -78,6 +82,7 @@ export const useChatStream = () => {
             createdTime: payload.createdTime,
           }),
           credentials: 'include',
+          signal: controller.signal,
         })
 
         if (!response.ok) throw new Error(`Streaming failed (status: ${response.status})`)
@@ -91,6 +96,8 @@ export const useChatStream = () => {
 
         const decoder = new TextDecoder()
         let accumulatedAnswer = ''
+        let receivedCompletion = false
+        let receivedDone = false
 
         const processLine = (rawLine: string) => {
           const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
@@ -106,6 +113,8 @@ export const useChatStream = () => {
             questions?: string[]
             grounded?: boolean
             score?: number
+            grounding_score?: number | null
+            suggested_questions?: string[]
           }
           try {
             data = JSON.parse(line.substring(6))
@@ -131,6 +140,25 @@ export const useChatStream = () => {
               grounded: data.grounded ?? true,
               groundingScore: typeof data.score === 'number' ? data.score : undefined,
             })
+          } else if (data.type === 'completion') {
+            receivedCompletion = true
+            handlers.onMetadata?.({
+              sources: data.sources,
+              requestId: data.request_id,
+              isFallback: Boolean(data.fallback_reason),
+              fallbackReason: data.fallback_reason,
+            })
+            handlers.onSuggestions?.(data.suggested_questions ?? [])
+            if (typeof data.grounded === 'boolean') {
+              handlers.onGrounding?.({
+                grounded: data.grounded,
+                groundingScore: typeof data.grounding_score === 'number'
+                  ? data.grounding_score
+                  : undefined,
+              })
+            }
+          } else if (data.type === 'done') {
+            receivedDone = true
           } else if (data.type === 'error') {
             throw new Error(data.message ?? 'Streaming error')
           }
@@ -154,6 +182,9 @@ export const useChatStream = () => {
           if (buffer.length > 0) {
             processLine(buffer)
           }
+          if (!receivedCompletion || !receivedDone) {
+            throw new Error('Chat stream ended before its completion contract.')
+          }
         } finally {
           readerRef.current = null
         }
@@ -161,24 +192,22 @@ export const useChatStream = () => {
         return { answer: accumulatedAnswer, receivedAny: accumulatedAnswer.trim().length > 0 }
       }
 
-      while (true) {
-        try {
-          const response = await openStream()
-          const result = await readStream(response)
-          if (result.receivedAny || attempt >= maxRetries) return result
-          throw new Error('Streaming ended before any answer token was received.')
-        } catch (error) {
-          readerRef.current = null
-          if (attempt >= maxRetries) throw error
-          attempt += 1
-          const delayMs = Math.min(800 * 2 ** (attempt - 1), 3000)
-          handlers.onRetry?.(attempt, delayMs)
-          await delay(delayMs)
+      try {
+        const response = await openStream()
+        const result = await readStream(response)
+        if (controller.signal.aborted) {
+          throw new DOMException('The chat stream was stopped.', 'AbortError')
+        }
+        return result
+      } finally {
+        readerRef.current = null
+        if (controllerRef.current === controller) {
+          controllerRef.current = null
         }
       }
     },
     [],
   )
 
-  return { streamMessage }
+  return { streamMessage, stopStream }
 }

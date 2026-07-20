@@ -5,8 +5,8 @@ import RequireRole from './components/auth/RequireRole'
 const HomePage = lazy(() => import('./pages/home/HomePage'))
 const SignInPage = lazy(() => import('./pages/auth/SignInPage'))
 const SignUpPage = lazy(() => import('./pages/auth/SignUpPage'))
-const ChatPage = lazy(() => import('./pages/chat/ChatPage'))
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage'))
+const PrivacyPolicyPage = lazy(() => import('./pages/legal/PrivacyPolicyPage'))
 const UniversityAdminPage = lazy(() => import('./pages/admin/UniversityAdminPage'))
 const DepartmentAdminPage = lazy(() => import('./pages/admin/DepartmentAdminPage'))
 const ChatLogPage = lazy(() => import('./pages/admin/ChatLogPage'))
@@ -20,8 +20,9 @@ function App() {
             <Route path="/" element={<HomePage />} />
           <Route path="/auth/in" element={<SignInPage />} />
           <Route path="/auth/up" element={<SignUpPage />} />
-            <Route path="/chat/:chatId" element={<ChatPage />} />
+            <Route path="/chat/:chatId" element={<HomePage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/privacy" element={<PrivacyPolicyPage />} />
             <Route
               path="/admin/university"
               element={
