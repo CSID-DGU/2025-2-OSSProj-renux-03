@@ -1,4 +1,3 @@
-using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using FluentValidation;
 using Microsoft.AspNetCore.Http;
@@ -14,6 +13,7 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.DataProtection;
 using RenuxServer.Models;
 using RenuxServer.Dtos.ChatDtos;
 using RenuxServer.Dtos.EtcDtos;
@@ -51,19 +51,6 @@ builder.Services.AddDbContext<ServerDbContext>(options =>
     // 일시적 DB 단절(컨테이너 재시작 경쟁 등)에 자동 재시도 — 즉시 500 반환 방지.
     options.UseNpgsql(rawConnectionString, npgsql => npgsql.EnableRetryOnFailure(3));
 });
-
-// AutoMapper Setting
-builder.Services.AddAutoMapper(options =>
-{
-    options.CreateMap<SignupUserDto, User>();
-    options.CreateMap<ActiveChat, ActiveChatDto>();
-    options.CreateMap<ChatMessage, ChatMessageDto>();
-    options.CreateMap<ChatMessageDto, ChatMessage>();
-    options.CreateMap<Major, MajorDto>();
-    options.CreateMap<Role, RoleDto>();
-    options.CreateMap<Organization, OrganizationDto>();
-});
-
 
 // Validator Setting
 builder.Services.AddValidatorsFromAssemblyContaining<SignupUserValidator>();
@@ -115,6 +102,13 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddAuthorization();
 builder.Services.AddHttpClient();
+string dataProtectionKeysPath = builder.Configuration["DataProtection:KeysPath"]
+    ?? builder.Configuration["DATA_PROTECTION_KEYS_PATH"]
+    ?? Path.Combine(builder.Environment.ContentRootPath, ".data-protection-keys");
+Directory.CreateDirectory(dataProtectionKeysPath);
+builder.Services.AddDataProtection()
+    .SetApplicationName("Dongttok")
+    .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath));
 
 // 인증/회원가입 엔드포인트 무차별 대입·열거 방어용 레이트 리미터 (IP 단위 고정 윈도)
 builder.Services.AddRateLimiter(options =>
@@ -240,12 +234,42 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.UseRateLimiter();
 
-app.UseStaticFiles();
+// Only the compiled SPA and PWA artifacts are public. The Vite project and other
+// files under wwwroot are build inputs, not web content.
+app.Use(async (context, next) =>
+{
+    if (IsBlockedPublicPath(context.Request.Path))
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
+    await next(context);
+});
+
+app.UseWhen(
+    context => IsAllowedStaticPath(context.Request.Path),
+    staticFiles => staticFiles.UseStaticFiles());
+
+// If an allowlisted URL has no corresponding artifact, keep it a 404 instead of
+// allowing the SPA fallback to turn it into an HTML response.
+app.Use(async (context, next) =>
+{
+    if (IsAllowedStaticPath(context.Request.Path))
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
+    await next(context);
+});
 
 app.AddAuthApis();
 app.AddChatApis();
 app.AddEtcApis();
 app.AddAdminProxyApis();
+app.AddNotificationApis();
+app.AddProductTelemetryApis();
 
 // 헬스체크: /health = 프로세스 생존(liveness), /ready = DB 연결 확인(readiness).
 // 컨테이너 오케스트레이션(docker healthcheck / fly checks)이 트래픽 라우팅·롤백 판단에 사용.
@@ -271,10 +295,49 @@ app.MapGet("/", async (HttpContext context) =>
     await context.Response.SendFileAsync("wwwroot/index.html");
 });
 
-app.MapGet("/notifications", () => Results.Ok(Array.Empty<object>()));
-app.MapMethods("/notifications", new[] { "OPTIONS" }, () => Results.Ok());
-
 // SPA fallback for client-side routing
 app.MapFallbackToFile("index.html");
 
 app.Run();
+
+static bool IsAllowedStaticPath(PathString requestPath)
+{
+    if (requestPath.StartsWithSegments("/assets") || requestPath.StartsWithSegments("/icons"))
+    {
+        return true;
+    }
+
+    var path = requestPath.Value ?? string.Empty;
+    if (path.Equals("/index.html", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("/manifest.webmanifest", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("/registerSW.js", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("/sw.js", StringComparison.OrdinalIgnoreCase))
+    {
+        return true;
+    }
+
+    return path.StartsWith("/workbox-", StringComparison.OrdinalIgnoreCase)
+        && path.EndsWith(".js", StringComparison.OrdinalIgnoreCase)
+        && path.IndexOf('/', 1) == -1;
+}
+
+static bool IsBlockedPublicPath(PathString requestPath)
+{
+    if (requestPath.StartsWithSegments("/frontend"))
+    {
+        return true;
+    }
+
+    var path = requestPath.Value ?? string.Empty;
+    if (path.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+    {
+        return true;
+    }
+
+    return path.Equals("/React.md", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("/README.md", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("/.gitignore", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("/.DS_Store", StringComparison.OrdinalIgnoreCase)
+        || path.StartsWith("/.env", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("/vite.svg", StringComparison.OrdinalIgnoreCase);
+}

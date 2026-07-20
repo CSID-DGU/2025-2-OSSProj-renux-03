@@ -15,6 +15,12 @@ public class ChatMessageDto
 
     public string? RequestId { get; init; }
 
+    public List<string>? SuggestedQuestions { get; init; }
+
+    public bool? Grounded { get; init; }
+
+    public double? GroundingScore { get; init; }
+
     public bool IsFallback { get; init; }
 
     public string? FallbackReason { get; init; }
