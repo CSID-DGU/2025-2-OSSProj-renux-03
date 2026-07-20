@@ -28,15 +28,24 @@ services:
             db:
                 condition: service_healthy
             rag-service:
-                condition: service_started
+                condition: service_healthy
         env_file: .env
         environment:
             - ASPNETCORE_ENVIRONMENT=Production
             - ASPNETCORE_URLS=http://+:8080
             - ConnectionStrings__RenuxServer=${CONNECTIONSTRING}
             - Jwt__Key=${JWT_KEY}
+            - Telemetry__HmacKey=${TELEMETRY_HMAC_KEY:-}
+            - Telemetry__KeyId=${TELEMETRY_KEY_ID:-v1}
+            # This compose file is the local test stack; do not mix its events
+            # into a future student baseline unless explicitly overridden.
+            - Telemetry__ExcludeTraffic=${TELEMETRY_EXCLUDE_TRAFFIC:-true}
+            - Telemetry__TestKey=${TELEMETRY_TEST_KEY:-}
+            - DataProtection__KeysPath=/var/lib/dongttok-dpkeys
             - RAG_SERVICE_URL=http://rag-service:8000
             - RagServiceTimeoutSeconds=${RAG_SERVICE_TIMEOUT_SECONDS:-300}
+        volumes:
+            - data_protection_keys:/var/lib/dongttok-dpkeys
         restart: on-failure
  
     rag-service:
@@ -44,12 +53,13 @@ services:
         build:
             context: ../RAG
             dockerfile: Dockerfile
+        ports:
+            - "127.0.0.1:8000:8000"
         volumes:
             # uvicorn은 appuser(비root)로 실행되므로 캐시는 appuser 홈에 마운트한다.
             # (/root 는 0700이라 appuser가 못 읽어 오프라인 모델 로드가 실패했음)
             - ../RAG/huggingface_cache:/home/appuser/.cache/huggingface
             - ../RAG/artifacts:/app/artifacts
-            - ../RAG/data:/app/data
             - ../RAG/rag_database.db:/app/rag_database.db
             - ../RAG/data:/app/data
         depends_on:
@@ -81,7 +91,7 @@ services:
             - TRANSFORMERS_OFFLINE=1
         restart: on-failure
         healthcheck:
-            test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")'"]
+            test: ["CMD-SHELL", "curl -fsS http://localhost:8000/ready || python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/ready\")'"]
             interval: 15s
             timeout: 10s
             retries: 5
@@ -118,3 +128,4 @@ volumes:
     postgres_data_test:
     redis_data:
     ollama_data:
+    data_protection_keys:

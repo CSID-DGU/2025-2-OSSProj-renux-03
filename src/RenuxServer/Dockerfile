@@ -8,7 +8,7 @@ RUN dotnet restore "RenuxServer.sln"
 
 COPY . .
 
-RUN dotnet publish -c Release -o /app/publish /p:UseAppHost=false
+RUN dotnet publish "RenuxServer.csproj" -c Release -o /app/publish /p:UseAppHost=false
 
 FROM mcr.microsoft.com/dotnet/aspnet:9.0-noble AS final
 WORKDIR /app
@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 
 COPY --from=build /app/publish .
 RUN chown -R appuser:appuser /app
+RUN mkdir -p /var/lib/dongttok-dpkeys && chown -R appuser:appuser /var/lib/dongttok-dpkeys
 USER appuser
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

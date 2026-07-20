@@ -10,3 +10,12 @@ docker-compose.yml
 .env
 .env.*
 !.env.example
+wwwroot/frontend/
+wwwroot/backup.zip
+wwwroot/wwwroot.zip
+wwwroot/React.md
+wwwroot/README.md
+wwwroot/.env*
+wwwroot/.gitignore
+wwwroot/.DS_Store
+wwwroot/vite.svg
