@@ -43,6 +43,12 @@ src/RAG/artifacts/vectorizers/
 src/RAG/artifacts/vectorizers_backup_*/
 src/RAG/artifacts/models/
 src/RAG/artifacts/db_chroma/
+# Chroma 장애·복구 사본과 재색인 실행 로그는 로컬 운영 산출물이다.
+src/RAG/artifacts/db_chroma.*/
+src/RAG/artifacts/rebuilds/
+src/RAG/tmp/
+src/RAG/scripts/.codex_*
+/tmp/
 
 # RAG 평가 결과(생성물)
 src/RAG/tests/evaluation_results_*.csv

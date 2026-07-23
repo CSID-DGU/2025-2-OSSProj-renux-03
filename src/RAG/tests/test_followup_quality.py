@@ -7,7 +7,13 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.services.langchain_chat import validate_followup_questions  # noqa: E402
+import pytest
+
+from src.services.langchain_chat import (  # noqa: E402
+    build_followup_question_details,
+    validate_followup_questions,
+)
+from src.services.source_contract import normalized_source_contract, source_reference  # noqa: E402
 from api import rag_service  # noqa: E402
 
 
@@ -64,6 +70,51 @@ def test_followups_require_grounded_source_context():
     assert result == []
 
 
+def test_followup_topic_normalization_preserves_two_syllable_nouns():
+    sources = [{
+        "source": "notices",
+        "title": "AI소프트웨어융합학부 전공시험 일정 안내",
+        "snippet": "학과 시험 일정과 추가 접수 절차를 안내합니다.",
+        "metadata": {"campus_scope": "seoul"},
+    }]
+    result = validate_followup_questions(
+        ["학과 시험 일정도 확인할까요?", "추가 접수 방법도 확인할까요?"],
+        question="전공시험 일정 알려줘",
+        answer="학과 시험 일정과 추가 접수는 공지에서 확인할 수 있어요.",
+        source_context=sources,
+        campus_scope="seoul_bmc",
+        supported_domains=["notices"],
+        count=5,
+    )
+
+    assert result == ["학과 시험 일정도 확인할까요?", "추가 접수 방법도 확인할까요?"]
+
+
+def test_distinctive_compound_can_ground_a_concise_followup_and_lineage():
+    sources = [{
+        "source": "notices",
+        "title": "2026학년도 수강신청 장바구니 기간 안내",
+        "snippet": "수강신청 장바구니 운영 기간을 안내합니다.",
+        "chunk_id": "notice-cart-1",
+        "metadata": {"campus_scope": "shared"},
+    }]
+    question = "장바구니에 담은 과목은 어디서 확인하나요?"
+
+    suggestions = validate_followup_questions(
+        [question],
+        question="수강신청 장바구니 기간은 언제야?",
+        answer="장바구니 기간은 공식 공지에서 확인할 수 있어요.",
+        source_context=sources,
+        campus_scope="seoul_bmc",
+        supported_domains=["notices"],
+        count=5,
+    )
+    details = build_followup_question_details(suggestions, sources)
+
+    assert suggestions == [question]
+    assert details == [{"question": question, "source_refs": [source_reference(sources[0])]}]
+
+
 def test_wise_followup_is_allowed_only_in_wise_scope_when_source_supports_it():
     wise_sources = [{
         "source": "rules",
@@ -116,3 +167,36 @@ def test_grounding_disabled_or_unchecked_never_allows_followups():
     assert rag_service._grounding_allows_followups(True, unchecked) is False
     assert rag_service._grounding_allows_followups(True, rejected) is False
     assert rag_service._grounding_allows_followups(True, grounded) is True
+
+
+def test_followup_details_bind_each_question_only_to_supporting_sources():
+    unrelated = {
+        "source": "staff",
+        "title": "정보처 연락처",
+        "snippet": "정보처 사무실 전화번호를 안내합니다.",
+        "metadata": {"campus_scope": "seoul"},
+    }
+    details = build_followup_question_details(
+        ["장학 신청 서류는 무엇인가요?", "기숙사 입사 비용은 얼마인가요?"],
+        [*SOURCES, unrelated],
+    )
+
+    assert details == [{
+        "question": "장학 신청 서류는 무엇인가요?",
+        "source_refs": [source_reference(SOURCES[0])],
+    }]
+
+
+def test_source_reference_is_deterministic_and_rejects_tampered_transport():
+    source = {
+        **SOURCES[0],
+        "chunk_id": "notice-1#0",
+        "url": "https://www.dongguk.edu/notice/1",
+        "published_at": "2026-07-20",
+    }
+    first = source_reference(source)
+    assert first == source_reference(dict(source))
+    assert normalized_source_contract({**source, "source_ref": first})["id"] == first
+
+    with pytest.raises(ValueError, match="does not match"):
+        normalized_source_contract({**source, "snippet": "변조된 본문", "source_ref": first})

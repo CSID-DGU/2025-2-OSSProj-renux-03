@@ -32,9 +32,8 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy application code
-COPY . .
-RUN chmod +x /app/docker-entrypoint.sh \
-    && chown -R appuser:appuser /app /opt/venv
+COPY --chown=appuser:appuser . .
+RUN chmod +x /app/docker-entrypoint.sh
 
 # Expose the port
 EXPOSE 8000

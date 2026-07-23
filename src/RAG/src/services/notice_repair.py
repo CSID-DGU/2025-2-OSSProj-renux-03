@@ -7,7 +7,7 @@ document is healthy.
 """
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -19,6 +19,7 @@ from typing import Any, Callable, Iterable, Sequence
 
 import pandas as pd
 
+from src.config import NORMALIZED_DIR
 from src.database import Chunk, DocumentQualityCheck, Notice, SessionLocal, SourceDocument, kst_now
 from src.pipelines.ingest import build_notice_chunks
 from src.pipelines.notices_sync import (
@@ -85,9 +86,16 @@ def _quality_signatures(checks: Iterable[dict[str, str]]) -> set[tuple[str, str,
     }
 
 
-def _load_payload(path: Path | None) -> tuple[dict[str, Any] | None, str | None]:
+def _load_payload(document: SourceDocument, path: Path | None) -> tuple[dict[str, Any] | None, str | None]:
+    """Read the SQLite payload first; files are legacy migration input only."""
+    if document.normalized_payload_json:
+        try:
+            payload = json.loads(document.normalized_payload_json)
+            return (payload, None) if isinstance(payload, dict) else (None, "normalized_payload_not_object")
+        except (TypeError, json.JSONDecodeError):
+            return None, "normalized_payload_corrupt"
     if path is None:
-        return None, "normalized_path_missing"
+        return None, "normalized_payload_missing"
     if not path.exists():
         return None, "normalized_file_missing"
     try:
@@ -97,6 +105,30 @@ def _load_payload(path: Path | None) -> tuple[dict[str, Any] | None, str | None]
     if not isinstance(payload, dict):
         return None, "normalized_json_not_object"
     return payload, None
+
+
+def _resolve_normalized_path(value: str | None) -> Path | None:
+    """Resolve legacy host-absolute paths after the data directory is mounted elsewhere."""
+    if not value:
+        return None
+    original = Path(value)
+    if original.exists():
+        return original
+    if not original.is_absolute():
+        candidate = NORMALIZED_DIR.parent.parent / original
+        if candidate.exists():
+            return candidate
+    parts = original.parts
+    try:
+        marker = next(
+            index
+            for index in range(len(parts) - 1)
+            if parts[index] == "artifacts" and parts[index + 1] == "normalized"
+        )
+    except StopIteration:
+        return original
+    portable = NORMALIZED_DIR.joinpath(*parts[marker + 2 :])
+    return portable if portable.exists() else original
 
 
 def _canonicalize_payload(document: SourceDocument, payload: dict[str, Any]) -> dict[str, Any]:
@@ -145,15 +177,34 @@ def _frame_for_payload(payload: dict[str, Any], notice_id: int | None) -> pd.Dat
     return build_notice_chunks(pd.DataFrame([row]))
 
 
-def _chunks_align(frame: pd.DataFrame, chunks: Sequence[Chunk]) -> bool:
+def _align_frame_to_existing_chunks(frame: pd.DataFrame, chunks: Sequence[Chunk]) -> pd.DataFrame | None:
+    """Keep legacy stable IDs when only generated metadata changed.
+
+    Older ingestions derived chunk IDs from title/topic/date while the current
+    pipeline derives them from ``document_key``. Equal chunk text proves the
+    indexed content is unchanged, so replacing embeddings solely because the ID
+    algorithm evolved would be wasteful and disruptive.
+    """
     if frame.empty or len(frame) != len(chunks):
-        return False
-    generated = {
-        str(row["chunk_id"]): str(row["chunk_text"])
-        for _, row in frame[["chunk_id", "chunk_text"]].iterrows()
-    }
-    existing = {str(chunk.chunk_id): str(chunk.chunk_text) for chunk in chunks}
-    return generated == existing
+        return None
+    ids_by_text: dict[str, deque[str]] = defaultdict(deque)
+    for chunk in sorted(chunks, key=lambda item: int(item.id or 0)):
+        ids_by_text[str(chunk.chunk_text)].append(str(chunk.chunk_id))
+    existing_ids: list[str] = []
+    for text in frame["chunk_text"].astype(str):
+        candidates = ids_by_text.get(text)
+        if not candidates:
+            return None
+        existing_ids.append(candidates.popleft())
+    if any(candidates for candidates in ids_by_text.values()):
+        return None
+    aligned = frame.copy()
+    aligned["chunk_id"] = existing_ids
+    return aligned
+
+
+def _chunks_align(frame: pd.DataFrame, chunks: Sequence[Chunk]) -> bool:
+    return _align_frame_to_existing_chunks(frame, chunks) is not None
 
 
 def _prepare_repairs(
@@ -194,8 +245,8 @@ def _prepare_repairs(
     for document in documents:
         before_status = str(document.status or "unknown")
         before_category = str(document.category or "")
-        normalized_path = Path(document.normalized_path) if document.normalized_path else None
-        payload, load_error = _load_payload(normalized_path)
+        normalized_path = _resolve_normalized_path(document.normalized_path)
+        payload, load_error = _load_payload(document, normalized_path)
         if load_error:
             prepared.append(
                 _PreparedRepair(
@@ -440,7 +491,6 @@ def apply_notice_repairs(
         batch = actionable[offset : offset + batch_size]
         keys = [item.document_key for item in batch]
         session = session_factory()
-        backups: dict[Path, bytes | None] = {}
         try:
             documents = {
                 doc.document_key: doc
@@ -448,10 +498,8 @@ def apply_notice_repairs(
             }
             for item in batch:
                 document = documents[item.document_key]
-                assert item.payload is not None and item.normalized_path is not None
-                path = item.normalized_path
-                backups[path] = path.read_bytes() if path.exists() else None
-                _atomic_write(path, item.payload)
+                assert item.payload is not None
+                document.normalized_payload_json = json.dumps(item.payload, ensure_ascii=False, default=str)
                 document.source_url = item.payload.get("detail_url")
                 document.title = item.payload.get("title")
                 document.category = item.payload.get("category")
@@ -469,7 +517,6 @@ def apply_notice_repairs(
             session.commit()
         except Exception:
             session.rollback()
-            _restore_files(backups)
             raise
 
         try:
@@ -484,12 +531,19 @@ def apply_notice_repairs(
                 embed_upserter(session, embedding_rows, source_by_id)
 
             metadata_frames = [
-                _frame_for_payload(item.payload, row_by_key[item.document_key]["db_id"])
+                _align_frame_to_existing_chunks(
+                    _frame_for_payload(item.payload, row_by_key[item.document_key]["db_id"]),
+                    session.query(Chunk)
+                    .filter(Chunk.notice_id == row_by_key[item.document_key]["db_id"])
+                    .all(),
+                )
                 for item in batch
                 if item.mode == "metadata_only" and item.payload is not None
             ]
+            if any(frame is None for frame in metadata_frames):
+                raise RuntimeError("metadata-only repair lost chunk alignment after staging")
             if metadata_frames:
-                metadata_frame = pd.concat(metadata_frames, ignore_index=True)
+                metadata_frame = pd.concat(metadata_frames, ignore_index=True)  # type: ignore[arg-type]
                 ids, metadatas = _metadata_from_frame(metadata_frame)
                 metadata_updater(NOTICE_COLLECTION, ids, metadatas)
                 indexed_at = kst_now()

@@ -94,10 +94,16 @@ def test_default_boundary_blocks_all_twelve_adversarial_wise_rows():
 
     assert blocked == 12
     assert filtered["chunk_id"].tolist() == ["s1"]
-    assert set(filtered["campus_scope"]) == {"unknown"}
+    assert set(filtered["campus_scope"]) == {"shared"}
     context = rag_service._build_selected_evidence_context(filtered)
     assert "WISE" not in context
     assert "장학 신청 서류" in context
+
+    untrusted, _ = apply_campus_safety_boundary(
+        pd.DataFrame([{"chunk_id": "legacy", "title": "출처 미상 안내"}]),
+        allow_wise=False,
+    )
+    assert untrusted.iloc[0]["campus_scope"] == "unknown"
 
 
 def test_wise_rows_are_allowed_only_when_original_query_is_explicit():

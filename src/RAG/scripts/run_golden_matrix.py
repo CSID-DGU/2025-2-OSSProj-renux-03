@@ -22,10 +22,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+RAG_ROOT = Path(__file__).resolve().parents[1]
+if str(RAG_ROOT) not in sys.path:
+    sys.path.insert(0, str(RAG_ROOT))
+
 from golden_matrix import TAXONOMY_VERSION, file_sha256, load_matrix, load_taxonomy, validate_matrix
+from src.services.source_contract import normalized_source_contract
 
 
-RUNNER_VERSION = "real-http-v1"
+RUNNER_VERSION = "real-http-v3-stable-attestation"
 
 
 def _utc_now() -> str:
@@ -49,39 +54,6 @@ def _git(repo_root: Path, *args: str) -> str:
         return "unavailable"
 
 
-def _data_manifest(rag_root: Path) -> tuple[str, list[dict[str, Any]]]:
-    candidates = [rag_root / "artifacts" / "vectorizers" / "manifest.json"]
-    candidates.extend(sorted((rag_root / "artifacts" / "chunks").glob("*.parquet")))
-    files = []
-    for path in candidates:
-        if path.is_file():
-            files.append(
-                {
-                    "path": path.relative_to(rag_root).as_posix(),
-                    "sha256": file_sha256(path),
-                    "bytes": path.stat().st_size,
-                }
-            )
-    return _canonical_hash(files), files
-
-
-def _candidate_config(rag_root: Path) -> dict[str, Any]:
-    if str(rag_root) not in sys.path:
-        sys.path.insert(0, str(rag_root))
-    from src import config  # noqa: PLC0415
-
-    return {
-        "llm_provider": config.LLM_PROVIDER,
-        "query_analysis_model": config.OPENAI_MODEL,
-        "answer_model": config.OPENAI_CHAT_MODEL if config.LLM_PROVIDER == "openai" else config.OLLAMA_CHAT_MODEL,
-        "embedding_model": config.EMBED_MODEL_NAME,
-        "embedding_revision": config.EMBED_MODEL_REVISION,
-        "reranker_enabled": config.RERANKER_ENABLED,
-        "reranker_model": config.RERANKER_MODEL if config.RERANKER_ENABLED else None,
-        "top_k": config.DEFAULT_TOP_K,
-    }
-
-
 def _request_json(url: str, payload: dict[str, Any] | None, timeout: float, headers: dict[str, str]) -> tuple[int, dict]:
     body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request_headers = {"Accept": "application/json", **headers}
@@ -101,55 +73,42 @@ def _request_json(url: str, payload: dict[str, Any] | None, timeout: float, head
         return exc.code, detail
 
 
-def _metadata_value(metadata: dict, *keys: str) -> str | None:
-    for key in keys:
-        value = metadata.get(key)
-        if value is not None and str(value).strip():
-            return str(value).strip()
-    return None
+def _validated_candidate_fingerprint(status: int, payload: dict[str, Any]) -> dict[str, Any]:
+    if status != 200 or not isinstance(payload, dict):
+        raise ValueError(f"candidate fingerprint endpoint returned HTTP {status}")
+    required = {
+        "schema_version",
+        "build_revision",
+        "answer_contract_version",
+        "runtime_config",
+        "artifact_manifest_sha256",
+        "artifacts",
+        "datasets",
+        "dense_index_ready",
+        "fingerprint_sha256",
+    }
+    missing = sorted(required - set(payload))
+    if missing:
+        raise ValueError(f"candidate fingerprint is missing fields: {missing}")
+    unsigned = {key: value for key, value in payload.items() if key != "fingerprint_sha256"}
+    if str(payload["fingerprint_sha256"]) != _canonical_hash(unsigned):
+        raise ValueError("candidate fingerprint self-hash is invalid")
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise ValueError("candidate fingerprint has no artifact records")
+    canonical_artifacts = json.dumps(
+        artifacts,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if str(payload["artifact_manifest_sha256"]) != _sha256_bytes(canonical_artifacts):
+        raise ValueError("candidate artifact manifest hash is invalid")
+    return payload
 
 
 def _normalize_source(source: dict[str, Any]) -> dict[str, Any]:
-    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
-    snippet = str(source.get("snippet") or "")
-    snippet_hash = _sha256_bytes(snippet.encode("utf-8"))
-    dataset = str(source.get("source") or "").strip()
-    campus_scope = str(metadata.get("campus_scope") or "unknown").strip().lower()
-    if campus_scope not in {"seoul", "bmc", "wise", "shared", "unknown"}:
-        campus_scope = "unknown"
-    chunk_id = str(source.get("chunk_id") or metadata.get("chunk_id") or "").strip() or None
-    url = str(source.get("url") or metadata.get("url") or "").strip() or None
-    published_at = str(source.get("published_at") or metadata.get("published_at") or "").strip() or None
-    effective_date = _metadata_value(
-        metadata, "effective_date", "schedule_start", "schedule_end", "apply_deadline", "updated_at", "sort_date"
-    ) or (str(source.get("sort_date") or "").strip() or None)
-    source_type = str(metadata.get("source_type") or dataset).strip()
-    locator = _metadata_value(
-        metadata, "document_key", "notice_id", "source_file", "filename", "schedule_id", "staff_id"
-    )
-    identity = {
-        "dataset": dataset,
-        "chunk_id": chunk_id,
-        "url": url,
-        "campus_scope": campus_scope,
-        "published_at": published_at,
-        "effective_date": effective_date,
-        "snippet_hash": snippet_hash,
-    }
-    return {
-        "id": f"sha256:{_canonical_hash(identity)}",
-        "dataset": dataset,
-        "source_type": source_type,
-        "chunk_id": chunk_id,
-        "url": url,
-        "campus_scope": campus_scope,
-        "published_at": published_at,
-        "effective_date": effective_date,
-        "snippet": snippet,
-        "snippet_hash": snippet_hash,
-        "citation_number": source.get("citation_number"),
-        "locator": locator,
-    }
+    return normalized_source_contract(source)
 
 
 def _result_from_response(case, status: int, response: dict, latency_ms: int) -> dict[str, Any]:
@@ -175,13 +134,24 @@ def _result_from_response(case, status: int, response: dict, latency_ms: int) ->
             "error": json.dumps(response, ensure_ascii=False)[:2000],
         }
     sources = [_normalize_source(item) for item in response.get("sources", []) if isinstance(item, dict)]
-    # The current transport exposes suggested questions as strings only.  Empty
-    # source_refs truthfully records that no grounding lineage was transported.
-    followups = [
-        {"question": str(question), "source_refs": []}
+    details = response.get("suggested_question_details", [])
+    followups: list[dict[str, Any]] = []
+    if isinstance(details, list):
+        for detail in details:
+            if not isinstance(detail, dict) or not str(detail.get("question") or "").strip():
+                continue
+            refs = [str(ref) for ref in detail.get("source_refs", []) if str(ref).strip()]
+            followups.append({"question": str(detail["question"]).strip(), "source_refs": refs})
+    transported_questions = [
+        str(question).strip()
         for question in response.get("suggested_questions", [])
         if str(question).strip()
     ]
+    detailed_questions = [item["question"] for item in followups]
+    if transported_questions != detailed_questions:
+        # Preserve the real mismatch so the release evaluator fails instead of
+        # silently inventing lineage for the legacy string-only transport.
+        followups = [{"question": question, "source_refs": []} for question in transported_questions]
     return {
         "schema_version": 2,
         "status": "ok",
@@ -191,7 +161,10 @@ def _result_from_response(case, status: int, response: dict, latency_ms: int) ->
         "http_status": status,
         "latency_ms": latency_ms,
         "request_id": str(response.get("request_id") or "") or None,
-        "actual_app_intents": [str(item) for item in response.get("route", [])],
+        "actual_app_intents": [
+            str(item)
+            for item in response.get("resolved_intents", response.get("route", []))
+        ],
         "answer": str(response.get("answer") or ""),
         "citations_text": str(response.get("citations") or ""),
         "sources": sources,
@@ -261,10 +234,41 @@ def main(argv: list[str] | None = None) -> int:
         ready_status, ready_payload = _request_json(f"{base_url}/ready", None, min(args.timeout, 30), headers)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         ready_status, ready_payload = 0, {"error": f"{type(exc).__name__}: {exc}"}
+    try:
+        fingerprint_status, fingerprint_payload = _request_json(
+            f"{base_url}/evaluation/fingerprint",
+            None,
+            min(args.timeout, 120),
+            headers,
+        )
+        candidate_fingerprint = _validated_candidate_fingerprint(
+            fingerprint_status,
+            fingerprint_payload,
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Candidate attestation failed: {exc}", file=sys.stderr)
+        return 4
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as executor:
         futures = [executor.submit(_run_case, case, ask_url, args.timeout, headers) for case in cases]
         results = [future.result() for future in futures]
+
+    end_fingerprint_hash: str | None = None
+    candidate_fingerprint_stable = False
+    try:
+        end_status, end_payload = _request_json(
+            f"{base_url}/evaluation/fingerprint",
+            None,
+            min(args.timeout, 120),
+            headers,
+        )
+        end_fingerprint = _validated_candidate_fingerprint(end_status, end_payload)
+        end_fingerprint_hash = end_fingerprint["fingerprint_sha256"]
+        candidate_fingerprint_stable = (
+            end_fingerprint_hash == candidate_fingerprint["fingerprint_sha256"]
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        candidate_fingerprint_stable = False
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     results_path = args.output_dir / "results.jsonl"
@@ -272,11 +276,21 @@ def main(argv: list[str] | None = None) -> int:
         "\n".join(json.dumps(result, ensure_ascii=False, sort_keys=True) for result in results) + "\n"
     ).encode("utf-8")
     results_path.write_bytes(results_bytes)
-    data_hash, data_files = _data_manifest(rag_root)
     git_diff = _git(repo_root, "diff", "--binary", "HEAD")
+    commit_sha = _git(repo_root, "rev-parse", "HEAD")
+    dirty = bool(_git(repo_root, "status", "--porcelain"))
     failures = [result["id"] for result in results if result["status"] != "ok"]
+    complete = not selected_ids and len(results) == len(all_cases) and not failures
+    release_eligible = (
+        complete
+        and not dirty
+        and commit_sha != "unavailable"
+        and candidate_fingerprint["build_revision"] == commit_sha
+        and candidate_fingerprint_stable
+        and candidate_fingerprint["dense_index_ready"] is True
+    )
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "runner_version": RUNNER_VERSION,
         "run_id": run_id,
         "run_started_at": started_at,
@@ -292,22 +306,29 @@ def main(argv: list[str] | None = None) -> int:
         "result_count": len(results),
         "expected_result_count": len(all_cases),
         "selected_case_ids": sorted(selected_ids),
-        "complete": not selected_ids and len(results) == len(all_cases) and not failures,
+        "complete": complete,
+        "release_eligible": release_eligible,
         "failed_case_ids": failures,
         "git": {
-            "commit_sha": _git(repo_root, "rev-parse", "HEAD"),
-            "dirty": bool(_git(repo_root, "status", "--porcelain")),
+            "commit_sha": commit_sha,
+            "dirty": dirty,
             "diff_sha256": _sha256_bytes(git_diff.encode("utf-8")),
         },
-        "candidate_config": _candidate_config(rag_root),
-        "data_manifest_hash": data_hash,
-        "data_files": data_files,
+        "candidate_fingerprint": candidate_fingerprint,
+        "candidate_fingerprint_sha256": candidate_fingerprint["fingerprint_sha256"],
+        "candidate_fingerprint_end_sha256": end_fingerprint_hash,
+        "candidate_fingerprint_stable": candidate_fingerprint_stable,
+        # Compatibility summaries are copied from the HTTP attestation, never
+        # recomputed from the runner checkout.
+        "candidate_config": candidate_fingerprint["runtime_config"],
+        "data_manifest_hash": candidate_fingerprint["artifact_manifest_sha256"],
+        "data_files": candidate_fingerprint["artifacts"],
     }
     (args.output_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     print(json.dumps({"output_dir": str(args.output_dir), **manifest}, ensure_ascii=False, indent=2))
-    return 0 if manifest["complete"] else 3
+    return 0 if manifest["release_eligible"] else 3
 
 
 if __name__ == "__main__":

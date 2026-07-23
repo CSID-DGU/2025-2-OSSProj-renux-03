@@ -71,6 +71,8 @@ services:
         environment:
             # 답변 생성 프로바이더: "openai"(기본) 또는 "ollama".
             - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+            # Release evaluation binds the HTTP candidate to the deployed Git revision.
+            - RAG_BUILD_REVISION=${RAG_BUILD_REVISION:-local-unversioned}
             # 질의분석/라우터는 항상 OpenAI를 사용하므로 키는 필수.
             - OPENAI_API_KEY=${OPENAI_API_KEY}
             - OPENAI_CHAT_MODEL=${OPENAI_CHAT_MODEL:-gpt-4o-mini}

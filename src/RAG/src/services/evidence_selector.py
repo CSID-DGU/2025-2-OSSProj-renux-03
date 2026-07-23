@@ -48,6 +48,19 @@ Apply only these general rules:
 5. Return at most five groups. Groups have equal status and are not ranked. Select only the
    smallest sufficient set of documents, with at most three documents in each group.
 6. If nothing is directly relevant, return an empty groups list.
+7. When the question names an academic year or semester and matching evidence exists, do
+   not select evidence that declares a different year or semester. Timeless rules may remain.
+8. A partner-university credit-exchange notice is not ordinary Dongguk course-registration
+   evidence unless the question explicitly asks about inter-university study or that institution.
+9. Do not use graduate-school-only evidence for an unqualified enrolled-student question. When
+   the user names a narrow operation such as a course basket or course-change period, generic
+   registration dates do not answer it unless the document substantiates that same operation.
+10. A title that declares a cohort, academic year, semester, or audience is the document's
+    applicability scope. Do not broaden it using incidental years or audiences in body examples.
+11. Do not use a foreign-student-only or other restricted-audience notice for an unqualified
+    general-student question. If no matching general source exists, select nothing.
+12. When the user asks for a phone number or contact, prefer a staff document that actually
+    contains the requested contact value over a same-department staff biography without it.
 
 Use only candidate_id values present in the input. Do not answer the question.
 """.strip()
@@ -81,6 +94,9 @@ def _bounded_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, str]
                 "dataset": str(candidate.get("dataset") or "")[:40],
                 "title": str(candidate.get("title") or "")[:240],
                 "published_at": str(candidate.get("published_at") or "")[:40],
+                "schedule_start": str(candidate.get("schedule_start") or "")[:40],
+                "campus_scope": str(candidate.get("campus_scope") or "")[:40],
+                "source_type": str(candidate.get("source_type") or "")[:80],
                 "text": str(candidate.get("text") or "")[:text_limit],
             }
         )

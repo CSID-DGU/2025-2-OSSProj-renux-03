@@ -102,6 +102,7 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddAuthorization();
 builder.Services.AddHttpClient();
+builder.Services.AddMemoryCache();
 string dataProtectionKeysPath = builder.Configuration["DataProtection:KeysPath"]
     ?? builder.Configuration["DATA_PROTECTION_KEYS_PATH"]
     ?? Path.Combine(builder.Environment.ContentRootPath, ".data-protection-keys");

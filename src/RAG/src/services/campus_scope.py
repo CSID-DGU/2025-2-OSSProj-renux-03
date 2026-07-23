@@ -2,9 +2,9 @@
 
 The product serves Seoul and BMC students by default.  WISE-only material is
 therefore excluded unless the *original user question* explicitly asks for
-WISE.  ``unknown`` remains eligible because most legacy Seoul data predates
-campus metadata; however, legacy rows are reclassified from their path, URL,
-title, and text before that fallback is used.
+WISE. ``unknown`` remains eligible for untrusted legacy rows. Records from the
+six curated main-campus corpora receive a provenance fallback only after every
+WISE, BMC, and Seoul identity signal has been checked.
 """
 from __future__ import annotations
 
@@ -39,6 +39,14 @@ _IDENTITY_KEYS = (
 _CONTENT_KEYS = (
     "topics", "category", "department", "college_name", "source", "chunk_text", "text",
 )
+_TRUSTED_MAIN_CAMPUS_DEFAULTS = {
+    "notices": CampusScope.SHARED,
+    "rules": CampusScope.SHARED,
+    "schedule": CampusScope.SHARED,
+    "courses": CampusScope.SHARED,
+    "staff": CampusScope.SHARED,
+    "meals": CampusScope.SEOUL,
+}
 
 
 def _clean(value: Any) -> str:
@@ -118,7 +126,11 @@ def enrich_documents_with_campus_scope(documents: Iterable[dict[str, Any]]) -> N
 
 def campus_scope_for_row(row: Mapping[str, Any]) -> CampusScope:
     """Classify both new and metadata-less legacy retrieval rows."""
-    return classify_campus_scope(row)
+    classified = classify_campus_scope(row)
+    if classified is not CampusScope.UNKNOWN:
+        return classified
+    source = _clean(row.get("source") or row.get("dataset")).lower()
+    return _TRUSTED_MAIN_CAMPUS_DEFAULTS.get(source, CampusScope.UNKNOWN)
 
 
 def apply_campus_safety_boundary(

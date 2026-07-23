@@ -17,7 +17,6 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from src.crawlers.dongguk_meals import crawl_meals
-from src.config import DATA_SOURCES
 from src.pipelines.ingest import ingest_meals
 from src.database import init_db
 
@@ -38,15 +37,12 @@ def _run_once(days_ahead: int, delay: float, include_dflex: bool) -> bool:
         print("⚠️ 수집된 학식 레코드가 0건 — 인덱스를 갱신하지 않고 기존 데이터를 보존합니다.")
         return False
 
-    out_path = DATA_SOURCES["meals"]
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(out_path, index=False, encoding="utf-8-sig")
     n_dates = df["date"].nunique()
     n_rest = df["restaurant"].nunique()
-    print(f"✅ {len(df)}행 저장 ({n_dates}일 × 식당 {n_rest}곳) → {out_path}")
+    print(f"✅ {len(df)}행을 SQLite에 저장 ({n_dates}일 × 식당 {n_rest}곳)")
 
     try:
-        chunks_df, _, _ = ingest_meals()
+        chunks_df, _, _ = ingest_meals(df)
         print(f"✅ meals 인덱스 재구축 완료: {len(chunks_df)} chunks")
         return True
     except Exception as exc:  # noqa: BLE001

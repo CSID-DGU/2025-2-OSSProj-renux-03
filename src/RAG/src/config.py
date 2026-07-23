@@ -140,14 +140,14 @@ RAG_DECOMPOSE_ENABLED = os.getenv("RAG_DECOMPOSE_ENABLED", "1") == "1"
 RAG_MAX_SUBQUERIES = int(os.getenv("RAG_MAX_SUBQUERIES", "4"))
 # 답변 이후 사용자가 이어서 물어볼 만한 추천 후속질문 생성.
 RAG_SUGGEST_FOLLOWUPS = os.getenv("RAG_SUGGEST_FOLLOWUPS", "1") == "1"
-RAG_SUGGEST_FOLLOWUPS_COUNT = int(os.getenv("RAG_SUGGEST_FOLLOWUPS_COUNT", "3"))
+RAG_SUGGEST_FOLLOWUPS_COUNT = int(os.getenv("RAG_SUGGEST_FOLLOWUPS_COUNT", "5"))
 # 생성된 답변이 검색 컨텍스트로 뒷받침되는지 사후 점검한다.
 RAG_GROUNDING_CHECK_ENABLED = os.getenv("RAG_GROUNDING_CHECK_ENABLED", "1") == "1"
 RAG_COLLEGE_SCOPE_ENABLED = os.getenv("RAG_COLLEGE_SCOPE_ENABLED", "1") == "1"
 RAG_GROUNDING_MIN_SCORE = float(os.getenv("RAG_GROUNDING_MIN_SCORE", "0.5"))
-# 라우터로 일부 데이터셋만 고르지 않고, 항상 전체 데이터셋에서 검색한다.
-# 라우터 오분류로 관련 문서를 못 찾는 문제를 피하고, 점수 병합이 관련 문서를 선별한다.
-RAG_SEARCH_ALL_DATASETS = os.getenv("RAG_SEARCH_ALL_DATASETS", "1") == "1"
+# 질의 분석의 intent와 안전한 키워드 보강으로 필요한 데이터셋만 검색한다.
+# 장애 진단 등에서만 환경변수로 전체 검색을 명시적으로 켤 수 있다.
+RAG_SEARCH_ALL_DATASETS = os.getenv("RAG_SEARCH_ALL_DATASETS", "0") == "1"
 # 검색 시 질문을 여러 서브쿼리로 펼치지 않고, 사용자 질문 1개로만 검색한다.
 RAG_SINGLE_QUERY_RETRIEVAL = os.getenv("RAG_SINGLE_QUERY_RETRIEVAL", "1") == "1"
 # 전체 데이터셋 검색 뒤 OpenAI가 직접 관련성/중복/충돌을 판정할 때의 비용 상한.

@@ -1,0 +1,130 @@
+{
+  "totalCount": 2,
+  "list": [
+    {
+      "id": 2,
+      "name": "중앙도서관",
+      "url": "https://lib.dongguk.edu/",
+      "sortOrder": 1,
+      "operationTimes": [
+        {
+          "libraryDate": "2026-07-21 00:00:00",
+          "isClose": false,
+          "isAllDayOpen": false,
+          "openTime": "0900",
+          "closedTime": "1800"
+        },
+        {
+          "libraryDate": "2026-07-22 00:00:00",
+          "isClose": true,
+          "isAllDayOpen": false,
+          "openTime": null,
+          "closedTime": null
+        }
+      ],
+      "branch": {
+        "id": 1,
+        "name": "중앙도서관",
+        "alias": "중앙",
+        "libraryCode": "211020",
+        "sortOrder": 1
+      },
+      "childBranchSections": [
+        {
+          "name": "자료실(3F~B2F)",
+          "url": "https://lib.dongguk.edu/",
+          "sortOrder": 1,
+          "operationTimes": [
+            {
+              "libraryDate": "2026-07-21 00:00:00",
+              "isClose": false,
+              "isAllDayOpen": false,
+              "openTime": "0900",
+              "closedTime": "1700"
+            }
+          ]
+        },
+        {
+          "name": "보덕열람실",
+          "url": "https://lib.dongguk.edu/",
+          "sortOrder": 2,
+          "operationTimes": [
+            {
+              "libraryDate": "2026-07-21 00:00:00",
+              "isClose": false,
+              "isAllDayOpen": true,
+              "openTime": null,
+              "closedTime": null
+            }
+          ]
+        },
+        {
+          "name": "제2열람실",
+          "url": "https://lib.dongguk.edu/",
+          "sortOrder": 3,
+          "operationTimes": [
+            {
+              "libraryDate": "2026-07-21 00:00:00",
+              "isClose": false,
+              "isAllDayOpen": false,
+              "openTime": "0600",
+              "closedTime": "2400"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "바이오약학도서관",
+      "url": "https://lib.dongguk.edu/",
+      "sortOrder": 2,
+      "operationTimes": [
+        {
+          "libraryDate": "2026-07-21 00:00:00",
+          "isClose": false,
+          "isAllDayOpen": false,
+          "openTime": "0900",
+          "closedTime": "1800"
+        }
+      ],
+      "branch": {
+        "id": 1,
+        "name": "중앙도서관",
+        "alias": "중앙",
+        "libraryCode": "211020",
+        "sortOrder": 1
+      },
+      "childBranchSections": [
+        {
+          "name": "자료실",
+          "url": "https://lib.dongguk.edu/",
+          "sortOrder": 1,
+          "operationTimes": [
+            {
+              "libraryDate": "2026-07-21 00:00:00",
+              "isClose": false,
+              "isAllDayOpen": false,
+              "openTime": "1000",
+              "closedTime": "1700"
+            }
+          ]
+        },
+        {
+          "name": "세스코열람실",
+          "url": "https://lib.dongguk.edu/",
+          "sortOrder": 2,
+          "operationTimes": [
+            {
+              "libraryDate": "2026-07-21 00:00:00",
+              "isClose": false,
+              "isAllDayOpen": true,
+              "openTime": null,
+              "closedTime": null
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

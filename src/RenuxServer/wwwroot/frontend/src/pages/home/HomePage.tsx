@@ -5,6 +5,7 @@ import { mapRoleNameToUserRole } from '../../auth/roleMapping'
 import {
   finalizeStoppedAssistant,
   isAbortError,
+  isStoppedAssistant,
   normalizeAssistantRuns,
   prepareRegeneration,
   readGuestChatRecords,
@@ -1067,6 +1068,7 @@ const HomePage = () => {
                     const messageTime = formatMessageTime(message.createdTime)
                     // 스트리밍 대기 중인 빈 봇 말풍선은 타이핑 인디케이터로 렌더
                     const isStreamingPlaceholder = !message.isAsk && !message.content
+                    const isStoppedAttempt = isStoppedAssistant(message)
                     const previousUserMessage = !message.isAsk
                       ? [...chatMessages.slice(0, index)].reverse().find((candidate) => candidate.isAsk && candidate.content.trim().length > 0)
                       : null
@@ -1086,12 +1088,17 @@ const HomePage = () => {
                           </div>
                         ) : (
                           <>
+                            {isStoppedAttempt && (
+                              <span className="chat-fallback-badge" role="status">
+                                사용자가 생성을 중단한 임시 답변입니다.
+                              </span>
+                            )}
                             {!message.isAsk && message.isFallback && <span className="chat-fallback-badge">{getFallbackLabel(message.fallbackReason)}</span>}
                             <ChatMarkdown
                               content={message.content}
                               onCitationClick={(citationNumber) => setActiveCitation({ messageId: message.id, citationNumber })}
                             />
-                            {!message.isAsk && message.grounded === false && (
+                            {!message.isAsk && !isStoppedAttempt && message.grounded === false && (
                               <span
                                 className="chat-fallback-badge"
                                 title={typeof message.groundingScore === 'number' ? `근거 일치도 약 ${Math.round(message.groundingScore * 100)}%` : undefined}
@@ -1099,7 +1106,7 @@ const HomePage = () => {
                                 ⚠️ 제공된 자료로 충분히 확인되지 않은 내용이 포함될 수 있어요.
                               </span>
                             )}
-                            {!message.isAsk && (
+                            {!message.isAsk && !isStoppedAttempt && (
                               <SourceCards
                                 sources={message.sources}
                                 showScores={showRagScores}
@@ -1107,17 +1114,17 @@ const HomePage = () => {
                                 activeCitationNumber={activeCitation?.messageId === message.id ? activeCitation.citationNumber : null}
                               />
                             )}
-                            {!message.isAsk && message.content.trim().length > 0 && <CopyButton text={message.content} />}
-                            {!message.isAsk && message.content.trim().length > 0 && previousUserMessage && selectedChatId && (
+                            {!message.isAsk && !isStoppedAttempt && message.content.trim().length > 0 && <CopyButton text={message.content} />}
+                            {!message.isAsk && !isStoppedAttempt && message.content.trim().length > 0 && previousUserMessage && selectedChatId && (
                               <RegenerateButton
                                 disabled={chatSending}
                                 onRegenerate={() => regenerateChatMessage(message.id)}
                               />
                             )}
-                            {!message.isAsk && message.requestId && (
+                            {!message.isAsk && !isStoppedAttempt && message.requestId && (
                               <MessageFeedback requestId={message.requestId} disabled={chatSending} />
                             )}
-                            {!message.isAsk && (
+                            {!message.isAsk && !isStoppedAttempt && (
                               <SuggestedQuestions
                                 questions={message.suggestedQuestions ?? []}
                                 requestId={message.requestId}

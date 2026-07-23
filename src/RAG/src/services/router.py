@@ -101,7 +101,7 @@ def _format_destinations() -> str:
     return "\n".join(f"- {name}: {desc}" for name, desc in LLM_ROUTER_DESCRIPTIONS.items())
 
 
-def _keyword_route(query: str) -> List[str]:
+def keyword_route(query: str) -> List[str]:
     """LLM 라우터 장애 시 최소한의 의도 보존을 위한 deterministic 폴백."""
     normalized = query.lower()
     routes: list[str] = []
@@ -111,6 +111,11 @@ def _keyword_route(query: str) -> List[str]:
                 if name not in routes:
                     routes.append(name)
     return routes or ["notices"]
+
+
+def _keyword_route(query: str) -> List[str]:
+    """Backward-compatible private alias for older router call sites."""
+    return keyword_route(query)
 
 
 def _cached_route(query: str) -> List[str] | None:
@@ -159,7 +164,7 @@ async def route_query(query: str) -> List[str]:
                 "LLM 라우터 출력 파싱에 실패했습니다: %s | 원본 출력=%r. 'notices'로 기본 설정합니다.",
                 e, raw_text,
             )
-            route = _keyword_route(query)
+            route = keyword_route(query)
             _store_route(query, route)
             return route
 
@@ -171,11 +176,11 @@ async def route_query(query: str) -> List[str]:
                 "LLM 라우터가 유효한 데이터셋을 반환하지 않았습니다. 원본 출력=%r. 'notices'로 기본 설정합니다.",
                 raw_text,
             )
-        route = valid_routes or _keyword_route(query)
+        route = valid_routes or keyword_route(query)
         _store_route(query, route)
         return route
     except Exception as e:
-        route = _keyword_route(query)
+        route = keyword_route(query)
         logging.error(
             "LLM 라우터에서 예기치 않은 오류가 발생했습니다: %s | 원본 출력=%r. 키워드 폴백 route=%s.",
             e, raw_text, route,
@@ -183,5 +188,5 @@ async def route_query(query: str) -> List[str]:
         _store_route(query, route)
         return route
 
-# 이 파일에서 외부에 제공할 함수는 route_query 뿐입니다.
-__all__ = ["route_query"]
+# 이 파일에서 외부에 제공하는 함수는 LLM 라우팅과 결정적 키워드 라우팅입니다.
+__all__ = ["route_query", "keyword_route"]

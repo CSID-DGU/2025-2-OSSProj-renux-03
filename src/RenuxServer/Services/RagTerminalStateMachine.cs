@@ -105,11 +105,66 @@ public sealed class RagTerminalStateMachine(string backendRequestId)
             return false;
         if (suggestions.EnumerateArray().Any(item => item.ValueKind != JsonValueKind.String))
             return false;
+        if (!payload.TryGetProperty("resolved_intents", out JsonElement resolvedIntents)
+            || resolvedIntents.ValueKind != JsonValueKind.Array
+            || resolvedIntents.EnumerateArray().Any(item => item.ValueKind != JsonValueKind.String))
+            return false;
+        if (!HasValidSourceLineage(sources, suggestions, payload)) return false;
         if (!HasNullableBoolean(payload, "grounded")) return false;
         if (!HasNullableUnitScore(payload, "grounding_score")) return false;
         if (!HasNullableString(payload, "fallback_reason")) return false;
         return true;
     }
+
+    private static bool HasValidSourceLineage(
+        JsonElement sources,
+        JsonElement suggestions,
+        JsonElement payload)
+    {
+        var transportedSourceRefs = new HashSet<string>(StringComparer.Ordinal);
+        foreach (JsonElement source in sources.EnumerateArray())
+        {
+            if (source.ValueKind != JsonValueKind.Object
+                || !source.TryGetProperty("source_ref", out JsonElement sourceRef)
+                || sourceRef.ValueKind != JsonValueKind.String
+                || !IsSha256Reference(sourceRef.GetString()))
+                return false;
+            transportedSourceRefs.Add(sourceRef.GetString()!);
+        }
+
+        if (!payload.TryGetProperty("suggested_question_details", out JsonElement details)
+            || details.ValueKind != JsonValueKind.Array)
+            return false;
+        string[] suggestionTexts = suggestions.EnumerateArray()
+            .Select(item => item.GetString()!)
+            .ToArray();
+        var detailedTexts = new List<string>();
+        foreach (JsonElement detail in details.EnumerateArray())
+        {
+            if (detail.ValueKind != JsonValueKind.Object
+                || !detail.TryGetProperty("question", out JsonElement question)
+                || question.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(question.GetString())
+                || !detail.TryGetProperty("source_refs", out JsonElement sourceRefs)
+                || sourceRefs.ValueKind != JsonValueKind.Array)
+                return false;
+            string[] refs = sourceRefs.EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.String)
+                .Select(item => item.GetString()!)
+                .ToArray();
+            if (refs.Length == 0
+                || refs.Length != sourceRefs.GetArrayLength()
+                || refs.Any(reference => !transportedSourceRefs.Contains(reference)))
+                return false;
+            detailedTexts.Add(question.GetString()!);
+        }
+        return suggestionTexts.SequenceEqual(detailedTexts, StringComparer.Ordinal);
+    }
+
+    private static bool IsSha256Reference(string? value)
+        => value is { Length: 71 }
+           && value.StartsWith("sha256:", StringComparison.Ordinal)
+           && value.AsSpan(7).ToString().All(Uri.IsHexDigit);
 
     private static bool HasNullableBoolean(JsonElement payload, string name)
         => payload.TryGetProperty(name, out JsonElement property)
