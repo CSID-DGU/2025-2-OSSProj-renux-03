@@ -14,3 +14,10 @@ def test_langchain_prompt_allows_english_answers_with_original_sources():
     assert "사용자가 영어로 질문하면 영어로 답" in prompt
     assert "URL" in prompt
     assert "원문 표기" in prompt
+
+
+def test_langchain_prompt_prohibits_generalizing_period_bound_documents():
+    prompt = _get_system_prompt("rag")
+
+    assert "그 기간에만" in prompt
+    assert "현재의 일반 절차처럼 설명하지 말고" in prompt

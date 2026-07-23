@@ -1,6 +1,7 @@
 """학번별 학사제도/학업이수 가이드 PDF를 rules 보조 데이터로 정규화합니다."""
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Dict, Iterable, List
@@ -12,7 +13,9 @@ from src.config import DATA_DIR
 
 PDF_GLOB = "*_edu.pdf"
 OUTPUT_PATH = DATA_DIR / "dongguk_entry_year_guide_sections.csv"
+SOURCE_MANIFEST_PATH = DATA_DIR / "dongguk_entry_year_guide_sources.csv"
 SOURCE_TYPE = "entry_year_guide_pdf"
+HOPE_COURSE_PERIOD_SECTION = "희망강의신청 대상 및 신청기간"
 SECTION_PATTERNS: Dict[str, re.Pattern[str]] = {
     "수강신청 및 수업관련제도": re.compile(r"^\s*[ⅡII2]+\s*[.\-]?\s*수강신청.*수업\s*관련\s*제도"),
     "학적 및 학생 관련": re.compile(r"^\s*[ⅢIII3]+\s*[.\-]?\s*학적.*학생\s*관련"),
@@ -45,6 +48,10 @@ NOISE_LINE_PATTERNS = [
 # 단과대별 졸업기준표가 직전 섹션(교양/학적)에 흡수되므로, 본문 어디서든 이 마커를 찾아 분리한다.
 GRADUATION_MARKER = re.compile(r"[ⅤV]\s*[.\-]?\s*단과대학별\s*졸업\s*기준\s*▶*")
 GRADUATION_SECTION = "단과대학별 졸업기준"
+
+
+class EntryYearGuideParseError(ValueError):
+    """Raised when an official guide exposes a section but loses its table values."""
 
 
 def _normalize_line(line: str) -> str:
@@ -86,11 +93,148 @@ def _read_pdf_pages(path: Path) -> List[dict]:
     reader = PdfReader(str(path))
     pages: list[dict] = []
     for index, page in enumerate(reader.pages, start=1):
-        text = _normalize_text_block(page.extract_text() or "")
+        # The guides are exported from HWP and table cells often appear at the
+        # end of the page's content stream. Plain extraction therefore moves
+        # the 희망강의 rows below the following 수강신청 section. Layout mode
+        # follows the visual y/x order and keeps headings, rows, and notes
+        # together. Older pypdf releases do not expose the keyword, so retain
+        # a compatibility fallback instead of dropping the whole guide.
+        try:
+            extracted = page.extract_text(extraction_mode="layout") or ""
+        except (TypeError, ValueError):
+            extracted = page.extract_text() or ""
+        text = _normalize_text_block(extracted)
         if not text:
             continue
         pages.append({"page_number": index, "text": text})
     return pages
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _source_metadata_for_pdf(path: Path) -> dict[str, str]:
+    """Return verified first-party lineage for a local guide PDF.
+
+    A URL is attached only when the local bytes match the recorded checksum.
+    This prevents a silently replaced ``2026_edu.pdf`` from inheriting the
+    provenance of a different official version.
+    """
+    if not SOURCE_MANIFEST_PATH.exists():
+        return {}
+    manifest = pd.read_csv(SOURCE_MANIFEST_PATH).fillna("").astype(str)
+    if "source_file" not in manifest.columns:
+        raise EntryYearGuideParseError("entry-year source manifest has no source_file column")
+    matched = manifest[manifest["source_file"].eq(path.name)]
+    if matched.empty:
+        return {}
+    if len(matched) != 1:
+        raise EntryYearGuideParseError(f"duplicate source manifest rows for {path.name}")
+    row = matched.iloc[0]
+    expected_sha256 = str(row.get("source_sha256", "")).strip().lower()
+    if expected_sha256 and _file_sha256(path) != expected_sha256:
+        raise EntryYearGuideParseError(f"source checksum mismatch for {path.name}")
+    return {
+        key: str(row.get(key, "")).strip()
+        for key in (
+            "source_url",
+            "source_page_url",
+            "source_version",
+            "source_sha256",
+        )
+        if str(row.get(key, "")).strip()
+    }
+
+
+_HOPE_COURSE_HEADING_RE = re.compile(r"(?:^|\n)\s*2\s*[.\-]?\s*희망강의\s*신청")
+_HOPE_COURSE_PERIOD_RE = re.compile(r"(?:^|\n)\s*나\s*[.\-]?\s*대상\s*및\s*신청기간")
+_HOPE_COURSE_NEXT_RE = re.compile(r"(?:^|\n)\s*다\s*[.\-]?\s*신청방법")
+_HOPE_COURSE_PURPOSE_RE = re.compile(r"(?:^|\n)\s*\(1\)\s*(.+?)(?=\n\s*\(2\))", re.DOTALL)
+_HOPE_COURSE_ROW_RE = re.compile(
+    r"(?P<semester>[12])\s*학기.*?재학\s*[ㆍ·ᆞ]?\s*휴학생\s*전체.*?"
+    r"(?P<year>20\d{2})\s*[.]\s*(?P<month>\d{1,2})\s*[.]\s*(?P<day>\d{1,2})",
+    re.DOTALL,
+)
+
+
+def _extract_hope_course_application_text(page_text: str) -> str | None:
+    """Extract one compact, chunk-safe hope-course application table block."""
+    text = _normalize_text_block(page_text)
+    heading = _HOPE_COURSE_HEADING_RE.search(text)
+    if heading is None:
+        return None
+    period = _HOPE_COURSE_PERIOD_RE.search(text, heading.end())
+    if period is None:
+        raise EntryYearGuideParseError("희망강의신청 section is missing 대상 및 신청기간")
+    next_section = _HOPE_COURSE_NEXT_RE.search(text, period.end())
+    period_block = text[period.start() : next_section.start() if next_section else len(text)].strip()
+    rows = list(_HOPE_COURSE_ROW_RE.finditer(period_block))
+    semesters = {match.group("semester") for match in rows}
+    compact = re.sub(r"\s+", "", period_block)
+    if semesters != {"1", "2"}:
+        raise EntryYearGuideParseError("희망강의신청 table is missing a 1학기 or 2학기 row")
+    if "전체과목" not in compact:
+        raise EntryYearGuideParseError("희망강의신청 table is missing 대상과목")
+    if "변동가능" not in compact:
+        raise EntryYearGuideParseError("희망강의신청 table is missing the change warning")
+
+    purpose = _HOPE_COURSE_PURPOSE_RE.search(text, heading.end(), period.start())
+    purpose_text = purpose.group(1).strip() if purpose else "희망강의신청은 수강신청 대비 장바구니 개념"
+    return _normalize_text_block(f"희망강의신청(장바구니): {purpose_text}\n{period_block}")
+
+
+def _printed_page_label(page_text: str) -> str:
+    labels = re.findall(r"▶+\s*(\d{1,3})(?:\s*$|\n)", page_text)
+    return labels[-1] if labels else ""
+
+
+def _build_hope_course_application_records(
+    pages: List[dict],
+    *,
+    entry_year: int,
+    path: Path,
+    published_at: str,
+    strict: bool,
+) -> List[Dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for page in pages:
+        if _looks_like_table_of_contents(page["text"]):
+            continue
+        try:
+            text = _extract_hope_course_application_text(page["text"])
+        except EntryYearGuideParseError:
+            # Only checksum-pinned first-party files promise this structured
+            # table contract. Legacy local PDFs without source provenance keep
+            # their ordinary section record rather than failing all ingestion.
+            if strict:
+                raise
+            continue
+        if text is None:
+            continue
+        page_number = str(page["page_number"])
+        records.append(
+            {
+                "entry_year": str(entry_year),
+                "section": HOPE_COURSE_PERIOD_SECTION,
+                "college_name": "",
+                "title": f"{entry_year}학번 희망강의신청(장바구니) 대상 및 신청기간",
+                "text": text,
+                "source_type": SOURCE_TYPE,
+                "source_file": path.name,
+                "published_at": published_at,
+                "page_start": page_number,
+                "page_end": page_number,
+                "page_label": _printed_page_label(page["text"]),
+                "relative_dir": "entry_year_guides",
+                "filename": path.name,
+            }
+        )
+    return records
 
 
 def _match_section(line: str) -> str | None:
@@ -281,7 +425,8 @@ def _build_records_for_pdf(path: Path) -> List[Dict[str, str]]:
     pages = _read_pdf_pages(path)
     sections = _segment_pages_by_section(pages)
     colleges = _load_known_colleges()
-    published_at = f"{entry_year}-01-01"
+    source_metadata = _source_metadata_for_pdf(path)
+    published_at = source_metadata.get("source_version", f"{entry_year}-01-01")
     records: list[dict[str, str]] = []
 
     # 졸업기준 블록은 (a)정상 검출된 섹션과 (b)다른 섹션에 흡수된 마커 이후 꼬리에 나뉘어
@@ -339,6 +484,23 @@ def _build_records_for_pdf(path: Path) -> List[Dict[str, str]]:
                 merged, entry_year, grad_page_start or 0, grad_page_end, path, published_at, colleges
             )
         )
+
+    # The source section is intentionally emitted as a small additional record.
+    # Keeping the visual table, its audience, and the change warning in one
+    # record prevents a 300-character chunk boundary from separating the label
+    # "대상 및 신청기간" from the actual dates.
+    records.extend(
+        _build_hope_course_application_records(
+            pages,
+            entry_year=entry_year,
+            path=path,
+            published_at=published_at,
+            strict=bool(source_metadata),
+        )
+    )
+    if source_metadata:
+        for record in records:
+            record.update(source_metadata)
 
     return records
 

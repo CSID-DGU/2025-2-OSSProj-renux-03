@@ -12,7 +12,7 @@ from typing import Any, Iterable
 
 import pandas as pd
 
-from src.config import DATA_SOURCES, NORMALIZED_DIR, RAG_NOTICES_INCREMENTAL_EMBED, RAW_DIR
+from src.config import RAG_NOTICES_INCREMENTAL_EMBED
 from src.crawlers.dongguk_notices import BOARD_CODES
 from src.database import (
     Chunk,
@@ -182,26 +182,6 @@ def _normalize_notice_record(row: pd.Series) -> tuple[dict[str, Any], bool]:
     return normalized, attachments_parse_failed
 
 
-def _raw_notice_path(document_key: str, published_at: str) -> Path:
-    if published_at:
-        try:
-            dt = datetime.strptime(published_at, "%Y-%m-%d")
-        except ValueError:
-            dt = kst_now()
-    else:
-        dt = kst_now()
-    return RAW_DIR / "notices" / f"{dt.year:04d}" / f"{dt.month:02d}" / f"{_safe_filename(document_key)}.json"
-
-
-def _normalized_notice_path(document_key: str) -> Path:
-    return NORMALIZED_DIR / "notices" / f"{_safe_filename(document_key)}.json"
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
-
-
 def _build_quality_checks(record: dict[str, Any], attachments_parse_failed: bool) -> tuple[list[dict[str, str]], str | None]:
     checks: list[dict[str, str]] = []
     parse_errors: list[str] = []
@@ -226,15 +206,25 @@ def _build_quality_checks(record: dict[str, Any], attachments_parse_failed: bool
     return checks, "\n".join(parse_errors) if parse_errors else None
 
 
-def _load_normalized_notice(path: str | None) -> dict[str, Any] | None:
-    if not path:
-        return None
-    file_path = Path(path)
-    if not file_path.exists():
+def _load_normalized_notice(document: SourceDocument) -> dict[str, Any] | None:
+    """Read the canonical SQLite payload, with a read-only legacy fallback.
+
+    Sidecar JSON files existed before SQLite owned the document state.  Keeping
+    this fallback lets an operator migrate an old database safely, but no new
+    collection path writes or requires those files.
+    """
+    if document.normalized_payload_json:
+        try:
+            payload = json.loads(document.normalized_payload_json)
+            return payload if isinstance(payload, dict) else None
+        except (TypeError, json.JSONDecodeError):
+            return None
+    if not document.normalized_path:
         return None
     try:
-        return json.loads(file_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        payload = json.loads(Path(document.normalized_path).read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else None
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return None
 
 
@@ -289,44 +279,12 @@ def load_known_article_ids_by_board() -> dict[str, set[int]]:
 
 
 def _export_active_notices_csv(session) -> None:
-    rows = (
-        session.query(SourceDocument)
-        .filter(
-            SourceDocument.dataset == "notices",
-            SourceDocument.status.in_(["active", "updated"]),
-            SourceDocument.normalized_path.isnot(None),
-        )
-        .order_by(SourceDocument.published_at.desc(), SourceDocument.id.desc())
-        .all()
-    )
+    """Compatibility no-op for old maintenance callers.
 
-    records: list[dict[str, Any]] = []
-    for row in rows:
-        normalized = _load_normalized_notice(row.normalized_path)
-        if not normalized:
-            continue
-        records.append(
-            {
-                "게시판": normalized.get("board_name", ""),
-                "게시판코드": normalized.get("board_code", ""),
-                "원문글ID": normalized.get("article_id", ""),
-                "제목": normalized.get("title", ""),
-                "카테고리": normalized.get("category", ""),
-                "카테고리원본": normalized.get("category_original", normalized.get("category", "")),
-                "카테고리출처": normalized.get("category_source", "list" if normalized.get("category") else "missing"),
-                "카테고리게시판대체": normalized.get("category_board_fallback", ""),
-                "게시일": normalized.get("published_at", ""),
-                "상단고정": normalized.get("is_pinned", False),
-                "상세URL": normalized.get("detail_url", ""),
-                "본문": normalized.get("content_text", ""),
-                "본문HTML": normalized.get("content_html", ""),
-                "첨부파일": json.dumps(normalized.get("attachments", []), ensure_ascii=False),
-            }
-        )
-
-    output_path = DATA_SOURCES["notices"]
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(records).to_csv(output_path, index=False, encoding="utf-8-sig")
+    SQLite is the only canonical store; CSV exports are intentionally no
+    longer produced as part of a collection/indexing transaction.
+    """
+    return None
 
 
 def _normalized_notice_to_notice_row(normalized: dict[str, Any], *, db_id: int | None = None) -> dict[str, Any]:
@@ -414,8 +372,14 @@ def _upsert_notice_chunks(session, notice_rows: list[dict[str, Any]], source_doc
     if chunk_df.empty:
         return
 
-    session.commit()
-    chunk_df[["chunk_id", "chunk_text", "notice_id"]].to_sql("chunks", con=session.bind, if_exists="append", index=False)
+    # Keep relational chunks and their source-document state in the same
+    # SQLite transaction.  ``DataFrame.to_sql(..., con=session.bind)`` opens a
+    # second connection; SQLite then reports "database is locked" while this
+    # session still owns the delete transaction.
+    session.bulk_insert_mappings(
+        Chunk,
+        chunk_df[["chunk_id", "chunk_text", "doc_id", "position", "notice_id"]].to_dict(orient="records"),
+    )
 
     metadatas = chunk_df.drop(columns=["chunk_text"]).to_dict(orient="records")
     metadatas = [{k: (v if v is not None else "") for k, v in item.items()} for item in metadatas]
@@ -492,11 +456,6 @@ def collect_notice_documents(
                 "collected_at": normalized["collected_at"],
                 "raw_record": row.to_dict(),
             }
-            raw_path = _raw_notice_path(normalized["document_key"], normalized["published_at"])
-            normalized_path = _normalized_notice_path(normalized["document_key"])
-            _write_json(raw_path, raw_payload)
-            _write_json(normalized_path, normalized)
-
             checks, parse_error = _build_quality_checks(normalized, attachments_parse_failed)
             _save_quality_checks(session, normalized["document_key"], checks)
 
@@ -532,8 +491,8 @@ def collect_notice_documents(
             existing.status = status
             existing.content_hash = normalized["content_hash"]
             existing.schema_version = NOTICE_SCHEMA_VERSION
-            existing.raw_path = str(raw_path)
-            existing.normalized_path = str(normalized_path)
+            existing.raw_payload_json = json.dumps(raw_payload, ensure_ascii=False, default=_json_default)
+            existing.normalized_payload_json = json.dumps(normalized, ensure_ascii=False, default=_json_default)
             existing.collected_at = kst_now()
             existing.last_parsed_at = kst_now()
             existing.parse_error = parse_error
@@ -556,7 +515,7 @@ def collect_notice_documents(
                 if doc.source_id in seen_source_ids:
                     continue
                 doc.miss_count = (doc.miss_count or 0) + 1
-                normalized = _load_normalized_notice(doc.normalized_path)
+                normalized = _load_normalized_notice(doc)
                 is_pinned = bool(normalized.get("is_pinned")) if normalized else False
                 if is_pinned and doc.miss_count < 2:
                     continue
@@ -623,11 +582,15 @@ def apply_notice_normalized_documents(
 
         normalized_rows: list[dict[str, Any]] = []
         for doc in active_docs:
-            normalized = _load_normalized_notice(doc.normalized_path)
+            normalized = _load_normalized_notice(doc)
             if not normalized:
                 doc.status = "parse_failed"
                 doc.parse_error = "normalized JSON을 읽지 못했습니다."
                 continue
+            # Lazy, transaction-safe migration for a legacy document reached by
+            # normal maintenance.  Subsequent reads no longer touch its file.
+            if not doc.normalized_payload_json:
+                doc.normalized_payload_json = json.dumps(normalized, ensure_ascii=False, default=_json_default)
             normalized_rows.append(normalized)
 
         notice_rows = _upsert_notice_domain_rows(session, normalized_rows)
@@ -637,7 +600,6 @@ def apply_notice_normalized_documents(
             _upsert_notice_chunks(session, notice_rows, source_docs_by_source_id)
 
         session.commit()
-        _export_active_notices_csv(session)
     finally:
         session.close()
 
@@ -673,6 +635,57 @@ def refresh_notice_artifacts() -> None:
         # 토글 OFF 또는 Chroma 불일치(자가복구): 전량 초기화 후 재임베딩.
         reset_collection(NOTICE_COLLECTION)
         _persist_chunks("notices", NOTICE_COLLECTION, frame)
+
+
+def rebuild_notices_from_source_documents() -> tuple[pd.DataFrame, object, object]:
+    """Rebuild notices from SQLite canonical payloads only.
+
+    This is the recovery/migration entry point for an interrupted or legacy
+    notice index.  It deliberately never reads CSV or writes JSON snapshots.
+    """
+    session = SessionLocal()
+    try:
+        documents = (
+            session.query(SourceDocument)
+            .filter(SourceDocument.dataset == "notices")
+            .order_by(SourceDocument.id.asc())
+            .all()
+        )
+        active_docs = [doc for doc in documents if doc.status in {"active", "updated"}]
+        hidden_docs = [doc for doc in documents if doc.status in {"hidden", "deleted"}]
+        normalized = [_load_normalized_notice(doc) for doc in active_docs]
+        normalized_rows = [row for row in normalized if row is not None]
+        if not normalized_rows:
+            return pd.DataFrame(), None, None
+
+        notice_rows = _upsert_notice_domain_rows(session, normalized_rows)
+        _apply_hidden_notices(session, hidden_docs)
+        auto_notice_ids = [
+            notice_id
+            for (notice_id,) in session.query(Notice.id).filter(AUTO_NOTICE_FILTER).all()
+        ]
+        _delete_notice_chunks(session, auto_notice_ids)
+        chunks_df = build_notice_chunks(pd.DataFrame(notice_rows))
+        if not chunks_df.empty:
+            session.bulk_insert_mappings(
+                Chunk,
+                chunks_df[["chunk_id", "chunk_text", "doc_id", "position", "notice_id"]].to_dict(orient="records"),
+            )
+        indexed_at = kst_now()
+        for doc in active_docs:
+            doc.last_indexed_at = indexed_at
+        session.commit()
+    finally:
+        session.close()
+
+    # Include custom knowledge chunks in the normal notices corpus, exactly as
+    # the regular artifact refresh path does.
+    frame = build_notice_index_frame_from_db()
+    if frame.empty:
+        reset_collection(NOTICE_COLLECTION)
+        return frame, None, None
+    reset_collection(NOTICE_COLLECTION)
+    return _persist_chunks("notices", NOTICE_COLLECTION, frame)
 
 
 def sync_notices(
@@ -729,7 +742,7 @@ def normalize_existing_notice_documents() -> None:
     try:
         docs = session.query(SourceDocument).filter(
             SourceDocument.dataset == "notices",
-            SourceDocument.normalized_path.isnot(None),
+            (SourceDocument.normalized_payload_json.isnot(None)) | (SourceDocument.normalized_path.isnot(None)),
         )
         keys = [doc.document_key for doc in docs]
     finally:
@@ -737,10 +750,59 @@ def normalize_existing_notice_documents() -> None:
     apply_notice_normalized_documents(document_keys=keys, apply_index=False)
 
 
+def migrate_legacy_notice_payloads(*, batch_size: int = 500) -> dict[str, int]:
+    """Copy legacy sidecar JSON into SQLite without changing search indexes.
+
+    This is intentionally idempotent.  It is the only supported path that
+    reads ``normalized_path`` after the SQLite canonical-store migration.
+    """
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    session = SessionLocal()
+    migrated = raw_migrated = missing = invalid = 0
+    try:
+        docs = (
+            session.query(SourceDocument)
+            .filter(SourceDocument.dataset == "notices")
+            .order_by(SourceDocument.id.asc())
+            .all()
+        )
+        for index, doc in enumerate(docs, start=1):
+            if not doc.normalized_payload_json:
+                payload = _load_normalized_notice(doc)
+                if payload is None:
+                    if doc.normalized_path:
+                        invalid += 1
+                    else:
+                        missing += 1
+                else:
+                    doc.normalized_payload_json = json.dumps(payload, ensure_ascii=False, default=_json_default)
+                    migrated += 1
+            if not doc.raw_payload_json and doc.raw_path:
+                try:
+                    raw_payload = json.loads(Path(doc.raw_path).read_text(encoding="utf-8"))
+                    if isinstance(raw_payload, dict):
+                        doc.raw_payload_json = json.dumps(raw_payload, ensure_ascii=False, default=_json_default)
+                        raw_migrated += 1
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    # The normalized representation remains sufficient for
+                    # retrieval; report the issue through the existing invalid
+                    # counter without blocking all valid documents.
+                    invalid += 1
+            if index % batch_size == 0:
+                session.commit()
+        session.commit()
+        return {"migrated": migrated, "raw_migrated": raw_migrated, "missing": missing, "invalid": invalid}
+    finally:
+        session.close()
+
+
 __all__ = [
     "apply_notice_normalized_documents",
     "collect_notice_documents",
     "normalize_existing_notice_documents",
+    "migrate_legacy_notice_payloads",
     "refresh_notice_artifacts",
+    "rebuild_notices_from_source_documents",
     "sync_notices",
 ]

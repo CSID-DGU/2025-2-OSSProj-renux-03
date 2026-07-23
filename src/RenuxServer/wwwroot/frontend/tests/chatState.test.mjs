@@ -124,10 +124,47 @@ test('재생성은 질문을 추가하지 않고 기존 assistant 슬롯만 비�
   assert.equal(prepared.messages.filter((message) => message.isAsk).length, 1)
 })
 
-test('스트림 중단은 부분 답변을 유지하고 빈 슬롯만 중단 문구로 바꾼다', () => {
-  const partial = { ...latestAnswer, content: '받은 부분' }
-  assert.equal(finalizeStoppedAssistant([question, partial], partial.id)[1].content, '받은 부분')
+test('스트림 중단은 임시 상태로 표시하되 완료 답변 메타데이터를 제거한다', () => {
+  const partial = {
+    ...latestAnswer,
+    content: '받은 부분',
+    requestId: 'request-1',
+    sources: [{ sourceRef: 'source-1' }],
+    suggestedQuestions: ['후속 질문'],
+  }
+  const stoppedPartial = finalizeStoppedAssistant([question, partial], partial.id)[1]
+  assert.equal(stoppedPartial.content, '받은 부분')
+  assert.equal(stoppedPartial.streamState, 'stopped')
+  assert.equal(stoppedPartial.requestId, undefined)
+  assert.deepEqual(stoppedPartial.sources, [])
+  assert.deepEqual(stoppedPartial.suggestedQuestions, [])
 
   const empty = { ...latestAnswer, content: '' }
-  assert.equal(finalizeStoppedAssistant([question, empty], empty.id)[1].content, '답변 생성을 중단했습니다.')
+  const stoppedEmpty = finalizeStoppedAssistant([question, empty], empty.id)[1]
+  assert.equal(stoppedEmpty.content, '답변 생성을 중단했습니다.')
+  assert.equal(stoppedEmpty.streamState, 'stopped')
+})
+
+test('중단된 assistant 시도는 게스트 저장소에 완료 답변으로 남기지 않는다', () => {
+  const stopped = finalizeStoppedAssistant(
+    [question, { ...latestAnswer, content: '' }],
+    latestAnswer.id,
+  )[1]
+  const updated = updateGuestChatMessages(
+    [{ id: 'chat-1', title: '장학 상담' }],
+    'chat-1',
+    [question, stopped],
+    '2026-07-19T03:00:00Z',
+  )
+
+  assert.deepEqual(updated[0].messages, [question])
+})
+
+test('이전 빌드가 저장한 중단 문구도 로드할 때 제거한다', () => {
+  const records = parseGuestChatRecords(JSON.stringify([{
+    id: 'chat-1',
+    messages: [question, { ...latestAnswer, content: '답변 생성을 중단했습니다.' }],
+  }]))
+
+  assert.deepEqual(records[0].messages, [question])
 })

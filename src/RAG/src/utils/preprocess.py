@@ -35,9 +35,11 @@ def strip_html(text: str | None) -> str:
     if not text.strip():
         return ""
 
-    # 빠른 경로: 태그/엔티티가 없으면 그대로 반환
-    if "<" not in text and "&" not in text:
-        return text
+    # 빠른 경로: HTML 태그가 없으면 URL 쿼리 문자열의 ``&`` 같은 값도
+    # BeautifulSoup으로 넘길 이유가 없다. 엔티티만 안전하게 해제해 URL을
+    # 문서로 오인하는 경고와 대량 청킹 시 불필요한 파싱 비용을 막는다.
+    if "<" not in text:
+        return html_module.unescape(text)
 
     try:
         from bs4 import BeautifulSoup

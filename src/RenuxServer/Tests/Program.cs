@@ -19,7 +19,7 @@ void Check(bool condition, string message)
 JsonElement JsonEvent(string json) => JsonDocument.Parse(json).RootElement.Clone();
 
 string CompletionJson(string requestId) => $$"""
-    {"type":"completion","request_id":"{{requestId}}","sources":[],"suggested_questions":["후속 질문"],"grounded":true,"grounding_score":0.9,"fallback_reason":null}
+    {"type":"completion","request_id":"{{requestId}}","sources":[{"source_ref":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"suggested_questions":["후속 질문"],"suggested_question_details":[{"question":"후속 질문","source_refs":["sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}],"resolved_intents":["notices"],"grounded":true,"grounding_score":0.9,"fallback_reason":null}
     """;
 
 var firstConfig = new ConfigurationBuilder()
@@ -118,6 +118,13 @@ malformedCompletion.Observe(
     out _);
 Check(!malformedCompletion.IsSuccessful,
     "A completion missing the required terminal metadata must fail.");
+
+var forgedSourceLineage = new RagTerminalStateMachine("backend-request");
+forgedSourceLineage.Observe(
+    JsonEvent("{\"type\":\"completion\",\"request_id\":\"backend-request\",\"sources\":[{\"source_ref\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}],\"suggested_questions\":[\"후속 질문\"],\"suggested_question_details\":[{\"question\":\"후속 질문\",\"source_refs\":[\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"]}],\"resolved_intents\":[\"notices\"],\"grounded\":true,\"grounding_score\":0.9,\"fallback_reason\":null}"),
+    out _);
+Check(!forgedSourceLineage.IsSuccessful && forgedSourceLineage.Stage == RagTerminalStage.Invalid,
+    "A follow-up reference that is absent from transported sources must fail.");
 
 var incompleteEof = new RagTerminalStateMachine("backend-request");
 incompleteEof.Observe(JsonEvent(CompletionJson("backend-request")), out _);

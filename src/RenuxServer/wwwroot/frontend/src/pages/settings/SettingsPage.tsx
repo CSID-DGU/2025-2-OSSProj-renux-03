@@ -84,6 +84,8 @@ const SettingsPage = () => {
   const [deadlines, setDeadlines] = useState<DeadlineItem[]>([])
   const [notifications, setNotifications] = useState<UserNotification[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [deadlinesLoading, setDeadlinesLoading] = useState(true)
+  const [deadlinesError, setDeadlinesError] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -98,18 +100,17 @@ const SettingsPage = () => {
 
   const unreadCount = useMemo(() => notifications.filter((item) => !item.isRead).length, [notifications])
 
-  const loadData = useCallback(async () => {
+  // 관심 주제·알림함은 DB만 조회하므로 빠르다. 화면은 이 코어 로드만 기다린다.
+  const loadCore = useCallback(async () => {
     setIsLoading(true)
     setError(null)
     setNeedsLogin(false)
     try {
-      const [preferenceData, deadlineData, notificationData] = await Promise.all([
+      const [preferenceData, notificationData] = await Promise.all([
         apiFetch<NotificationPreferenceResponse>('/notifications/preferences'),
-        apiFetch<DeadlineItem[]>('/notifications/deadlines'),
         apiFetch<UserNotification[]>('/notifications'),
       ])
       setPreferences(preferenceData.preferences ?? [])
-      setDeadlines(Array.isArray(deadlineData) ? deadlineData : [])
       setNotifications(Array.isArray(notificationData) ? notificationData : [])
     } catch (loadError) {
       if (isApiError(loadError) && loadError.status === 401) {
@@ -122,6 +123,29 @@ const SettingsPage = () => {
       setIsLoading(false)
     }
   }, [])
+
+  // 마감일은 RAG 후보 스캔이라 느리므로 별도로 불러와 해당 섹션만 로딩 표시한다.
+  const loadDeadlines = useCallback(async () => {
+    setDeadlinesLoading(true)
+    setDeadlinesError(false)
+    try {
+      const deadlineData = await apiFetch<DeadlineItem[]>('/notifications/deadlines')
+      setDeadlines(Array.isArray(deadlineData) ? deadlineData : [])
+    } catch (loadError) {
+      // 마감일 실패는 전체 화면을 막지 않는다. 로그인 필요 여부는 코어 로더가 처리한다.
+      setDeadlines([])
+      if (!(isApiError(loadError) && loadError.status === 401)) {
+        setDeadlinesError(true)
+      }
+    } finally {
+      setDeadlinesLoading(false)
+    }
+  }, [])
+
+  const loadData = useCallback(async () => {
+    void loadDeadlines()
+    await loadCore()
+  }, [loadCore, loadDeadlines])
 
   useEffect(() => {
     loadData()
@@ -287,10 +311,14 @@ const SettingsPage = () => {
                 <h2>내 마감일</h2>
                 <p>관심 주제 기준으로 앞으로 다가오는 학교 공지와 학사일정을 모았습니다.</p>
               </div>
-              <span className="settings-count">{deadlines.length}개</span>
+              <span className="settings-count">{deadlinesLoading ? '불러오는 중' : `${deadlines.length}개`}</span>
             </div>
             <div className="deadline-list">
-              {deadlines.length === 0 ? (
+              {deadlinesLoading ? (
+                <p className="settings-empty">마감 정보를 불러오는 중...</p>
+              ) : deadlinesError ? (
+                <p className="settings-empty">마감 정보를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.</p>
+              ) : deadlines.length === 0 ? (
                 <p className="settings-empty">켜둔 관심 주제에 해당하는 마감이 아직 없습니다.</p>
               ) : (
                 deadlines.map((deadline) => (

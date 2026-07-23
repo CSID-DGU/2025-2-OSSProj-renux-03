@@ -56,7 +56,13 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("invalid matrix: " + "; ".join(errors))
         manifest = _validate_json(manifest_path, args.manifest_schema)
         results = load_results(results_path, args.result_schema)
-        if not manifest["complete"] or manifest["failed_case_ids"] or manifest["selected_case_ids"]:
+        if (
+            not manifest["complete"]
+            or not manifest["release_eligible"]
+            or not manifest["candidate_fingerprint_stable"]
+            or manifest["failed_case_ids"]
+            or manifest["selected_case_ids"]
+        ):
             raise ValueError("manifest is not a complete full-matrix real run")
         if manifest["matrix_sha256"] != file_sha256(args.matrix):
             raise ValueError("matrix hash differs from real-run provenance")
@@ -75,10 +81,32 @@ def main(argv: list[str] | None = None) -> int:
         head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root, text=True).strip()
         if manifest["git"]["commit_sha"] != head:
             raise ValueError("real-run commit SHA does not match the candidate checkout")
-        for data_file in manifest["data_files"]:
-            path = rag_root / data_file["path"]
-            if not path.is_file() or file_sha256(path) != data_file["sha256"]:
-                raise ValueError(f"data artifact differs from provenance: {data_file['path']}")
+        fingerprint = manifest["candidate_fingerprint"]
+        fingerprint_hash = fingerprint["fingerprint_sha256"]
+        if manifest["candidate_fingerprint_sha256"] != fingerprint_hash:
+            raise ValueError("candidate fingerprint summary hash differs from attestation")
+        unsigned_fingerprint = {
+            key: value for key, value in fingerprint.items() if key != "fingerprint_sha256"
+        }
+        if hashlib.sha256(
+            json.dumps(
+                unsigned_fingerprint,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest() != fingerprint_hash:
+            raise ValueError("candidate fingerprint self-hash is invalid")
+        if fingerprint["build_revision"] != head:
+            raise ValueError("HTTP candidate build revision does not match the evaluated checkout")
+        if fingerprint["dense_index_ready"] is not True:
+            raise ValueError("candidate dense indexes were incomplete during the real run")
+        if manifest["candidate_config"] != fingerprint["runtime_config"]:
+            raise ValueError("candidate config was not copied from HTTP attestation")
+        if manifest["data_manifest_hash"] != fingerprint["artifact_manifest_sha256"]:
+            raise ValueError("artifact manifest summary differs from HTTP attestation")
+        if manifest["data_files"] != fingerprint["artifacts"]:
+            raise ValueError("artifact records differ from HTTP attestation")
         canonical = json.dumps(manifest["data_files"], ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         if hashlib.sha256(canonical).hexdigest() != manifest["data_manifest_hash"]:
             raise ValueError("data manifest hash is invalid")

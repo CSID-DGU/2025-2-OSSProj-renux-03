@@ -16,6 +16,8 @@ export interface ChatViewMessage {
   suggestedQuestions?: string[]
   grounded?: boolean
   groundingScore?: number
+  /** Client-only terminal state. Stopped attempts are never persisted as completed answers. */
+  streamState?: 'stopped'
 }
 
 export interface GuestChatRecord extends ActiveChat {
@@ -32,6 +34,14 @@ export type GuestChatRoute =
   | { kind: 'root' }
   | { kind: 'known'; chat: GuestChatRecord }
   | { kind: 'unknown'; chatId: string }
+
+export const isStoppedAssistant = (message: ChatViewMessage) =>
+  !message.isAsk
+  && (
+    message.streamState === 'stopped'
+    // Remove the status row written by builds released before streamState existed.
+    || (message.content.trim() === '답변 생성을 중단했습니다.' && !message.requestId)
+  )
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
@@ -52,6 +62,7 @@ export const normalizeAssistantRuns = (messages: ChatViewMessage[]): ChatViewMes
   const normalized: ChatViewMessage[] = []
 
   for (const originalMessage of messages) {
+    if (isStoppedAssistant(originalMessage)) continue
     const message = !originalMessage.isAsk && originalMessage.content.trim().length === 0
       ? { ...originalMessage, content: '답변 생성이 완료되지 않았습니다.' }
       : originalMessage
@@ -203,6 +214,7 @@ export const prepareRegeneration = (
     suggestedQuestions: [],
     grounded: undefined,
     groundingScore: undefined,
+    streamState: undefined,
   }
 
   return {
@@ -212,13 +224,29 @@ export const prepareRegeneration = (
   }
 }
 
-/** A stopped stream keeps received Markdown; an empty slot gets a neutral status message. */
+/**
+ * Keep a stopped attempt visible for the current screen, but mark it as ephemeral so
+ * storage normalization and completed-answer controls cannot treat it as a result.
+ */
 export const finalizeStoppedAssistant = (
   messages: ChatViewMessage[],
   assistantId: string,
 ): ChatViewMessage[] => messages.map((message) => {
-  if (message.id !== assistantId || message.isAsk || message.content.trim().length > 0) return message
-  return { ...message, content: '답변 생성을 중단했습니다.' }
+  if (message.id !== assistantId || message.isAsk) return message
+  return {
+    ...message,
+    content: message.content.trim().length > 0
+      ? message.content
+      : '답변 생성을 중단했습니다.',
+    sources: [],
+    requestId: undefined,
+    isFallback: false,
+    fallbackReason: null,
+    suggestedQuestions: [],
+    grounded: undefined,
+    groundingScore: undefined,
+    streamState: 'stopped',
+  }
 })
 
 export const isAbortError = (error: unknown) =>

@@ -146,6 +146,13 @@ class SourceDocument(Base):
     status = Column(String, default="active", index=True)
     content_hash = Column(String, index=True)
     schema_version = Column(Integer, default=1)
+    # Canonical captured and normalized representations.  These deliberately
+    # live with the document record instead of in sidecar JSON files so one DB
+    # transaction owns identity, status, payload, and indexing state.
+    raw_payload_json = Column(Text, nullable=True)
+    normalized_payload_json = Column(Text, nullable=True)
+    # Legacy export locations are kept only to read older databases during the
+    # one-time migration.  New collection code must not depend on them.
     raw_path = Column(Text)
     normalized_path = Column(Text)
     collected_at = Column(DateTime, default=kst_now, index=True)
@@ -189,6 +196,12 @@ class Chunk(Base):
     id = Column(Integer, primary_key=True, index=True)
     chunk_id = Column(String, unique=True, index=True) # ChromaDB ID
     chunk_text = Column(Text)
+    # ``chunk_id`` identifies the vector, while this pair preserves the
+    # document hierarchy required to reconstruct adjacent context after a
+    # SQLite-only reindex.  Without it, a rebuilt parquet index can no longer
+    # tell which chunks came from the same original document.
+    doc_id = Column(String, index=True, nullable=True)
+    position = Column(Integer, nullable=True)
     
     # Foreign Keys (Nullable)
     notice_id = Column(Integer, ForeignKey("notices.id"), nullable=True)
@@ -299,6 +312,20 @@ def _ensure_sqlite_columns(table_name: str, columns: dict[str, str]) -> None:
 def ensure_runtime_schema() -> None:
     """기존 SQLite 파일에 누락된 운영 로그 컬럼을 보강합니다."""
     _ensure_sqlite_columns(
+        "source_documents",
+        {
+            "raw_payload_json": "TEXT",
+            "normalized_payload_json": "TEXT",
+        },
+    )
+    _ensure_sqlite_columns(
+        "chunks",
+        {
+            "doc_id": "VARCHAR",
+            "position": "INTEGER",
+        },
+    )
+    _ensure_sqlite_columns(
         "rag_query_logs",
         {
             "fallback_reason": "VARCHAR",
@@ -341,6 +368,13 @@ def init_db():
     """데이터베이스와 테이블을 생성합니다."""
     Base.metadata.create_all(bind=engine)
     ensure_runtime_schema()
+
+
+def verify_database_writable() -> None:
+    """Acquire and release a SQLite write lock without changing user data."""
+    with engine.connect() as connection:
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        connection.exec_driver_sql("ROLLBACK")
 
 def reset_db():
     """DB를 초기화합니다 (모든 테이블 삭제 후 재생성)."""

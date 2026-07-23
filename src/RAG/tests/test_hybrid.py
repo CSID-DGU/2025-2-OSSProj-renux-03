@@ -8,12 +8,14 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import chromadb
 import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.search.hybrid import (  # noqa: E402
+    _academic_period_title_adjustment,
     _matches_where,
     build_tfidf_vectorizer,
     hybrid_search,
@@ -76,6 +78,17 @@ def test_korean_tfidf_tokenizer_handles_particle_and_spacing_variants():
         matrix = vectorizer.fit_transform(["졸업 요건 변경 안내", "장학금 신청 안내"])
 
         scores = (vectorizer.transform(["졸업요건은"]) @ matrix.T).toarray().ravel()
+
+    assert scores[0] > 0
+    assert scores[0] > scores[1]
+
+
+def test_korean_tfidf_tokenizer_exposes_three_syllable_compound_stem():
+    with patch("src.search.hybrid.TFIDF_TOKENIZER", "korean"):
+        vectorizer = build_tfidf_vectorizer()
+        matrix = vectorizer.fit_transform(["개강 학기개시일", "휴학 복학 신청"])
+
+        scores = (vectorizer.transform(["개강일이 언제야"]) @ matrix.T).toarray().ravel()
 
     assert scores[0] > 0
     assert scores[0] > scores[1]
@@ -165,6 +178,100 @@ def test_hybrid_search_maps_sparse_by_chunk_ids():
     assert top["sparse_score"] > 0
 
 
+def test_hybrid_search_falls_back_to_sparse_when_chroma_segment_is_broken():
+    chunks_df, vectorizer, matrix = _make_dataset()
+
+    class BrokenCollection:
+        metadata = {"hnsw:space": "cosine"}
+
+        def query(self, **_kwargs):
+            raise chromadb.errors.InternalError("Nothing found on disk")
+
+    with patch("src.search.hybrid.get_collection", return_value=BrokenCollection()), \
+         patch("src.search.hybrid.encode_queries", return_value=[[0.0]]):
+        result = hybrid_search(
+            "dongguk_notices",
+            chunks_df,
+            vectorizer,
+            matrix,
+            "장학금 신청",
+            top_k=3,
+            tfidf_chunk_ids=["c1", "c2", "c3"],
+        )
+
+    assert not result.empty
+    assert result.iloc[0]["chunk_id"] == "c1"
+    assert (result["vector_score"] == 0).all()
+
+
+def test_exact_sparse_match_is_not_buried_by_dense_related_results():
+    chunks_df = pd.DataFrame(
+        {
+            "chunk_id": ["exact", "dense-1", "dense-2"],
+            "chunk_text": [
+                "2026학년도 2학기 개강 학기개시일 9월 1일",
+                "2026학년도 2학기 휴학 복학 신청 일정",
+                "2026학년도 학사 일정 안내",
+            ],
+        }
+    )
+    from sklearn.feature_extraction.text import TfidfVectorizer
+
+    vectorizer = TfidfVectorizer(max_features=100)
+    matrix = vectorizer.fit_transform(chunks_df["chunk_text"].tolist())
+    with patch(
+        "src.search.hybrid.get_collection",
+        return_value=_fake_chroma(["dense-1", "dense-2", "exact"], [0.10, 0.20, 1.20]),
+    ), patch("src.search.hybrid.encode_queries", return_value=[[0.0]]):
+        result = hybrid_search(
+            "fake",
+            chunks_df,
+            vectorizer,
+            matrix,
+            "2026 2학기 개강 학기개시일",
+            top_k=2,
+            alpha=0.65,
+            tfidf_chunk_ids=["exact", "dense-1", "dense-2"],
+        )
+
+    assert result.iloc[0]["chunk_id"] == "exact"
+    assert "exact" in result["chunk_id"].tolist()
+
+
+def test_exact_query_focus_in_title_adds_a_general_ranking_signal():
+    chunks_df = pd.DataFrame(
+        {
+            "chunk_id": ["exact", "generic"],
+            "chunk_text": ["[개강]\n기간 안내", "[학사일정 안내]\n개강 관련 내용"],
+        }
+    )
+    from sklearn.feature_extraction.text import TfidfVectorizer
+
+    vectorizer = TfidfVectorizer(max_features=100)
+    matrix = vectorizer.fit_transform(chunks_df["chunk_text"].tolist())
+    with patch(
+        "src.search.hybrid.get_collection",
+        return_value=_fake_chroma(["generic", "exact"], [0.20, 0.30]),
+    ), patch("src.search.hybrid.encode_queries", return_value=[[0.0]]):
+        result = hybrid_search(
+            "fake", chunks_df, vectorizer, matrix, "개강일이 언제야?",
+            top_k=2, alpha=0.65, tfidf_chunk_ids=["exact", "generic"],
+        )
+
+    assert result.iloc[0]["chunk_id"] == "exact"
+
+
+def test_notice_academic_period_alignment_rewards_exact_target_and_penalizes_old_year():
+    query = "2027학년도 1학기 교환학생 지원 기간"
+
+    assert _academic_period_title_adjustment(
+        query, "2027-1학기 파견 영어권 교환학생 선발 일정"
+    ) == pytest.approx(0.40)
+    assert _academic_period_title_adjustment(
+        query, "2026-1학기 중화권 교환학생 선발 공지"
+    ) == pytest.approx(-0.20)
+
+
 def test_hybrid_search_skips_sparse_on_row_mismatch():
     chunks_df, vectorizer, matrix = _make_dataset()
     truncated = chunks_df.iloc[:2].reset_index(drop=True)  # 행 수 불일치 + 매핑 없음
@@ -211,3 +318,21 @@ def test_hybrid_search_duplicate_chunk_ids_no_error():
             top_k=3, tfidf_chunk_ids=["c1", "c2", "c3", "c1"],
         )
     assert (result["chunk_id"] == "c1").sum() == 1
+
+
+def test_hybrid_search_with_meta_preserves_campus_date_and_locator_fields():
+    raw = pd.DataFrame([{
+        "chunk_id": "schedule-1", "chunk_text": "[개강]\n\n기간: 2026-09-01",
+        "schedule_start": "2026-09-01", "schedule_end": "2026-09-01",
+        "campus_scope": "shared", "schedule_id": "schedule-db-1",
+        "department": "학사지원팀", "source": "schedule",
+    }])
+    with patch("src.search.hybrid.hybrid_search", return_value=raw):
+        result = hybrid.hybrid_search_with_meta(
+            "fake", raw, object(), object(), "개강일", top_k=1,
+        )
+
+    assert result.loc[0, "schedule_start"] == "2026-09-01"
+    assert result.loc[0, "campus_scope"] == "shared"
+    assert result.loc[0, "schedule_id"] == "schedule-db-1"
+    assert result.loc[0, "department"] == "학사지원팀"

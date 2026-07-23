@@ -30,6 +30,7 @@ from golden_matrix import (  # noqa: E402
     validate_matrix,
 )
 from run_golden_matrix import _result_from_response, main as runner_main  # noqa: E402
+from src.services.source_contract import source_reference  # noqa: E402
 from verify_golden_replay import main as replay_main  # noqa: E402
 
 
@@ -156,6 +157,17 @@ def test_matrix_specific_qa_corrections(golden_cases):
     for case_id in ("DN-003", "HS-009", "PS-005"):
         assert cases[case_id].required_campuses == ("bmc",)
         assert cases[case_id].allowed_campuses == ("bmc",)
+    basket = cases["RG-001"]
+    assert basket.expected_app_intents == ("rules",)
+    assert basket.expected_datasets == ("rules",)
+    assert basket.expected_source_types == ("entry_year_guide_pdf",)
+    assert {
+        "2026.07.20",
+        "07.22",
+        "재학",
+        "휴학생",
+        "변동",
+    }.issubset(basket.required_keywords)
 
 
 def test_validator_rejects_missing_pattern_and_numeric_template(golden_cases, taxonomy):
@@ -190,6 +202,99 @@ def test_valid_fixture_passes_four_axes(golden_cases, passing_results):
     failures = [detail for detail in details if not detail["all_axes_passed"]]
     assert failures == []
     assert summary["passed"] is True
+
+
+def test_korean_document_citation_markers_match_transported_sources(golden_cases, passing_results):
+    for result in passing_results:
+        result["answer"] = result["answer"].replace("[1]", "[문서1]")
+    summary, details = evaluate(golden_cases, passing_results, run_at=RUN_AT)
+    assert summary["passed"] is True
+    assert all(item["axes"]["source"]["passed"] for item in details)
+
+
+def test_concise_factual_answer_with_sentence_and_citation_is_not_penalized(golden_cases, passing_results):
+    result = next(item for item in passing_results if item["id"] == "AS-001")
+    result["answer"] = "일반휴학은 최대 8학기까지 가능해요 [문서1]."
+
+    _, details = evaluate(golden_cases, passing_results, run_at=RUN_AT)
+    detail = next(item for item in details if item["id"] == "AS-001")
+    assert detail["axes"]["answer"]["passed"] is True
+
+
+def test_followup_relatedness_handles_korean_particles(golden_cases, passing_results):
+    result = next(item for item in passing_results if item["id"] == "RG-001")
+    result["followups"][0]["question"] = "장바구니에 담은 과목은 어떻게 확인할까요?"
+
+    _, details = evaluate(golden_cases, passing_results, run_at=RUN_AT)
+    detail = next(item for item in details if item["id"] == "RG-001")
+    assert detail["axes"]["followup"]["passed"] is True
+
+
+def test_contact_answer_and_source_derived_followup_are_semantically_valid(golden_cases, passing_results):
+    result = next(item for item in passing_results if item["id"] == "PS-001")
+    result["answer"] = "수강신청 오류는 학사지원팀 전화번호 02-2260-3618로 문의하세요 [문서1]."
+    result["sources"][0]["snippet"] += " 학사지원팀 전화번호와 담당 업무를 안내합니다."
+    result["sources"][0]["snippet_hash"] = hashlib.sha256(
+        result["sources"][0]["snippet"].encode()
+    ).hexdigest()
+    result["sources"][0]["id"] = source_fingerprint(result["sources"][0])
+    result["followups"] = [{
+        "question": "학사지원팀의 운영 시간도 확인할까요?",
+        "source_refs": [result["sources"][0]["id"]],
+    }]
+
+    _, details = evaluate(golden_cases, passing_results, run_at=RUN_AT)
+    detail = next(item for item in details if item["id"] == "PS-001")
+    assert detail["axes"]["answer"]["passed"] is True
+    assert detail["axes"]["followup"]["passed"] is True
+
+
+def test_intent_axis_accepts_one_relevant_surface_for_non_cross_domain_case(golden_cases, passing_results):
+    result = next(item for item in passing_results if item["id"] == "RG-001")
+    result["actual_app_intents"] = ["rules"]
+
+    _, details = evaluate(golden_cases, passing_results, run_at=RUN_AT)
+    detail = next(item for item in details if item["id"] == "RG-001")
+    assert detail["axes"]["intent"]["passed"] is True
+
+
+def test_implicit_fallback_language_fails_answerable_case(golden_cases, passing_results):
+    result = next(item for item in passing_results if item["id"] == "CM-001")
+    result["answer"] = (
+        "제공된 학교 자료에서 확인되지 않습니다. "
+        "동아리 모집 정보는 공식 홈페이지를 확인해 주세요 [문서1]."
+    )
+
+    _, details = evaluate(golden_cases, passing_results, run_at=RUN_AT)
+    detail = next(item for item in details if item["id"] == "CM-001")
+    assert detail["axes"]["answer"]["passed"] is False
+    assert any("implicit fallback" in reason for reason in detail["axes"]["answer"]["reasons"])
+
+
+def test_missing_campus_evidence_is_not_counted_as_wrong_campus(golden_cases, passing_results):
+    result = next(item for item in passing_results if item["id"] == "CL-001")
+    result["sources"] = []
+    result["citations_text"] = ""
+
+    summary, details = evaluate(golden_cases, passing_results, run_at=RUN_AT)
+    detail = next(item for item in details if item["id"] == "CL-001")
+    assert detail["axes"]["source"]["passed"] is False
+    assert detail["wrong_campus"] is False
+    assert summary["wrong_campus_count"] == 0
+
+
+def test_compact_single_source_answer_may_cite_at_end_of_explanation(golden_cases, passing_results):
+    result = next(item for item in passing_results if item["id"] == "GR-001")
+    result["answer"] = (
+        "졸업에 필요한 학점 기준은 입학년도와 소속 단과대학에 따라 달라집니다. "
+        "제공된 기준표의 전공·교양·기본소양 항목을 차례로 확인하고, "
+        "본인의 입학년도 기준표가 맞는지 소속 학과에도 확인해 주세요. "
+        "이 안내는 연결된 하나의 공식 기준표를 요약한 내용입니다 [문서1]."
+    )
+
+    _, details = evaluate(golden_cases, passing_results, run_at=RUN_AT)
+    detail = next(item for item in details if item["id"] == "GR-001")
+    assert detail["axes"]["source"]["passed"] is True
 
 
 def test_all_168_keyword_lists_are_not_a_fake_baseline(golden_cases, passing_results):
@@ -248,33 +353,70 @@ def test_ac013_wise_only_comparison_source_fails(golden_cases, passing_results):
 
 
 def test_runner_maps_only_real_transport_fields(golden_cases):
+    raw_source = {
+        "source": "schedule", "metadata": {"campus_scope": "seoul", "schedule_id": "s-1"},
+        "snippet": "실제 HTTP 출처", "citation_number": 1, "chunk_id": "chunk-1",
+        "url": "https://www.dongguk.edu/schedule/1", "published_at": "2026-07-20",
+    }
+    source_ref = source_reference(raw_source)
     response = {
         "request_id": "real-request",
         "answer": "실제 답변",
         "citations": "실제 인용",
         "route": ["schedule"],
-        "sources": [{
-            "source": "schedule", "metadata": {"campus_scope": "seoul", "schedule_id": "s-1"},
-            "snippet": "실제 HTTP 출처", "citation_number": 1, "chunk_id": "chunk-1",
-            "url": "https://www.dongguk.edu/schedule/1", "published_at": "2026-07-20",
-        }],
+        "resolved_intents": ["schedule", "notices"],
+        "sources": [{**raw_source, "source_ref": source_ref}],
         "suggested_questions": ["다음 일정도 확인할까요?"],
+        "suggested_question_details": [{
+            "question": "다음 일정도 확인할까요?", "source_refs": [source_ref],
+        }],
         "fallback_triggered": False, "fallback_reason": None, "grounded": True, "grounding_score": 0.9,
     }
     result = _result_from_response(golden_cases[0], 200, response, 10)
     assert result["request_id"] == "real-request"
     assert result["sources"][0]["snippet_hash"] == hashlib.sha256("실제 HTTP 출처".encode()).hexdigest()
-    assert result["followups"] == [{"question": "다음 일정도 확인할까요?", "source_refs": []}]
+    assert result["actual_app_intents"] == ["schedule", "notices"]
+    assert result["followups"] == [{"question": "다음 일정도 확인할까요?", "source_refs": [source_ref]}]
     assert "abstained" not in result and "clarification_requested" not in result and "made_definitive_claim" not in result
 
 
 def test_runner_performs_http_call_and_marks_subset_incomplete(tmp_path):
+    artifact = {
+        "path": "tests/golden_matrix.csv",
+        "bytes": MATRIX.stat().st_size,
+        "sha256": hashlib.sha256(MATRIX.read_bytes()).hexdigest(),
+    }
+    artifacts = [artifact]
+    artifact_hash = hashlib.sha256(
+        json.dumps(artifacts, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    fingerprint = {
+        "schema_version": 1,
+        "build_revision": "fixture-revision",
+        "answer_contract_version": "ask-response-v3-source-lineage",
+        "runtime_config": {
+            "llm_provider": "openai", "query_analysis_model": "fixture-query",
+            "answer_model": "fixture-answer", "embedding_model": "fixture-embedding",
+            "embedding_revision": None, "embedding_device": "cpu", "reranker_enabled": False,
+            "reranker_model": None, "reranker_revision": None, "top_k": 5,
+            "routerless": True, "scheduler_enabled": False,
+        },
+        "dense_index_ready": True,
+        "artifact_manifest_sha256": artifact_hash,
+        "artifacts": artifacts,
+        "datasets": [],
+    }
+    fingerprint["fingerprint_sha256"] = hashlib.sha256(
+        json.dumps(fingerprint, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             return
 
         def do_GET(self):  # noqa: N802
-            body = json.dumps({"status": "ready"}).encode()
+            payload = fingerprint if self.path == "/evaluation/fingerprint" else {"status": "ready"}
+            body = json.dumps(payload).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -311,6 +453,8 @@ def test_runner_performs_http_call_and_marks_subset_incomplete(tmp_path):
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert result["request_id"] == "http-real-id"
     assert manifest["complete"] is False
+    assert manifest["candidate_fingerprint_stable"] is True
+    assert manifest["candidate_fingerprint_end_sha256"] == manifest["candidate_fingerprint_sha256"]
     assert manifest["selected_case_ids"] == ["AC-001"]
 
 

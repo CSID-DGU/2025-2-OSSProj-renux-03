@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using System.Globalization;
 using System.IdentityModel.Tokens.Jwt;
 using System.Net.Http.Json;
@@ -153,6 +154,7 @@ static public class NotificationApis
             HttpContext context,
             IConfiguration configuration,
             IHttpClientFactory httpClientFactory,
+            IMemoryCache cache,
             ILogger<Program> logger,
             int daysAhead = 60,
             int limit = 100) =>
@@ -169,7 +171,7 @@ static public class NotificationApis
                 return Results.Ok(Array.Empty<DeadlineDto>());
             }
 
-            var candidates = await FetchCandidatesAsync(configuration, httpClientFactory, logger, daysAhead, limit, context.RequestAborted);
+            var candidates = await FetchCandidatesAsync(configuration, httpClientFactory, cache, logger, daysAhead, limit, context.RequestAborted);
             var deadlines = candidates
                 .Select(candidate => ToDeadline(candidate))
                 .Where(deadline => deadline is not null && enabledTopics.Contains(deadline.Topic))
@@ -187,6 +189,7 @@ static public class NotificationApis
             HttpContext context,
             IConfiguration configuration,
             IHttpClientFactory httpClientFactory,
+            IMemoryCache cache,
             ILogger<Program> logger) =>
         {
             if (!TryGetUserId(context, out Guid userId))
@@ -201,7 +204,7 @@ static public class NotificationApis
                 return Results.Ok(new NotificationSyncResult(0, 0));
             }
 
-            var candidates = await FetchCandidatesAsync(configuration, httpClientFactory, logger, 60, 200, context.RequestAborted);
+            var candidates = await FetchCandidatesAsync(configuration, httpClientFactory, cache, logger, 60, 200, context.RequestAborted);
             var today = TodayKst();
             var now = DateTime.UtcNow;
             var dueNotifications = new List<UserNotification>();
@@ -456,6 +459,7 @@ static public class NotificationApis
     private static async Task<List<NotificationCandidateDto>> FetchCandidatesAsync(
         IConfiguration configuration,
         IHttpClientFactory httpClientFactory,
+        IMemoryCache cache,
         ILogger logger,
         int daysAhead,
         int limit,
@@ -467,19 +471,32 @@ static public class NotificationApis
         var clampedLimit = Math.Clamp(limit, 1, 300);
         var from = today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var to = today.AddDays(clampedDaysAhead).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        var url = $"{ragUrl.TrimEnd('/')}/notifications/candidates?from={Uri.EscapeDataString(from)}&to={Uri.EscapeDataString(to)}&sources=notices,schedule&limit={clampedLimit}";
+        const string sources = "notices,schedule";
+        var url = $"{ragUrl.TrimEnd('/')}/notifications/candidates?from={Uri.EscapeDataString(from)}&to={Uri.EscapeDataString(to)}&sources={sources}&limit={clampedLimit}";
 
-        try
+        // 후보 목록은 전 사용자 공용이고 공지는 하루 4회만 갱신되므로 20분간 캐시한다.
+        // 관심 주제 필터·유저별 알림 생성은 이 메서드 바깥에서 수행되므로 캐시에는 개인 데이터가 담기지 않는다.
+        var cacheKey = $"notif:candidates:{from}:{to}:{sources}:{clampedLimit}";
+        var candidates = await cache.GetOrCreateAsync<List<NotificationCandidateDto>>(cacheKey, async entry =>
         {
-            var client = httpClientFactory.CreateClient();
-            var candidates = await client.GetFromJsonAsync<List<NotificationCandidateDto>>(url, JsonOptions, cancellationToken);
-            return candidates ?? [];
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
-        {
-            logger.LogWarning(ex, "Failed to fetch notification candidates from RAG service.");
-            return [];
-        }
+            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(20);
+            try
+            {
+                var client = httpClientFactory.CreateClient();
+                client.Timeout = TimeSpan.FromSeconds(8); // 콜드 상태의 RAG가 페이지를 100초까지 잡아두지 않도록 명시적 제한.
+                var fetched = await client.GetFromJsonAsync<List<NotificationCandidateDto>>(url, JsonOptions, cancellationToken);
+                return fetched ?? [];
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+            {
+                logger.LogWarning(ex, "Failed to fetch notification candidates from RAG service.");
+                // 실패는 오래 캐시하지 않고 30초 뒤 재시도되게 한다.
+                entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30);
+                return [];
+            }
+        });
+
+        return candidates ?? [];
     }
 
     private static string InferTopic(NotificationCandidateDto candidate)

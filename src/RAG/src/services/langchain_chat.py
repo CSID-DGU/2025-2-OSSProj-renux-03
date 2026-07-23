@@ -14,6 +14,8 @@ from difflib import SequenceMatcher
 from typing import Any
 from functools import lru_cache
 
+from src.services.source_contract import source_reference
+
 import httpx
 import redis
 from dotenv import load_dotenv
@@ -152,6 +154,7 @@ def _get_system_prompt(mode: str = "rag") -> str:
 11. 질문에 '최근', '어제' 등 시간 표현이 포함된 경우, [참고 자료]의 게시일과 현재 날짜({current_date})를 비교하여 정확히 계산해 답변하세요.
 12. 검색 전 분석 단계에서 만들어졌을 수 있는 가정이나 추론을 사실처럼 단정하지 마세요. [참고 자료]에 없는 엔터티를 보완 생성하지 마세요.
 13. [참고 자료] 안의 서로 보완하는 정보는 단순 나열하지 말고 사용자가 다음에 무엇을 해야 하는지 실행 관점에서 통합해 설명하세요. 단, [근거 그룹]이 둘 이상 제공되면 그룹 간 사실이나 해석을 하나로 합치지 말고, 동일 그룹 안에서만 정보를 통합하여 각 그룹을 별도의 동등한 섹션으로 유지하세요. 자료에 없는 사실은 지어내지 마세요.
+14. 문서 제목·본문에 특정 학년도, 학기 또는 계절학기가 명시되면 그 자료는 **그 기간에만** 적용됩니다. 사용자가 같은 기간을 명시하지 않았다면 이를 현재의 일반 절차처럼 설명하지 말고, 먼저 자료의 적용 기간을 밝힌 뒤 현재 적용 여부는 자료만으로 확인되지 않는다고 안내하세요.
 
 [출력 형식 지침 — 중요]
 - 번호 목록은 반드시 '번호 + 제목'을 같은 줄에 작성하세요.
@@ -373,9 +376,16 @@ _FOLLOWUP_STOPWORDS = {
     "그리고", "그러면", "그럼", "관련", "대해서", "어떻게", "언제", "어디서",
     "무엇", "무슨", "알려줘", "알려주세요", "궁금해", "질문", "동국대학교",
 }
-_FOLLOWUP_PARTICLE_RE = re.compile(
-    r"(?:인가요|하나요|할까요|인가|에서|으로|에게|부터|까지|처럼|보다|"
-    r"은|는|이|가|을|를|와|과|의|도|만|로|에|요)$"
+_FOLLOWUP_PARTICLES = tuple(
+    sorted(
+        {
+            "인가요", "하나요", "할까요", "인가", "에서", "으로", "에게", "부터",
+            "까지", "처럼", "보다", "은", "는", "이", "가", "을", "를", "와",
+            "과", "의", "도", "만", "로", "에", "요",
+        },
+        key=len,
+        reverse=True,
+    )
 )
 
 
@@ -396,6 +406,13 @@ def _normalize_followup_text(text: str) -> str:
     return re.sub(r"[^가-힣a-z0-9]", "", text.lower())
 
 
+def _strip_followup_particle(token: str) -> str:
+    for particle in _FOLLOWUP_PARTICLES:
+        if token.endswith(particle) and len(token) - len(particle) >= 2:
+            return token[: -len(particle)]
+    return token
+
+
 def _topic_tokens(text: str) -> set[str]:
     tokens: set[str] = set()
     for raw in _FOLLOWUP_TOKEN_RE.findall(text):
@@ -403,7 +420,7 @@ def _topic_tokens(text: str) -> set[str]:
         previous = None
         while previous != token:
             previous = token
-            token = _FOLLOWUP_PARTICLE_RE.sub("", token)
+            token = _strip_followup_particle(token)
         if len(token) >= 2 and token not in _FOLLOWUP_STOPWORDS:
             tokens.add(token)
     return tokens
@@ -419,6 +436,19 @@ def _supported_topic_overlap(candidate_tokens: set[str], support_tokens: set[str
             or (len(support) >= 2 and support in candidate)
             for support in support_tokens
         )
+    )
+
+
+def _has_distinctive_topic_overlap(candidate_tokens: set[str], support_tokens: set[str]) -> bool:
+    """A long shared noun can safely ground a concise follow-up on its own."""
+    return any(
+        len(candidate) >= 4
+        and any(
+            candidate == support or candidate in support or support in candidate
+            for support in support_tokens
+            if len(support) >= 4
+        )
+        for candidate in candidate_tokens
     )
 
 
@@ -474,10 +504,18 @@ def validate_followup_questions(
 
         candidate_tokens = _topic_tokens(text)
         overlap = _supported_topic_overlap(candidate_tokens, support_tokens)
+        distinctive_overlap = _has_distinctive_topic_overlap(candidate_tokens, support_tokens)
         # A single generic token (for example only "신청") is not sufficient
         # evidence of topic consistency. Conservative failure is preferable to
         # suggesting a fluent but unrelated next question.
-        if overlap < 2 or overlap / max(len(candidate_tokens), 1) < 0.6:
+        if not (
+            (overlap >= 2 and overlap / max(len(candidate_tokens), 1) >= 0.6)
+            or (
+                distinctive_overlap
+                and len(candidate_tokens) <= 4
+                and overlap / max(len(candidate_tokens), 1) >= 0.25
+            )
+        ):
             continue
 
         suggestions.append(text)
@@ -487,10 +525,58 @@ def validate_followup_questions(
     return suggestions
 
 
+def build_followup_question_details(
+    questions: list[str],
+    source_context: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Bind each follow-up to the specific transported sources that support it.
+
+    The combined-context validator above prevents broad topic drift.  This
+    second pass is intentionally stricter: a question is omitted unless at
+    least one individual source supplies two meaningful topic tokens.  That
+    keeps the release evaluator from accepting invented or blanket lineage.
+    """
+    sources = [source for source in (source_context or []) if isinstance(source, dict)]
+    details: list[dict[str, Any]] = []
+    for question in questions:
+        candidate_tokens = _topic_tokens(question)
+        if not candidate_tokens:
+            continue
+        matches: list[tuple[float, int, str]] = []
+        for source in sources:
+            metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+            source_text = "\n".join(
+                str(value)
+                for value in (
+                    source.get("title"),
+                    source.get("snippet"),
+                    source.get("source"),
+                    metadata.get("category"),
+                    metadata.get("topics"),
+                    metadata.get("department"),
+                )
+                if value
+            )
+            source_tokens = _topic_tokens(source_text)
+            overlap = _supported_topic_overlap(candidate_tokens, source_tokens)
+            ratio = overlap / max(len(candidate_tokens), 1)
+            distinctive_overlap = _has_distinctive_topic_overlap(candidate_tokens, source_tokens)
+            if (overlap >= 2 and ratio >= 0.4) or (
+                distinctive_overlap and len(candidate_tokens) <= 4 and ratio >= 0.25
+            ):
+                matches.append((ratio, overlap, source_reference(source)))
+        if not matches:
+            continue
+        matches.sort(key=lambda item: (-item[0], -item[1], item[2]))
+        refs = list(dict.fromkeys(item[2] for item in matches[:3]))
+        details.append({"question": question, "source_refs": refs})
+    return details
+
+
 async def generate_followup_questions(
     question: str,
     answer: str,
-    count: int = 3,
+    count: int = 5,
     usage_collector: list[dict[str, Any]] | None = None,
     *,
     source_context: list[dict[str, Any]] | None = None,
@@ -691,6 +777,7 @@ def append_manual_history(session_id: str | None, question: str, answer: str) ->
         logger.warning("append_manual_history failed (session=%s): %s", actual_session_id, exc)
 
 __all__ = [
+    "build_followup_question_details",
     "generate_followup_questions",
     "validate_followup_questions",
     "generate_langchain_answer",

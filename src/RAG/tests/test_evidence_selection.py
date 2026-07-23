@@ -38,17 +38,51 @@ def _frame(dataset: str, count: int = 5, query: str = "question") -> pd.DataFram
     )
 
 
-def test_routerless_route_and_both_endpoints_do_not_call_router():
-    assert rag_service._routerless_retrieval_route() == DATASETS
+def test_intent_scoped_route_is_used_by_both_endpoints(monkeypatch):
+    monkeypatch.setattr(rag_service.rag_config, "RAG_SEARCH_ALL_DATASETS", False)
+    schedule_analysis = rag_service.QueryAnalysisMeta(
+        result=rag_service.QueryAnalysisResult(
+            normalized_question="이번 달 학사일정 알려줘",
+            intent="schedule",
+        ),
+        used=True,
+    )
+    application_analysis = rag_service.QueryAnalysisMeta(
+        result=rag_service.QueryAnalysisResult(
+            normalized_question="남산학사 2학기 입사 신청 기간",
+            intent="schedule",
+        ),
+        used=True,
+    )
+
+    assert rag_service._resolve_retrieval_route("이번 달 학사일정 알려줘", schedule_analysis) == ["schedule"]
+    assert rag_service._resolve_retrieval_route("남산학사 2학기 입사 신청 기간", application_analysis) == ["schedule", "notices"]
+    assert rag_service._resolve_retrieval_route(
+        "재수강을 하고 싶은데 어떻게 해야 해?",
+        rag_service.QueryAnalysisMeta(
+            result=rag_service.QueryAnalysisResult(normalized_question="재수강 방법", intent="rules"),
+            used=True,
+        ),
+    ) == ["rules", "notices"]
+
     ask_source = inspect.getsource(rag_service.ask)
     stream_source = inspect.getsource(rag_service.ask_stream)
 
-    assert "route_query(" not in ask_source
-    assert "route_query(" not in stream_source
-    assert "_routerless_retrieval_route()" in ask_source
-    assert "_routerless_retrieval_route()" in stream_source
-    assert "_select_evidence_for_answer" in ask_source
-    assert "_select_evidence_for_answer" in stream_source
+    assert "_resolve_retrieval_route(" in ask_source
+    assert "_resolve_retrieval_route(" in stream_source
+    assert "_routerless_retrieval_route()" not in ask_source
+    assert "_routerless_retrieval_route()" not in stream_source
+    assert "_select_answer_evidence" in ask_source
+    assert "_select_answer_evidence" in stream_source
+
+
+def test_full_corpus_route_requires_explicit_override(monkeypatch):
+    monkeypatch.setattr(rag_service.rag_config, "RAG_SEARCH_ALL_DATASETS", True)
+
+    assert rag_service._resolve_retrieval_route(
+        "이번 달 학사일정 알려줘",
+        rag_service.QueryAnalysisMeta(result=None),
+    ) == DATASETS
 
 
 def test_balanced_shortlist_collects_all_six_datasets_with_equal_quota():
@@ -58,6 +92,343 @@ def test_balanced_shortlist_collects_all_six_datasets_with_equal_quota():
     assert len(shortlist) == 18
     assert shortlist.groupby("dataset").size().to_dict() == {dataset: 3 for dataset in DATASETS}
     assert shortlist[shortlist["dataset_rank"] == 1]["dataset"].tolist() == DATASETS
+
+
+def test_balanced_shortlist_keeps_each_datasets_strongest_sparse_candidate():
+    frame = _frame("schedule", count=5)
+    frame["sparse_score"] = [0.05, 0.04, 0.03, 0.92, 0.02]
+
+    shortlist = rag_service._build_balanced_shortlist([frame], per_dataset=3)
+
+    assert "schedule-3" in shortlist["chunk_id"].tolist()
+    assert shortlist.iloc[0]["chunk_id"] == "schedule-0"
+
+
+def test_schedule_alignment_prefers_requested_year_and_semester():
+    hits = pd.DataFrame([
+        {"chunk_id": "march", "schedule_start": "2026-03-03", "hybrid_score": 0.52},
+        {"chunk_id": "september", "schedule_start": "2026-09-01", "hybrid_score": 0.46},
+        {"chunk_id": "old", "schedule_start": "2025-09-01", "hybrid_score": 0.55},
+    ])
+
+    aligned = rag_service._apply_schedule_calendar_alignment(
+        hits, "2026학년도 2학기 개강일이 언제야?"
+    )
+
+    assert aligned.iloc[0]["chunk_id"] == "september"
+    assert aligned.iloc[-1]["chunk_id"] == "march"
+
+
+def _registration_scope_candidates() -> pd.DataFrame:
+    return pd.DataFrame([
+        {
+            "candidate_id": "c-current",
+            "chunk_id": "schedule-current",
+            "dataset": "schedule",
+            "dataset_rank": 1,
+            "title": "2026학년도 2학기 수강신청 일정",
+            "chunk_text": "2026학년도 2학기 수강신청 기간 안내",
+            "schedule_start": "2026-08-10",
+            "published_at": "2026-07-01",
+        },
+        {
+            "candidate_id": "c-old-entry",
+            "chunk_id": "rules-2022-entry",
+            "dataset": "rules",
+            "dataset_rank": 1,
+            "title": "2022학번 학적 및 학생 관련",
+            "chunk_text": "본교 수강신청과 국내 학점교류 학점 인정 기준",
+            "published_at": "2022-01-01",
+        },
+        {
+            "candidate_id": "c-external",
+            "chunk_id": "notice-uos",
+            "dataset": "notices",
+            "dataset_rank": 1,
+            "title": "2026학년도 여름 계절학기 서울시립대학교 수학 안내",
+            "chunk_text": "서울시립대학교 학점교류 신청 안내",
+            "published_at": "2026-05-04",
+        },
+        {
+            "candidate_id": "c-timeless",
+            "chunk_id": "rules-current",
+            "dataset": "rules",
+            "dataset_rank": 2,
+            "title": "수강신청 시행세칙",
+            "chunk_text": "수강신청 정정 및 취소에 관한 현재 시행세칙",
+            "published_at": "2022-03-01",
+        },
+    ])
+
+
+def test_final_scope_removes_old_entry_year_and_partner_exchange_from_current_registration():
+    refined = rag_service._refine_final_candidate_scope(
+        "2026-2 수강신청 기간을 알려줘",
+        _registration_scope_candidates(),
+    )
+
+    assert refined["candidate_id"].tolist() == ["c-current", "c-timeless"]
+    assert "c-old-entry" not in refined["candidate_id"].tolist()
+    assert "c-external" not in refined["candidate_id"].tolist()
+
+
+def test_period_mismatch_is_only_removed_when_an_explicit_match_exists():
+    candidates = _registration_scope_candidates().query("candidate_id == 'c-current'").copy()
+    candidates.loc[:, "title"] = "2026학년도 2학기 수강신청 일정"
+    candidates.loc[:, "schedule_start"] = "2026-08-10"
+
+    refined = rag_service._refine_final_candidate_scope(
+        "2027-1 수강신청 기간을 알려줘",
+        candidates,
+    )
+
+    assert refined["candidate_id"].tolist() == ["c-current"]
+
+
+def test_explicit_partner_exchange_question_keeps_named_institution_evidence():
+    candidates = _registration_scope_candidates()
+    refined = rag_service._refine_final_candidate_scope(
+        "2026학년도 서울시립대학교 여름 계절학기 학점교류 신청 방법",
+        candidates,
+    )
+
+    assert "c-external" in refined["candidate_id"].tolist()
+
+
+def test_course_basket_scope_excludes_generic_graduate_registration_schedule():
+    candidates = pd.DataFrame([
+        {
+            "candidate_id": "c-graduate",
+            "chunk_id": "schedule-graduate",
+            "dataset": "schedule",
+            "dataset_rank": 1,
+            "title": "2026학년도 2학기 대학원 수강신청",
+            "chunk_text": "대학원 수강신청 기간은 7월 31일부터 8월 5일까지",
+            "schedule_start": "2026-07-31",
+        },
+        {
+            "candidate_id": "c-basket",
+            "chunk_id": "notice-basket",
+            "dataset": "rules",
+            "dataset_rank": 1,
+            "title": "2026학번 수강신청 및 수업관련제도",
+            "chunk_text": "학부 재학생 장바구니 기간과 신청 방법",
+            "published_at": "2026-07-01",
+        },
+        {
+            "candidate_id": "c-generic",
+            "chunk_id": "rules-generic",
+            "dataset": "rules",
+            "dataset_rank": 1,
+            "title": "수강신청 시행세칙",
+            "chunk_text": "일반 수강신청 정정 및 취소 안내",
+        },
+    ])
+
+    refined = rag_service._refine_final_candidate_scope(
+        "2학기 수강신청 장바구니 기간은 언제야?",
+        candidates,
+    )
+
+    assert refined["candidate_id"].tolist() == ["c-basket"]
+
+
+def test_explicit_graduate_question_keeps_graduate_schedule():
+    candidates = pd.DataFrame([
+        {
+            "candidate_id": "c-graduate",
+            "chunk_id": "schedule-graduate",
+            "dataset": "schedule",
+            "dataset_rank": 1,
+            "title": "2026학년도 2학기 대학원 수강신청",
+            "chunk_text": "대학원 수강신청 기간 안내",
+            "schedule_start": "2026-07-31",
+        }
+    ])
+
+    refined = rag_service._refine_final_candidate_scope(
+        "대학원 2학기 수강신청 기간은 언제야?",
+        candidates,
+    )
+
+    assert refined["candidate_id"].tolist() == ["c-graduate"]
+
+
+def test_title_declared_cohort_overrides_incidental_body_year():
+    candidates = pd.DataFrame([
+        {
+            "candidate_id": "c-wrong-title",
+            "chunk_id": "rules-2024",
+            "dataset": "rules",
+            "dataset_rank": 1,
+            "title": "2024학번 학적 및 학생 관련",
+            "chunk_text": "2022학번 예시와 과거 공과대학 기준을 함께 설명합니다.",
+        },
+        {
+            "candidate_id": "c-correct-title",
+            "chunk_id": "rules-2022",
+            "dataset": "rules",
+            "dataset_rank": 2,
+            "title": "2022학번 단과대학별 졸업기준 - 공과대학",
+            "chunk_text": "공과대학 졸업 최저학점 기준",
+        },
+    ])
+
+    refined = rag_service._refine_final_candidate_scope(
+        "2022학번 공과대학 졸업 최저학점은 몇 점이야?",
+        candidates,
+    )
+
+    assert refined["candidate_id"].tolist() == ["c-correct-title"]
+
+
+def test_restricted_foreign_student_notice_cannot_answer_general_audience():
+    foreign_only = pd.DataFrame([
+        {
+            "candidate_id": "c-foreign-dorm",
+            "chunk_id": "notice-foreign-dorm",
+            "dataset": "notices",
+            "dataset_rank": 1,
+            "title": "2026학년도 2학기 외국인 유학생 기숙사 신청 안내",
+            "chunk_text": "남산학사 외국인 유학생 입사 신청 기간",
+        }
+    ])
+
+    general = rag_service._refine_final_candidate_scope(
+        "남산학사 2학기 입사 신청 기간은 언제야?",
+        foreign_only,
+    )
+    foreign = rag_service._refine_final_candidate_scope(
+        "외국인 유학생 남산학사 2학기 입사 신청 기간은 언제야?",
+        foreign_only,
+    )
+
+    assert general.empty
+    assert foreign["candidate_id"].tolist() == ["c-foreign-dorm"]
+
+
+def test_contact_question_removes_numberless_staff_when_phone_candidate_exists():
+    candidates = pd.DataFrame([
+        {
+            "candidate_id": "c-manager",
+            "chunk_id": "staff-manager",
+            "dataset": "staff",
+            "dataset_rank": 1,
+            "title": "학사지원팀 이** 과장",
+            "chunk_text": "학사지원팀 수강신청 담당",
+        },
+        {
+            "candidate_id": "c-phone",
+            "chunk_id": "staff-phone",
+            "dataset": "staff",
+            "dataset_rank": 2,
+            "title": "학사지원팀 문의처",
+            "chunk_text": "전화번호: 02-2260-3618 / 02-2260-3619",
+        },
+        {
+            "candidate_id": "c-rule",
+            "chunk_id": "rules-registration",
+            "dataset": "rules",
+            "dataset_rank": 1,
+            "title": "수강신청 안내",
+            "chunk_text": "수강신청 오류 문의는 학사지원팀 담당",
+        },
+    ])
+
+    refined = rag_service._refine_final_candidate_scope(
+        "수강신청 오류는 어느 부서에 전화해야 해?",
+        candidates,
+    )
+
+    assert refined["candidate_id"].tolist() == ["c-phone", "c-rule"]
+
+
+def test_parent_context_includes_fact_two_chunks_after_selected_label(monkeypatch):
+    cached = pd.DataFrame([
+        {
+            "chunk_id": f"rule-{position}",
+            "doc_id": "scholarship-rule",
+            "position": position,
+            "title": "장학금 지급에 관한 시행세칙",
+            "chunk_text": text,
+            "source": "rules",
+        }
+        for position, text in [
+            (1, "장학금 총칙"),
+            (2, "장학금 적용 대상"),
+            (3, "[장학금 지급에 관한 시행세칙]\n\n우수장학 종류"),
+            (4, "동국인재육성장학 수혜자"),
+            (5, "수혜자는 평균평점 3.5 이상"),
+        ]
+    ])
+    cache = rag_service.DatasetCache(
+        chunks=cached,
+        vectorizer=object(),
+        matrix=object(),
+        chunk_path=Path("unused.parquet"),
+        chunk_mtime=0,
+        tfidf_mtime=0,
+    )
+    monkeypatch.setitem(rag_service._datasets, "rules", cache)
+    monkeypatch.setattr(rag_service, "PARENT_CONTEXT_ENABLED", True)
+
+    selected = cached.iloc[2].copy()
+    selected["dataset"] = "rules"
+    selected["campus_allow_wise"] = False
+    expanded = rag_service._expand_chunk_with_neighbors(selected)
+
+    assert "우수장학 종류" in expanded
+    assert "평균평점 3.5 이상" in expanded
+
+
+def test_selector_only_receives_refined_candidates_and_keeps_equal_groups(monkeypatch):
+    captured: list[str] = []
+
+    async def select_all_remaining(_question, candidates, _usage):
+        captured.extend(candidate["candidate_id"] for candidate in candidates)
+        return EvidenceSelectionDecision(
+            groups=[
+                EvidenceGroupDecision(document_ids=[candidate["candidate_id"]], distinction="valid")
+                for candidate in candidates
+            ]
+        )
+
+    monkeypatch.setattr(rag_service, "select_evidence_groups", select_all_remaining)
+    selected, did_fallback = asyncio.run(
+        rag_service._select_evidence_for_answer(
+            "2026-2 수강신청 기간을 알려줘",
+            _registration_scope_candidates(),
+            [],
+        )
+    )
+
+    assert did_fallback is False
+    assert captured == ["c-current", "c-timeless"]
+    assert selected["candidate_id"].tolist() == ["c-current", "c-timeless"]
+    assert selected["evidence_group"].tolist() == [1, 2]
+    assert selected["citation_number"].tolist() == [1, 2]
+
+
+def test_staff_contact_enrichment_uses_departments_from_first_hop_evidence():
+    schedule = pd.DataFrame([
+        {
+            "dataset": "schedule",
+            "department": "학사지원팀/ 대학원실",
+            "hybrid_score": 0.9,
+        }
+    ])
+
+    queries = rag_service._staff_enrichment_queries(
+        "수강신청 오류는 어느 부서에 전화해야 해?", [schedule]
+    )
+
+    assert queries == ["학사지원팀 연락처", "대학원실 연락처"]
+    assert rag_service._staff_enrichment_queries("수강신청 기간이 언제야?", [schedule]) == []
+
+
+def test_both_endpoints_apply_staff_contact_enrichment():
+    for endpoint in (rag_service.ask, rag_service.ask_stream):
+        assert "_enrich_staff_lookup_frames" in inspect.getsource(endpoint)
 
 
 def test_irrelevant_documents_are_excluded_by_structured_decision():
@@ -114,7 +485,7 @@ def test_selector_failure_uses_safe_single_group_fallback(monkeypatch):
 
     monkeypatch.setattr(rag_service, "select_evidence_groups", failed_selector)
     selected, did_fallback = asyncio.run(
-        rag_service._select_evidence_for_answer("question", shortlist, [])
+        rag_service._select_evidence_for_answer("evidence", shortlist, [])
     )
 
     assert did_fallback is True
@@ -122,6 +493,60 @@ def test_selector_failure_uses_safe_single_group_fallback(monkeypatch):
     assert selected["dataset"].tolist() == DATASETS
     fallback_context = rag_service._build_selected_evidence_context(selected)
     assert all(f"문서 {index}" in fallback_context for index in range(1, 7))
+
+
+def test_empty_selector_decision_uses_safe_single_group_fallback(monkeypatch):
+    shortlist = rag_service._build_balanced_shortlist([_frame("rules", count=3)])
+    shortlist.loc[shortlist["candidate_id"] == "c1", "title"] = "재수강 신청 안내"
+
+    async def empty_selector(*_args, **_kwargs):
+        return EvidenceSelectionDecision(groups=[])
+
+    monkeypatch.setattr(rag_service, "select_evidence_groups", empty_selector)
+    selected, did_fallback = asyncio.run(
+        rag_service._select_evidence_for_answer("재수강 조건이 어떻게 돼?", shortlist, [])
+    )
+
+    assert did_fallback is True
+    assert selected["candidate_id"].tolist() == ["c1"]
+    assert selected["selector_fallback"].tolist() == [1]
+
+
+def test_empty_selector_decision_does_not_keep_lexically_unrelated_evidence(monkeypatch):
+    shortlist = rag_service._build_balanced_shortlist([_frame("rules", count=3)])
+
+    async def empty_selector(*_args, **_kwargs):
+        return EvidenceSelectionDecision(groups=[])
+
+    monkeypatch.setattr(rag_service, "select_evidence_groups", empty_selector)
+    selected, did_fallback = asyncio.run(
+        rag_service._select_evidence_for_answer("재수강을 하고 싶은데 어떻게 해야 해?", shortlist, [])
+    )
+
+    assert did_fallback is True
+    assert selected.empty
+
+
+def test_historical_notice_requires_period_bound_answer_instruction():
+    selected = pd.DataFrame(
+        [
+            {
+                "dataset": "notices",
+                "citation_number": 1,
+                "title": "2024학년도 여름계절학기 재수강 신청 안내",
+                "chunk_text": "2024학년도 여름계절학기 재수강신청 확인서 제출",
+            }
+        ]
+    )
+
+    instruction = rag_service._period_bound_response_instruction(
+        "재수강을 하고 싶은데 어떻게 해야 해?",
+        selected,
+    )
+
+    assert instruction is not None
+    assert "문서1(2024학년도 계절학기)" in instruction
+    assert "현재 학기에도 같은 절차가 적용되는지는" in instruction
 
 
 def test_openai_selector_timeout_is_observable_and_returns_fallback_signal(monkeypatch):
@@ -215,8 +640,9 @@ def test_source_metadata_excludes_evidence_selection_bookkeeping():
     assert metadata["title"] == "public title"
     assert metadata["url"] == "https://example.edu/document"
     assert internal_fields.isdisjoint(metadata)
-    assert "metadata=_source_metadata(row)" in inspect.getsource(rag_service.ask)
-    assert "metadata=_source_metadata(row)" in inspect.getsource(rag_service.ask_stream)
+    assert "metadata=_source_metadata(row)" in inspect.getsource(rag_service._source_chunk_from_row)
+    assert "_source_chunk_from_row" in inspect.getsource(rag_service.ask)
+    assert "_source_chunk_from_row" in inspect.getsource(rag_service.ask_stream)
 
 
 def test_new_accuracy_path_contains_no_domain_specific_exception_terms():

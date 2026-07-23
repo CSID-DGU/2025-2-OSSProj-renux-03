@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Tuple, Dict # Dict 추가
 
 import joblib
+import chromadb
 import numpy as np
 import pandas as pd
 import sklearn
@@ -25,7 +26,7 @@ from src.config import (
     VECTORIZER_DIR,
 )
 from src.models.embedding import encode_queries
-from src.vectorstore.chroma_client import get_collection
+from src.vectorstore.chroma_client import get_collection, query_items
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,10 @@ _MANIFEST_NAME = "manifest.json"
 _KIWI = None
 _KIWI_UNAVAILABLE = False
 _TOKEN_PATTERN = re.compile(r"[가-힣A-Za-z0-9]+")
+_QUERY_TITLE_STOPWORDS = {
+    "언제", "언제야", "어떻게", "어디", "무엇", "뭐야", "알려줘", "알려주세요",
+    "관련", "안내", "공지", "일정", "기간", "학기", "학년도",
+}
 _KOREAN_SUFFIXES = tuple(
     sorted(
         {
@@ -82,10 +87,14 @@ def _strip_korean_suffix(token: str) -> str:
 
 
 def _hangul_ngrams(token: str) -> list[str]:
-    if not re.fullmatch(r"[가-힣]+", token) or len(token) < 4:
+    if not re.fullmatch(r"[가-힣]+", token) or len(token) < 3:
         return []
     grams: list[str] = []
-    for size in (2, 3):
+    # Three-syllable compounds such as "개강일" must expose their two-
+    # syllable stem ("개강") so conversational particles do not turn an exact
+    # title match into an out-of-vocabulary query.
+    sizes = (2,) if len(token) == 3 else (2, 3)
+    for size in sizes:
         grams.extend(token[idx : idx + size] for idx in range(0, len(token) - size + 1))
     return grams
 
@@ -110,6 +119,41 @@ def _light_korean_tokenize(text: str) -> list[str]:
             add(gram)
 
     return tokens
+
+
+def _query_title_focus_score(query: str, title: str) -> float:
+    """Return a small domain-agnostic exact-title signal for a query."""
+    query_tokens = {
+        token
+        for token in _light_korean_tokenize(query)
+        if token not in _QUERY_TITLE_STOPWORDS and not any(char.isdigit() for char in token)
+    }
+    if not query_tokens or not title:
+        return 0.0
+    title_tokens = set(_light_korean_tokenize(title))
+    overlap = query_tokens & title_tokens
+    if not overlap:
+        return 0.0
+    longest_query = max(len(token) for token in query_tokens)
+    longest_overlap = max(len(token) for token in overlap)
+    return min(1.0, longest_overlap / max(longest_query, 1))
+
+
+def _academic_period_title_adjustment(query: str, title: str) -> float:
+    """Prefer notices whose target academic year/semester matches the query."""
+    requested_year = re.search(r"\b(20\d{2})\s*(?:학년도|년도|년|-)?", query)
+    requested_semester = re.search(r"([12])\s*학기", query)
+    if requested_year is None and requested_semester is None:
+        return 0.0
+
+    adjustment = 0.0
+    title_year = re.search(r"\b(20\d{2})\s*(?:학년도|년도|년|-)?", title)
+    title_semester = re.search(r"([12])\s*학기", title)
+    if requested_year is not None and title_year is not None:
+        adjustment += 0.30 if requested_year.group(1) == title_year.group(1) else -0.30
+    if requested_semester is not None and title_semester is not None:
+        adjustment += 0.10 if requested_semester.group(1) == title_semester.group(1) else -0.10
+    return adjustment
 
 
 def _kiwi_or_light_korean_tokenize(text: str) -> list[str]:
@@ -374,30 +418,42 @@ def hybrid_search(
         return chunks_df.copy()
 
     # 검색 후보 수 (Top-K보다 넉넉하게 가져와서 랭킹)
-    limit = top_k * 3 
+    limit = top_k * 5
     
-    # 1. Vector Search (Dense)
-    collection = get_collection(collection_name)
-    query_embedding = encode_queries([query])
-    
-    vec_results = collection.query(
-        query_embeddings=query_embedding,
-        n_results=limit,
-        where=where_filter,
-    )
-    
-    vec_ids = (vec_results.get("ids") or [[]])[0]
-    vec_dists = (vec_results.get("distances") or [[]])[0]
+    # 1. Vector Search (Dense). A missing/corrupt Chroma segment must not take
+    # the valid TF-IDF path down with it; readiness still exposes the degraded
+    # state while the request continues with sparse retrieval.
+    vec_scores: Dict[str, float] = {}
+    try:
+        collection = get_collection(collection_name)
+        query_embedding = encode_queries([query])
+        vec_results = query_items(
+            collection_name,
+            collection=collection,
+            query_embeddings=query_embedding,
+            n_results=limit,
+            where=where_filter,
+        )
 
-    # 거리(Distance)를 유사도(Similarity)로 변환 — 컬렉션의 실제 메트릭에 맞게 처리.
-    # cosine/ip: dist = 1 - sim → sim = 1 - dist
-    # l2(Chroma는 squared L2 반환): 정규화 임베딩이면 dist = 2 - 2cos → sim = 1 - dist/2
-    space = (getattr(collection, "metadata", None) or {}).get("hnsw:space", "l2")
-    if space in ("cosine", "ip"):
-        _to_sim = lambda d: 1.0 - d
-    else:
-        _to_sim = lambda d: 1.0 - d / 2.0
-    vec_scores = {cid: max(0.0, _to_sim(dist)) for cid, dist in zip(vec_ids, vec_dists)}
+        vec_ids = (vec_results.get("ids") or [[]])[0]
+        vec_dists = (vec_results.get("distances") or [[]])[0]
+
+        # 거리(Distance)를 유사도(Similarity)로 변환 — 컬렉션의 실제 메트릭에 맞게 처리.
+        # cosine/ip: dist = 1 - sim → sim = 1 - dist
+        # l2(Chroma는 squared L2 반환): 정규화 임베딩이면 dist = 2 - 2cos → sim = 1 - dist/2
+        space = (getattr(collection, "metadata", None) or {}).get("hnsw:space", "l2")
+        if space in ("cosine", "ip"):
+            _to_sim = lambda d: 1.0 - d
+        else:
+            _to_sim = lambda d: 1.0 - d / 2.0
+        vec_scores = {cid: max(0.0, _to_sim(dist)) for cid, dist in zip(vec_ids, vec_dists)}
+    except chromadb.errors.ChromaError as exc:
+        logger.warning(
+            "Dense retrieval unavailable for collection '%s'; continuing sparse-only (%s: %s).",
+            collection_name,
+            type(exc).__name__,
+            exc,
+        )
 
     # 2. Sparse Search (TF-IDF)
     # 행→chunk_id 매핑: 아티팩트의 chunk_ids가 있으면 그것을 사용(행 순서 결합 제거),
@@ -454,13 +510,41 @@ def hybrid_search(
     else:
         candidate_ids = set(vec_scores.keys()) | set(sparse_scores.keys())
 
+    id_to_pos = {
+        str(cid): pos
+        for pos, cid in enumerate(chunks_df["chunk_id"].astype(str).tolist())
+    }
     hybrid_results = []
     for cid in candidate_ids:
         v_score = vec_scores.get(cid, 0.0)
         s_score = sparse_scores.get(cid, 0.0)
         
-        # 가중 합산
-        final_score = alpha * v_score + (1.0 - alpha) * s_score
+        # 기본 가중 합산에 더해 정확한 어휘 일치를 위한 lexical guard를 둔다.
+        # Dense 점수가 높은 관련 문서가 학기/날짜/제도명까지 정확히 일치하는
+        # TF-IDF 문서를 밀어내지 않게 하되, sparse 점수가 약한 문서는 기존
+        # hybrid 점수를 그대로 사용한다. 도메인별 예외어 없이 모든 코퍼스에
+        # 동일하게 적용한다.
+        weighted_score = alpha * v_score + (1.0 - alpha) * s_score
+        # Sparse and dense similarities are both cosine-like scores in [0, 1],
+        # so the sparse score itself is a valid lower bound for an exact-word
+        # match. The weighted score can still win whenever semantic evidence is
+        # stronger.
+        lexical_guard_score = s_score
+        title_score = 0.0
+        title = ""
+        row_position = id_to_pos.get(str(cid))
+        if row_position is not None:
+            row = chunks_df.iloc[row_position]
+            title = row.get("title") if "title" in row.index else None
+            if not isinstance(title, str) or not title.strip():
+                title = _extract_title(str(row.get("chunk_text", "")))
+            title_score = _query_title_focus_score(query, title)
+        period_adjustment = (
+            _academic_period_title_adjustment(query, title)
+            if "notice" in collection_name.lower()
+            else 0.0
+        )
+        final_score = max(weighted_score, lexical_guard_score) + 0.18 * title_score + period_adjustment
         hybrid_results.append((cid, final_score, v_score, s_score))
     
     # 점수순 정렬
@@ -522,14 +606,18 @@ def hybrid_search_with_meta(
             out[column] = ""
         else:
             out[column] = out[column].fillna("")
-    # major/college_name/entry_year/source_type/attachments는 후속 학과 필터·entry_year 가산점·첨부 링크
-    # 로직이 사용하므로 존재하면 반드시 함께 반환한다(누락 시 해당 기능이 조용히 비활성).
+    # Provenance, campus identity, and effective-date fields are part of the
+    # answer/source contract. Dropping them here silently turns valid official
+    # evidence into unknown-campus or undated evidence downstream.
     desired = [
         "chunk_id", "title", "chunk_text", "hybrid_score", "vector_score", "sparse_score",
         "topics", "category", "published_at", "apply_deadline", "url", "source", "notice_id",
         "major", "college_name", "entry_year", "source_type", "attachments",
         "doc_id", "position",  # parent-document 확장(이웃 청크 결합)에 사용
         "is_closed", "restaurant", "meal_date",  # 학식: 휴무 패널티·식당/날짜 표시에 사용
+        "schedule_start", "schedule_end", "department", "campus_scope",
+        "filename", "relative_dir", "source_file", "document_key", "source_id",
+        "board_code", "article_id", "schedule_id", "staff_id", "course_id", "rule_id",
     ]
     existing = [col for col in desired if col in out.columns]
     return out[existing]

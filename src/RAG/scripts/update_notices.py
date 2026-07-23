@@ -14,10 +14,9 @@ from src.pipelines.notices_sync import (
     apply_notice_normalized_documents,
     load_known_article_ids_by_board,
     normalize_existing_notice_documents,
-    refresh_notice_artifacts,
+    rebuild_notices_from_source_documents,
     sync_notices,
 )
-from src.pipelines.ingest import reindex_from_db
 from src.database import init_db
 
 
@@ -42,9 +41,8 @@ def _run_once(
 
     if mode == "index-only":
         try:
-            reindex_from_db("notices")
-            refresh_notice_artifacts()
-            print("✅ notices 인덱스와 TF-IDF 아티팩트를 다시 생성했습니다.")
+            chunks_df, _, _ = rebuild_notices_from_source_documents()
+            print(f"✅ SQLite 정본에서 notices 인덱스와 TF-IDF를 다시 생성했습니다: {len(chunks_df)} chunks")
         except Exception as exc:  # noqa: BLE001
             print(f"⚠️ index-only 실패: {exc}")
         return

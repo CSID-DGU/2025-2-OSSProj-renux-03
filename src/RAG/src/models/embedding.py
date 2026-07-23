@@ -59,17 +59,34 @@ def encode_texts(texts: Iterable[str], normalize: bool = True) -> np.ndarray:
     return vectors
 
 
-def encode_queries(texts: Iterable[str], normalize: bool = True) -> np.ndarray:
-    """검색 질의 텍스트 목록을 밀집 벡터로 변환합니다(질의 프리픽스 적용)."""
+@lru_cache(maxsize=256)
+def _encode_single_query(text: str, normalize: bool) -> tuple[float, ...]:
+    """Cache one query vector so six routerless corpus searches encode once."""
     embedder = get_embedder()
-    vectors = embedder.encode(
-        _apply_prefix(texts, EMBED_QUERY_PREFIX),
+    vector = embedder.encode(
+        [text],
         batch_size=EMBED_BATCH_SIZE,
         convert_to_numpy=True,
         normalize_embeddings=normalize,
         show_progress_bar=False,
+    )[0]
+    return tuple(float(value) for value in vector)
+
+
+def encode_queries(texts: Iterable[str], normalize: bool = True) -> np.ndarray:
+    """검색 질의 텍스트 목록을 밀집 벡터로 변환합니다(질의 프리픽스 적용)."""
+    prepared = _apply_prefix(texts, EMBED_QUERY_PREFIX)
+    if not prepared:
+        return np.empty((0, 0), dtype=np.float32)
+    return np.asarray(
+        [_encode_single_query(text, normalize) for text in prepared],
+        dtype=np.float32,
     )
-    return vectors
 
 
-__all__ = ["get_embedder", "encode_texts", "encode_queries"]
+def clear_query_embedding_cache() -> None:
+    """Clear process-local query vectors after an embedder configuration swap."""
+    _encode_single_query.cache_clear()
+
+
+__all__ = ["get_embedder", "encode_texts", "encode_queries", "clear_query_embedding_cache"]

@@ -12,6 +12,11 @@ SYNONYM_MAP: Dict[str, str] = {
     "팀플": "팀 프로젝트",
     "도서관": "중앙도서관",
     "수강정정": "수강신청 정정",
+    # 학생들이 이전/통칭 명칭인 "성적우수장학금"을 계속 사용하지만,
+    # 현재 규정은 이를 우수장학금·동국인재육성장학으로 기술한다. 평점
+    # 조건 질문이 이름만 언급된 교외장학 공지에 묻히지 않도록 공식
+    # 명칭과 기준 필드를 함께 검색한다.
+    "성적우수장학금": "우수장학금 동국인재육성장학 평균평점",
     "과목": "교과목",
     "교양": "교양과목",
     "전필": "전공필수",
@@ -34,4 +39,3 @@ def expand_query(query: str) -> str:
         # re.sub(r'\b' + re.escape(slang) + r'\b', formal_term, expanded_query, flags=re.IGNORECASE)
 
     return expanded_query
-

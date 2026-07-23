@@ -15,16 +15,28 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
-from src.config import (
-    DATA_SOURCES,
-    RAG_NOTICES_REFRESH_MAX_PAGES,
-    RAG_SCHEDULER_ENABLED,
-)
+from src.config import RAG_NOTICES_REFRESH_MAX_PAGES, RAG_SCHEDULER_ENABLED
 
 logger = logging.getLogger(__name__)
 KST = timezone(timedelta(hours=9))
 
 _scheduler = None  # 단일 인스턴스 보관(중복 시작 방지)
+
+
+def _refresh_runtime_dataset_state(dataset: str) -> None:
+    """Make scheduler-written artifacts visible to the serving process at once."""
+    try:
+        from api.rag_service import refresh_runtime_dataset_state
+
+        snapshot = refresh_runtime_dataset_state([dataset])
+        logger.info(
+            "[scheduler] 런타임 캐시 갱신 dataset=%s chunks=%s dense=%s",
+            dataset,
+            snapshot.get("counts", {}).get(dataset),
+            snapshot.get("dense_counts", {}).get(dataset),
+        )
+    except Exception as exc:  # noqa: BLE001 - sync itself succeeded; expose reload failure in logs
+        logger.error("[scheduler] 런타임 캐시 갱신 실패 dataset=%s: %s", dataset, exc, exc_info=True)
 
 
 def refresh_notices_job() -> None:
@@ -45,6 +57,7 @@ def refresh_notices_job() -> None:
             delay=0.2,
         )
         summary = sync_notices(df, allow_missing_detection=False, mode="full-sync")
+        _refresh_runtime_dataset_state("notices")
         logger.info(
             "[scheduler] 공지 갱신 완료 seen=%s new=%s updated=%s deleted=%s failed=%s",
             summary.get("seen"), summary.get("new"), summary.get("updated"),
@@ -66,10 +79,8 @@ def refresh_meals_job() -> None:
         if df.empty:
             logger.warning("[scheduler] 학식 수집 0건 — 기존 인덱스 보존(갱신 건너뜀)")
             return
-        out_path = DATA_SOURCES["meals"]
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(out_path, index=False, encoding="utf-8-sig")
-        chunks_df, _, _ = ingest_meals()
+        chunks_df, _, _ = ingest_meals(df)
+        _refresh_runtime_dataset_state("meals")
         logger.info("[scheduler] 학식 갱신 완료: %s행 → %s chunks", len(df), len(chunks_df))
     except Exception as exc:  # noqa: BLE001
         logger.error("[scheduler] 학식 갱신 실패: %s", exc, exc_info=True)

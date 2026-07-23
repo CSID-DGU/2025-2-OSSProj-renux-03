@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 import json
 import argparse # Add logging import
+import hashlib
 
 import pandas as pd
 import re
@@ -33,7 +34,7 @@ from src.utils.preprocess import (
 from src.vectorstore.chroma_client import add_items, reset_collection, upsert_items, get_all_ids, delete_items, get_existing_ids
 from src.database import (
     SessionLocal, engine, init_db,
-    Notice, Rule, Schedule, Course, Staff, Chunk, CustomKnowledge
+    Notice, Rule, Schedule, Course, Staff, Chunk, CustomKnowledge, SourceDocument, kst_now
 )
 
 @dataclass
@@ -90,6 +91,28 @@ def _canonicalize_campus_scope_frame(frame: pd.DataFrame) -> pd.DataFrame:
         classify_campus_scope(row).value for _, row in canonical.iterrows()
     ]
     return canonical
+
+
+def _chunk_parent_identity(
+    chunk: Chunk,
+    fallback_doc_id: str,
+    fallback_positions: dict[str, int],
+) -> tuple[str, int]:
+    """Read persisted parent metadata, with a deterministic legacy fallback.
+
+    Old databases predate ``chunks.doc_id`` and ``chunks.position``.  Keeping
+    the fallback here lets a DB-only rebuild remain usable while the next
+    normal ingest persists the metadata permanently.
+    """
+    doc_id = str(chunk.doc_id or fallback_doc_id)
+    if chunk.position is not None:
+        try:
+            return doc_id, int(chunk.position)
+        except (TypeError, ValueError):
+            pass
+    position = fallback_positions.get(doc_id, 0)
+    fallback_positions[doc_id] = position + 1
+    return doc_id, position
 
 
 def _persist_chunks(key: str, collection: str, chunks_df: pd.DataFrame) -> Tuple[pd.DataFrame, object, object]:
@@ -182,7 +205,10 @@ def _save_chunks_to_sqlite(chunks_df: pd.DataFrame, source_key: str):
         return
     
     # 필요한 컬럼만 선택 및 확보
-    cols = ["chunk_id", "chunk_text", "notice_id", "rule_id", "schedule_id", "course_id", "staff_id"]
+    cols = [
+        "chunk_id", "chunk_text", "doc_id", "position", "notice_id", "rule_id",
+        "schedule_id", "course_id", "staff_id", "custom_knowledge_id",
+    ]
     for col in cols:
         if col not in chunks_df.columns:
             chunks_df[col] = None
@@ -457,6 +483,17 @@ def build_notice_chunks(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def ingest_notices() -> Tuple[pd.DataFrame, object, object]:
+    # Normal operation is strictly SQLite → derived indexes.  CSV remains only
+    # as an explicit legacy bootstrap path when no canonical notice exists.
+    session = SessionLocal()
+    try:
+        has_canonical_notices = session.query(SourceDocument.id).filter(SourceDocument.dataset == "notices").first() is not None
+    finally:
+        session.close()
+    if has_canonical_notices:
+        from src.pipelines.notices_sync import rebuild_notices_from_source_documents
+        return rebuild_notices_from_source_documents()
+
     path = DATA_SOURCES["notices"]
     if not path.exists():
         raise FileNotFoundError(f"Notice CSV not found: {path}")
@@ -529,12 +566,32 @@ def ingest_notices() -> Tuple[pd.DataFrame, object, object]:
 
 def build_notice_index_frame_from_session(session: Session) -> pd.DataFrame:
     notice_rows = []
-    query_notices = session.query(Chunk, Notice).join(Notice, Chunk.notice_id == Notice.id)
+    source_document_keys = {
+        str(doc.source_url): doc.document_key
+        for doc in session.query(SourceDocument)
+        .filter(SourceDocument.dataset == "notices")
+        .all()
+        if doc.source_url and doc.document_key
+    }
+    fallback_positions: dict[str, int] = {}
+
+    query_notices = (
+        session.query(Chunk, Notice)
+        .join(Notice, Chunk.notice_id == Notice.id)
+        .order_by(Notice.id.asc(), Chunk.position.asc(), Chunk.id.asc())
+    )
     for chunk, notice in query_notices.all():
+        doc_id, position = _chunk_parent_identity(
+            chunk,
+            source_document_keys.get(str(notice.detail_url), f"notice:{notice.id}"),
+            fallback_positions,
+        )
         notice_rows.append(
             {
                 "chunk_id": chunk.chunk_id,
                 "chunk_text": chunk.chunk_text,
+                "doc_id": doc_id,
+                "position": position,
                 "title": notice.title,
                 "topics": notice.board,
                 "published_at": notice.published_date,
@@ -550,15 +607,23 @@ def build_notice_index_frame_from_session(session: Session) -> pd.DataFrame:
             }
         )
 
-    query_custom_knowledge = session.query(Chunk, CustomKnowledge).join(
-        CustomKnowledge,
-        Chunk.custom_knowledge_id == CustomKnowledge.id,
+    query_custom_knowledge = (
+        session.query(Chunk, CustomKnowledge)
+        .join(CustomKnowledge, Chunk.custom_knowledge_id == CustomKnowledge.id)
+        .order_by(CustomKnowledge.id.asc(), Chunk.position.asc(), Chunk.id.asc())
     )
     for chunk, ck in query_custom_knowledge.all():
+        doc_id, position = _chunk_parent_identity(
+            chunk,
+            f"custom_knowledge:{ck.id}",
+            fallback_positions,
+        )
         notice_rows.append(
             {
                 "chunk_id": chunk.chunk_id,
                 "chunk_text": chunk.chunk_text,
+                "doc_id": doc_id,
+                "position": position,
                 "title": ck.question,
                 "topics": ck.category or "CustomKnowledge",
                 "published_at": ck.created_at.strftime("%Y-%m-%d") if ck.created_at else "",
@@ -602,6 +667,13 @@ def build_rule_chunks(df: pd.DataFrame) -> pd.DataFrame:
         college_name = _first_nonempty(row, ["college_name", "단과대학", "대학"])
         source_type = _first_nonempty(row, ["source_type", "문서유형"]) or "rules_text"
         source_file = _first_nonempty(row, ["source_file", "source_filename", "파일명", "filename"])
+        source_url = _first_nonempty(row, ["source_url", "url", "원문URL"])
+        source_page_url = _first_nonempty(row, ["source_page_url", "landing_url", "안내페이지URL"])
+        source_version = _first_nonempty(row, ["source_version", "version", "원문버전"])
+        source_sha256 = _first_nonempty(row, ["source_sha256", "sha256"])
+        page_start = _first_nonempty(row, ["page_start", "시작페이지"])
+        page_end = _first_nonempty(row, ["page_end", "종료페이지"])
+        page_label = _first_nonempty(row, ["page_label", "인쇄페이지"])
         published_at = _first_nonempty(row, ["published_at", "게시일", "기준일"])
         title = _first_nonempty(row, ["title", "규정명", "filename", "파일명"]) or text[:80] or "학칙 문서"
         doc_id = make_doc_id("rules", rel_dir, filename or title, entry_year, section, college_name)
@@ -614,7 +686,7 @@ def build_rule_chunks(df: pd.DataFrame) -> pd.DataFrame:
                 "relative_dir": rel_dir,
                 "filename": filename,
                 "source": "rules",
-                "url": "",
+                "url": source_url,
                 "published_at": published_at,
                 "rule_id": row.get("db_id"),
                 "entry_year": entry_year,
@@ -622,6 +694,12 @@ def build_rule_chunks(df: pd.DataFrame) -> pd.DataFrame:
                 "college_name": college_name,
                 "source_type": source_type,
                 "source_file": source_file,
+                "source_page_url": source_page_url,
+                "source_version": source_version,
+                "source_sha256": source_sha256,
+                "page_start": page_start,
+                "page_end": page_end,
+                "page_label": page_label,
             }
         )
 
@@ -638,21 +716,44 @@ def build_rule_chunks(df: pd.DataFrame) -> pd.DataFrame:
     return chunks_df
 
 
+def _entry_year_guide_cache_is_stale(output_path: Path, dependencies: Iterable[Path]) -> bool:
+    """Rebuild generated guide rows after either source data or parser changes."""
+    if not output_path.exists():
+        return True
+    output_mtime = output_path.stat().st_mtime_ns
+    return any(
+        dependency.exists() and dependency.stat().st_mtime_ns > output_mtime
+        for dependency in dependencies
+    )
+
+
 def ingest_rules() -> Tuple[pd.DataFrame, object, object]:
+    session = SessionLocal()
+    try:
+        if session.query(Rule.id).first() is not None and session.query(Chunk.id).filter(Chunk.rule_id.isnot(None)).first() is not None:
+            existing = reindex_from_db("rules").get("rules")
+            if existing is not None:
+                return existing
+    finally:
+        session.close()
+
     path = DATA_SOURCES["rules"]
     entry_year_guides_path = DATA_SOURCES["rules_entry_year_guides"]
     if not path.exists():
         raise FileNotFoundError(f"Rule CSV not found: {path}")
 
-    if not entry_year_guides_path.exists():
-        try:
-            from src.crawlers.dongguk_entry_year_guide import build_entry_year_guide_dataframe
+    from src.crawlers import dongguk_entry_year_guide as guide_crawler
 
-            guide_df = build_entry_year_guide_dataframe()
-            if not guide_df.empty:
-                guide_df.to_csv(entry_year_guides_path, index=False, encoding="utf-8-sig")
-        except Exception:
-            pass
+    guide_dependencies = [
+        *entry_year_guides_path.parent.glob(guide_crawler.PDF_GLOB),
+        guide_crawler.SOURCE_MANIFEST_PATH,
+        Path(guide_crawler.__file__),
+    ]
+    if _entry_year_guide_cache_is_stale(entry_year_guides_path, guide_dependencies):
+        guide_df = guide_crawler.build_entry_year_guide_dataframe()
+        if guide_df.empty:
+            raise RuntimeError("No entry-year guide sections were extracted.")
+        guide_df.to_csv(entry_year_guides_path, index=False, encoding="utf-8-sig")
 
     frames = [pd.read_csv(path).fillna("").astype(str)]
     if entry_year_guides_path.exists():
@@ -735,6 +836,15 @@ def build_schedule_chunks(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def ingest_schedule() -> Tuple[pd.DataFrame, object, object]:
+    session = SessionLocal()
+    try:
+        if session.query(Schedule.id).first() is not None and session.query(Chunk.id).filter(Chunk.schedule_id.isnot(None)).first() is not None:
+            existing = reindex_from_db("schedule").get("schedule")
+            if existing is not None:
+                return existing
+    finally:
+        session.close()
+
     path = DATA_SOURCES["schedule"]
     if not path.exists():
         raise FileNotFoundError(f"Schedule CSV not found: {path}")
@@ -927,6 +1037,15 @@ def _load_general_courses_df(path: Path) -> pd.DataFrame:
 
 
 def ingest_courses() -> Tuple[pd.DataFrame, object, object]:
+    session = SessionLocal()
+    try:
+        if session.query(Course.id).first() is not None and session.query(Chunk.id).filter(Chunk.course_id.isnot(None)).first() is not None:
+            existing = reindex_from_db("courses").get("courses")
+            if existing is not None:
+                return existing
+    finally:
+        session.close()
+
     all_courses_path = DATA_SOURCES["courses_all"]
     desc_path = DATA_SOURCES["courses_desc"]
     major_path = DATA_SOURCES["courses_major"]
@@ -1071,6 +1190,15 @@ def build_staff_chunks(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def ingest_staff() -> Tuple[pd.DataFrame, object, object]:
+    session = SessionLocal()
+    try:
+        if session.query(Staff.id).first() is not None and session.query(Chunk.id).filter(Chunk.staff_id.isnot(None)).first() is not None:
+            existing = reindex_from_db("staff").get("staff")
+            if existing is not None:
+                return existing
+    finally:
+        session.close()
+
     path = DATA_SOURCES["staff"]
     if not path.exists():
         print(f"⚠️ Staff CSV not found: {path}")
@@ -1172,19 +1300,114 @@ def build_meal_chunks(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(chunks)
 
 
-def ingest_meals() -> Tuple[pd.DataFrame, object, object]:
-    path = DATA_SOURCES["meals"]
-    if not path.exists():
-        print(f"⚠️ Meals CSV not found: {path}")
-        return pd.DataFrame(), None, None
+def _meal_document_key(row: pd.Series) -> str:
+    return f"meals:{str(row.get('date', '')).strip()}:{str(row.get('restaurant', '')).strip()}"
 
-    df = pd.read_csv(path).fillna("").astype(str)
+
+def store_meals_in_db(df: pd.DataFrame) -> int:
+    """Persist collected meal rows before any indexing work.
+
+    ``SourceDocument`` is the canonical record for volatile, externally
+    collected meals.  The original DataFrame can therefore disappear after the
+    request without affecting reindex or recovery.
+    """
+    if df.empty:
+        return 0
+    session = SessionLocal()
+    try:
+        now = kst_now()
+        seen: set[str] = set()
+        for _, raw_row in df.fillna("").astype(str).iterrows():
+            row = raw_row.to_dict()
+            source_id = f"{row.get('date', '').strip()}:{row.get('restaurant', '').strip()}"
+            if not source_id.strip(":"):
+                continue
+            seen.add(source_id)
+            document_key = f"meals:{source_id}"
+            payload = json.dumps(row, ensure_ascii=False, sort_keys=True)
+            digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()
+            document = (
+                session.query(SourceDocument)
+                .filter(SourceDocument.dataset == "meals", SourceDocument.source_id == source_id)
+                .one_or_none()
+            )
+            if document is None:
+                document = SourceDocument(
+                    dataset="meals",
+                    source_type="html_meal",
+                    source_id=source_id,
+                    document_key=document_key,
+                )
+                session.add(document)
+            document.source_url = "https://dgucoop.dongguk.edu/store/store.php?w=4"
+            document.title = f"{row.get('date', '').strip()} {row.get('restaurant', '').strip()} 학식"
+            document.category = "meals"
+            document.published_at = row.get("date", "").strip()
+            document.status = "active"
+            document.content_hash = digest
+            document.schema_version = 1
+            document.raw_payload_json = payload
+            document.normalized_payload_json = payload
+            document.collected_at = now
+            document.last_parsed_at = now
+            document.parse_error = None
+
+        # This crawl is a complete time window.  Do not delete historical rows;
+        # retain them as hidden so the canonical DB remains auditable.
+        for document in session.query(SourceDocument).filter(SourceDocument.dataset == "meals").all():
+            if document.source_id not in seen and document.status == "active":
+                document.status = "hidden"
+        session.commit()
+        return len(seen)
+    finally:
+        session.close()
+
+
+def load_meals_from_db() -> pd.DataFrame:
+    session = SessionLocal()
+    try:
+        rows: list[dict] = []
+        documents = (
+            session.query(SourceDocument)
+            .filter(SourceDocument.dataset == "meals", SourceDocument.status == "active")
+            .order_by(SourceDocument.published_at.asc(), SourceDocument.id.asc())
+            .all()
+        )
+        for document in documents:
+            try:
+                payload = json.loads(document.normalized_payload_json or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                rows.append(payload)
+        return pd.DataFrame(rows).fillna("").astype(str) if rows else pd.DataFrame()
+    finally:
+        session.close()
+
+
+def ingest_meals(collected_df: pd.DataFrame | None = None) -> Tuple[pd.DataFrame, object, object]:
+    """Build the meals index exclusively from SQLite canonical documents.
+
+    ``collected_df`` exists only at the collection boundary: it is persisted
+    first, then immediately reloaded from SQLite to prove indexing has no CSV
+    dependency.  A legacy CSV is imported only when bootstrapping an empty DB.
+    """
+    if collected_df is not None:
+        store_meals_in_db(collected_df)
+    df = load_meals_from_db()
+    if df.empty:
+        path = DATA_SOURCES["meals"]
+        if not path.exists():
+            print("⚠️ Meals DB is empty and no legacy seed CSV is available")
+            return pd.DataFrame(), None, None
+        # One-time backward-compatible bootstrap; runtime collectors never
+        # write this file and all later indexing reads the database.
+        store_meals_in_db(pd.read_csv(path).fillna("").astype(str))
+        df = load_meals_from_db()
     chunks_df = build_meal_chunks(df)
     if chunks_df.empty:
         print("⚠️ Warning: No meal chunks generated; preserving existing meals index")
         return chunks_df, None, None
-    # 학식은 휘발성 일일 데이터라 SQLite(reindex_from_db 대상)에는 저장하지 않고
-    # CSV → Chroma/TF-IDF 만 갱신한다(스키마 변경 불필요).
     reset_collection(DATASET_ARTIFACTS["meals"].collection)
     return _persist_chunks("meals", DATASET_ARTIFACTS["meals"].collection, chunks_df)
 
@@ -1213,66 +1436,30 @@ def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, 
         # 1. Notices
         if not target or target == "notices":
             print("🔄 Re-indexing notices from DB...")
-            
-            # Existing Notice query
-            query_notices = session.query(Chunk, Notice).join(Notice, Chunk.notice_id == Notice.id)
-            notice_data = []
-            for chunk, notice in query_notices.all():
-                notice_data.append({
-                    "chunk_id": chunk.chunk_id,
-                    "chunk_text": chunk.chunk_text,
-                    "title": notice.title,
-                    "topics": notice.board,
-                    "published_at": notice.published_date,
-                    "apply_deadline": _extract_notice_apply_deadline(notice.title, chunk.chunk_text, notice.published_date),
-                    "url": notice.detail_url,
-                    "attachments": notice.attachments,
-                    "source": "notices",
-                    "notice_id": notice.id,
-                    "category": notice.category,
-                    "question": None, 
-                    "answer": None, 
-                    "custom_knowledge_id": None 
-                })
-
-            # New CustomKnowledge query
-            query_custom_knowledge = session.query(Chunk, CustomKnowledge).join(CustomKnowledge, Chunk.custom_knowledge_id == CustomKnowledge.id)
-            custom_knowledge_data = []
-            for chunk, ck in query_custom_knowledge.all():
-                custom_knowledge_data.append({
-                    "chunk_id": chunk.chunk_id,
-                    "chunk_text": chunk.chunk_text,
-                    "title": ck.question, 
-                    "topics": ck.category or "CustomKnowledge", 
-                    "published_at": ck.created_at.strftime("%Y-%m-%d") if ck.created_at else "", 
-                    "apply_deadline": None,
-                    "url": "", 
-                    "attachments": "[]", 
-                    "source": "custom_knowledge", 
-                    "notice_id": None, 
-                    "category": ck.category,
-                    "question": ck.question,
-                    "answer": ck.answer,
-                    "custom_knowledge_id": ck.id
-                })
-            
-            # Combine both data sources
-            all_notices_data = notice_data + custom_knowledge_data
-
-            if all_notices_data:
-                df = _canonicalize_campus_scope_frame(pd.DataFrame(all_notices_data))
+            df = build_notice_index_frame_from_session(session)
+            if not df.empty:
                 reset_collection(DATASET_ARTIFACTS["notices"].collection)
                 results["notices"] = _persist_chunks("notices", DATASET_ARTIFACTS["notices"].collection, df)
         
         # 2. Rules
         if not target or target == "rules":
             print("🔄 Re-indexing rules from DB...")
-            query = session.query(Chunk, Rule).join(Rule, Chunk.rule_id == Rule.id)
+            query = (
+                session.query(Chunk, Rule)
+                .join(Rule, Chunk.rule_id == Rule.id)
+                .order_by(Rule.id.asc(), Chunk.position.asc(), Chunk.id.asc())
+            )
             data = []
+            fallback_positions: dict[str, int] = {}
             for chunk, rule in query.all():
+                doc_id, position = _chunk_parent_identity(
+                    chunk, f"rule:{rule.id}", fallback_positions,
+                )
                 data.append({
                     "chunk_id": chunk.chunk_id,
                     "chunk_text": chunk.chunk_text,
+                    "doc_id": doc_id,
+                    "position": position,
                     "title": rule.filename,
                     "topics": "규정",
                     "relative_dir": rule.relative_dir,
@@ -1290,12 +1477,22 @@ def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, 
         # 3. Schedule
         if not target or target == "schedule":
             print("🔄 Re-indexing schedule from DB...")
-            query = session.query(Chunk, Schedule).join(Schedule, Chunk.schedule_id == Schedule.id)
+            query = (
+                session.query(Chunk, Schedule)
+                .join(Schedule, Chunk.schedule_id == Schedule.id)
+                .order_by(Schedule.id.asc(), Chunk.position.asc(), Chunk.id.asc())
+            )
             data = []
+            fallback_positions = {}
             for chunk, sch in query.all():
+                doc_id, position = _chunk_parent_identity(
+                    chunk, f"schedule:{sch.id}", fallback_positions,
+                )
                 data.append({
                     "chunk_id": chunk.chunk_id,
                     "chunk_text": chunk.chunk_text,
+                    "doc_id": doc_id,
+                    "position": position,
                     "title": sch.title,
                     "schedule_start": sch.start_date,
                     "schedule_end": sch.end_date,
@@ -1315,9 +1512,17 @@ def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, 
         # 4. Courses
         if not target or target == "courses":
             print("🔄 Re-indexing courses from DB...")
-            query = session.query(Chunk, Course).join(Course, Chunk.course_id == Course.id)
+            query = (
+                session.query(Chunk, Course)
+                .join(Course, Chunk.course_id == Course.id)
+                .order_by(Course.id.asc(), Chunk.position.asc(), Chunk.id.asc())
+            )
             data = []
+            fallback_positions = {}
             for chunk, course in query.all():
+                doc_id, position = _chunk_parent_identity(
+                    chunk, f"course:{course.id}", fallback_positions,
+                )
                 try:
                     raw_data = json.loads(course.raw_data) if course.raw_data else {}
                 except (json.JSONDecodeError, TypeError, ValueError):
@@ -1326,6 +1531,8 @@ def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, 
                 data.append({
                     "chunk_id": chunk.chunk_id,
                     "chunk_text": chunk.chunk_text,
+                    "doc_id": doc_id,
+                    "position": position,
                     "title": course.title,
                     "course_code": course.course_code,
                     "source_table": course.source_table,
@@ -1345,12 +1552,22 @@ def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, 
         # 5. Staff (New)
         if not target or target == "staff":
             print("🔄 Re-indexing staff from DB...")
-            query = session.query(Chunk, Staff).join(Staff, Chunk.staff_id == Staff.id)
+            query = (
+                session.query(Chunk, Staff)
+                .join(Staff, Chunk.staff_id == Staff.id)
+                .order_by(Staff.id.asc(), Chunk.position.asc(), Chunk.id.asc())
+            )
             data = []
+            fallback_positions = {}
             for chunk, staff in query.all():
+                doc_id, position = _chunk_parent_identity(
+                    chunk, f"staff:{staff.id}", fallback_positions,
+                )
                 data.append({
                     "chunk_id": chunk.chunk_id,
                     "chunk_text": chunk.chunk_text,
+                    "doc_id": doc_id,
+                    "position": position,
                     "title": f"{staff.department} - {staff.name}",
                     "topics": staff.department,
                     "source": "staff",
@@ -1362,6 +1579,17 @@ def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, 
                 df = _canonicalize_campus_scope_frame(pd.DataFrame(data))
                 reset_collection(DATASET_ARTIFACTS["staff"].collection)
                 results["staff"] = _persist_chunks("staff", DATASET_ARTIFACTS["staff"].collection, df)
+
+        # 6. Meals — unlike the old implementation, this is now a first-class
+        # SQLite-backed corpus and can be rebuilt without a CSV snapshot.
+        if not target or target == "meals":
+            print("🔄 Re-indexing meals from DB...")
+            meals_df = load_meals_from_db()
+            if not meals_df.empty:
+                df = build_meal_chunks(meals_df)
+                if not df.empty:
+                    reset_collection(DATASET_ARTIFACTS["meals"].collection)
+                    results["meals"] = _persist_chunks("meals", DATASET_ARTIFACTS["meals"].collection, df)
 
     finally:
         session.close()

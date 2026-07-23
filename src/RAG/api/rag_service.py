@@ -1,6 +1,7 @@
 import csv
 import copy
 import functools
+import hashlib
 import io
 from importlib.metadata import PackageNotFoundError, version
 import asyncio
@@ -20,6 +21,7 @@ from typing import AsyncIterator, Dict, List, Tuple
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
+import numpy as np
 import pandas as pd
 from scipy.sparse import vstack
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -31,6 +33,7 @@ from starlette.concurrency import run_in_threadpool
 from sklearn import __version__ as sklearn_version
 from sklearn.metrics.pairwise import cosine_similarity
 
+from src import config as rag_config
 from src.config import (
     DEFAULT_TOP_K,
     HYBRID_ALPHA,
@@ -70,6 +73,7 @@ from src.database import (
     SourceDocument,
     init_db,
     kst_now,
+    verify_database_writable,
 )
 from src.pipelines.ingest import (
     DATASET_ARTIFACTS,
@@ -88,13 +92,16 @@ from src.services import semantic_cache
 from src.services.answer import format_citations
 from src.services.langchain_chat import (
     append_manual_history,
+    build_followup_question_details,
     generate_followup_questions,
     generate_langchain_answer,
     generate_langchain_answer_stream,
     get_recent_history_text,
 )
+from src.services.source_contract import source_reference
 from src.services.grounding import check_answer_grounding
 from src.services.query_analysis import QueryAnalysisResult, analyze_query
+from src.services.router import keyword_route
 from src.services.evidence_selector import EvidenceSelectionDecision, select_evidence_groups
 from src.services.campus_scope import (
     apply_campus_safety_boundary,
@@ -551,6 +558,8 @@ def _new_readiness_state() -> dict:
                 "detail": "not_checked",
                 "required_datasets": list(_REQUIRED_DATASETS),
                 "counts": {},
+                "dense_counts": {},
+                "dense_errors": {},
                 "errors": {},
             },
             "embedder": {"required": True, "ready": False, "detail": "not_checked"},
@@ -611,8 +620,39 @@ _NO_MAJOR_SENTINELS = {"Default", "Unknown"}
 
 
 def _routerless_retrieval_route() -> list[str]:
-    """The sole RAG retrieval scope: every indexed dataset, in stable order."""
+    """Return every indexed dataset for the explicit diagnostic override."""
     return list(SEARCHABLE_DATASETS)
+
+
+def _resolve_retrieval_route(raw_query: str, analysis: QueryAnalysisMeta) -> list[str]:
+    """Limit retrieval to the analyzed intent plus deterministic safety coverage.
+
+    Query analysis supplies the primary intent.  Keyword routing only adds a
+    second corpus when the wording clearly calls for it (for example, a
+    programme-specific application deadline needs both schedule and notices).
+    The full-corpus search remains an explicit operational override rather
+    than the production default.
+    """
+    if rag_config.RAG_SEARCH_ALL_DATASETS:
+        return _routerless_retrieval_route()
+
+    route = _merge_routes(analysis, keyword_route(raw_query))
+    if _should_append_rules_route(raw_query, route):
+        route.append("rules")
+    if _should_append_notices_for_rules_query(raw_query, route):
+        route.append("notices")
+    if _should_append_notices_for_schedule_query(raw_query, route):
+        route.append("notices")
+    return route or ["notices"]
+
+
+def _current_operational_notice_terms(query: str, route: List[str]) -> list[str]:
+    """Return title terms for a current operational schedule notice lookup."""
+    if "schedule" not in route or "notices" not in route:
+        return []
+    if not any(term in query for term in CURRENT_OPERATIONAL_TIME_TERMS):
+        return []
+    return [term for term in SCHEDULE_NOTICE_SUPPORT_TERMS if term in query]
 
 
 def _semantic_cache_namespace(major: str, *, allow_wise: bool = False) -> str:
@@ -622,9 +662,10 @@ def _semantic_cache_namespace(major: str, *, allow_wise: bool = False) -> str:
     # A WISE-explicit answer must never be a semantic-cache candidate for the
     # default Seoul/BMC product scope (or vice versa).
     campus_scope = "wise_allowed" if allow_wise else "seoul_bmc"
-    # v2 invalidates answers cached before identity-priority and neighbor-scope
-    # enforcement, which may contain WISE-only parent context.
-    return f"{user_scope}|campus-safety-v2:{campus_scope}"
+    # Invalidate answers cached before title-priority period scope, restricted
+    # audience filtering, contact completeness, and the wider safe parent
+    # window were enforced.
+    return f"{user_scope}|retrieval-v8-source-scope:{campus_scope}"
 
 
 def _should_cache_answer(
@@ -668,6 +709,15 @@ DATASET_REASON_VERSION_MISMATCH = "version_mismatch"
 NOTICE_RECENCY_TERMS = ("장학", "공지", "모집", "발표")
 RECENT_QUERY_TERMS = ("오늘", "최근", "최신", "방금", "올라온", "새로")
 NOTICE_FOCUS_TERMS = ("장학", "학사", "입학", "유학생", "수강", "휴학", "복학", "등록", "졸업")
+RULES_NOTICE_SUPPORT_TERMS = ("수강신청", "재수강", "휴학", "복학", "성적", "졸업", "전과", "복수전공")
+SCHEDULE_NOTICE_SUPPORT_TERMS = (
+    "수강신청", "수강정정", "장바구니", "희망강의", "보강", "등록금", "휴학", "복학", "학적",
+)
+CURRENT_OPERATIONAL_TIME_TERMS = ("이번 학기", "이번학기", "올해", "현재", "오늘", "내일", "이번 달", "이번달")
+EVIDENCE_FALLBACK_STOP_TERMS = {
+    "알려줘", "보여줘", "어떻게", "어떤", "언제", "무엇", "뭐야", "해주세요", "싶은데", "해야해",
+    "대한", "관련", "정보", "문의", "학교", "동국대", "동국대학교",
+}
 ENTRY_YEAR_GUIDE_SOURCE_TYPE = "entry_year_guide_pdf"
 ENTRY_YEAR_GUIDE_TERMS = (
     "학번",
@@ -713,6 +763,9 @@ DEADLINE_NOTICE_HIT_COLUMNS = [
     "major", "entry_year", "source_type", "attachments",
     "doc_id", "position",
     "is_closed", "restaurant", "meal_date",
+    "schedule_start", "schedule_end", "department", "campus_scope",
+    "filename", "relative_dir", "source_file", "document_key", "source_id",
+    "board_code", "article_id", "schedule_id", "staff_id", "course_id", "rule_id",
 ]
 SCHOOL_INFO_TERMS = (
     "동국",
@@ -765,6 +818,12 @@ class SourceChunk(BaseModel):
     recency_score: float | None = None
     final_score: float | None = None
     sort_date: str | None = None
+    source_ref: str | None = None
+
+
+class SuggestedQuestionDetail(BaseModel):
+    question: str
+    source_refs: list[str] = Field(default_factory=list)
 
 
 _SOURCE_SCORE_COLUMNS = {
@@ -809,12 +868,35 @@ class AskResponse(BaseModel):
     answer: str
     citations: str
     route: List[str]
+    resolved_intents: list[str] = Field(default_factory=list)
     sources: List[SourceChunk]
     suggested_questions: list[str] = Field(default_factory=list)
+    suggested_question_details: list[SuggestedQuestionDetail] = Field(default_factory=list)
     grounded: bool | None = None
     grounding_score: float | None = None
     fallback_triggered: bool = False
     fallback_reason: str | None = None
+
+
+def _source_chunk_from_row(row: pd.Series) -> SourceChunk:
+    chunk = SourceChunk(
+        source=_clean_response_str(row.get("dataset")) or "",
+        metadata=_source_metadata(row),
+        snippet=_clean_response_str(row.get("chunk_text")) or "",
+        citation_number=int(row.get("citation_number")),
+        chunk_id=_clean_response_str(row.get("chunk_id")),
+        title=_clean_response_str(row.get("title")),
+        url=_clean_response_str(row.get("url")),
+        published_at=_clean_response_str(row.get("published_at")),
+        vector_score=_clean_response_float(row.get("vector_score")),
+        sparse_score=_clean_response_float(row.get("sparse_score")),
+        hybrid_score=_clean_response_float(row.get("hybrid_score")),
+        recency_score=_clean_response_float(row.get("norm_recency")),
+        final_score=_clean_response_float(row.get("final_score")),
+        sort_date=_clean_response_str(row.get("sort_date")),
+    )
+    chunk.source_ref = source_reference(chunk.model_dump())
+    return chunk
 
 
 class FeedbackRequest(BaseModel):
@@ -918,6 +1000,86 @@ def _build_retrieval_fallback_answer(
     return base_msg
 
 
+def _deduplicate_clarification_fields(fields: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for field in fields:
+        cleaned = str(field or "").strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            result.append(cleaned)
+    return result
+
+
+def _first_turn_clarification_fields(
+    raw_query: str,
+    analysis: QueryAnalysisMeta,
+    history_text: str,
+) -> list[str]:
+    """Return the missing fields that make a first-turn query unsafe to answer.
+
+    The query analyser is allowed to mark a question ambiguous while still
+    producing search queries.  That is useful for retrieval diagnostics, but
+    it must not make the answer endpoint guess the referent.  A small
+    deterministic layer also covers common Korean ellipses that an LLM may
+    classify as a normal schedule/course question (for example ``시험 언제``).
+    Existing conversation history is deliberately exempt: the analyser has
+    already rewritten a follow-up against that context.
+    """
+    if str(history_text or "").strip():
+        return []
+
+    compact = re.sub(r"\s+", "", raw_query).lower()
+    fields: list[str] = []
+    if analysis.result is not None and analysis.result.needs_clarification:
+        if analysis.result.clarification_reason:
+            fields.append(analysis.result.clarification_reason)
+
+    if "시험언제" in compact and not any(term in compact for term in ("중간", "기말", "학기", "모의", "종합")):
+        fields.extend(["학기", "시험 종류(중간/기말)"])
+    if "그강의" in compact or "이강의" in compact:
+        fields.extend(["강의명", "학수번호"])
+    if "졸업가능" in compact or "졸업할수있" in compact:
+        fields.extend(["학번", "학과", "이수 내역"])
+    if "내가받을수있는장학" in compact or "받을장학금" in compact:
+        fields.extend(["학년", "성적", "소득 구간"])
+    if "그거신청" in compact and "학적" in compact:
+        fields.extend(["신청 종류", "대상"])
+    if "거기오늘열" in compact:
+        fields.extend(["시설명", "캠퍼스"])
+    if "오늘거기뭐" in compact:
+        fields.extend(["식당명", "날짜"])
+    if "수업건물" in compact and "가까운식당" in compact:
+        fields.extend(["수업 건물", "식사 시간"])
+    if "지금바로이용" in compact and "가까운" in compact:
+        fields.extend(["현재 위치", "시설 종류"])
+    if "거기들어가" in compact:
+        fields.extend(["생활관명", "캠퍼스"])
+    if "나한테맞는회사" in compact:
+        fields.extend(["희망 직무", "전공"])
+    if "그나라" in compact:
+        fields.extend(["국가", "프로그램"])
+    if "거기담당자" in compact:
+        fields.extend(["문의 업무", "부서"])
+    if "그행사" in compact:
+        fields.extend(["행사명", "날짜"])
+
+    if not fields and analysis.result is not None and analysis.result.needs_clarification:
+        fields.append("확인하려는 대상이나 조건")
+    return _deduplicate_clarification_fields(fields)
+
+
+def _build_clarification_answer(fields: list[str]) -> str:
+    requested = ", ".join(fields)
+    last_character = requested.rstrip()[-1] if requested.strip() else ""
+    has_final_consonant = bool(last_character) and "가" <= last_character <= "힣" and (ord(last_character) - ord("가")) % 28 != 0
+    object_particle = "을" if has_final_consonant else "를"
+    return (
+        "정확한 학교 정보를 확인하려면 몇 가지 정보가 더 필요해요. "
+        f"{requested}{object_particle} 알려주실 수 있나요?"
+    )
+
+
 def _get_current_kst_string() -> str:
     from datetime import timedelta, timezone
 
@@ -952,7 +1114,7 @@ def _is_recent_notice_query(query: str, route: List[str]) -> bool:
 def _is_staff_lookup_query(query: str, route: List[str]) -> bool:
     if "staff" not in route:
         return False
-    return any(term in query for term in ("전화번호", "연락처", "사무실", "내선", "번호"))
+    return any(term in query for term in ("전화번호", "연락처", "사무실", "내선", "번호", "전화", "문의"))
 
 
 def _extract_notice_board_filter(query: str, route: List[str]) -> str | None:
@@ -990,6 +1152,30 @@ def _should_append_rules_route(query: str, route: List[str]) -> bool:
     if "courses" in route and _has_entry_year_guide_intent(query):
         return True
     return False
+
+
+def _should_append_notices_for_rules_query(query: str, route: List[str]) -> bool:
+    """Operational student rules are often published as time-bound notices."""
+    return (
+        "rules" in route
+        and "notices" not in route
+        and any(term in query for term in RULES_NOTICE_SUPPORT_TERMS)
+    )
+
+
+def _should_append_notices_for_schedule_query(query: str, route: List[str]) -> bool:
+    """Search time-bound notices alongside schedule for operational deadlines.
+
+    The schedule corpus is authoritative for broad academic-calendar events,
+    while exact hours, 대상, and exception rules for registration-related
+    events are normally published as notices. Generic calendar questions do
+    not take this companion path, retaining deterministic schedule retrieval.
+    """
+    return (
+        "schedule" in route
+        and "notices" not in route
+        and any(term in query for term in SCHEDULE_NOTICE_SUPPORT_TERMS)
+    )
 
 
 def _is_entry_year_guide_row(row: pd.Series) -> bool:
@@ -1196,6 +1382,48 @@ def _resolve_retrieval_policy(query: str, route: List[str]) -> RetrievalPolicy:
     return RetrievalPolicy(name="default", min_score=MIN_RETRIEVAL_SCORE)
 
 
+def _resolve_notice_retrieval_controls(
+    raw_query: str,
+    semantic_query: str,
+    route: List[str],
+) -> tuple[bool, str | None, RetrievalPolicy]:
+    """Resolve the notice-specific controls shared by both ask paths.
+
+    The retrieval route is currently the full corpus, so query-analysis output
+    can omit words such as "최근" or a board name. Check both the user's
+    original wording and its normalized form before deciding whether to bypass
+    semantic retrieval for a newest-notice lookup.
+    """
+    query_variants = [query for query in (raw_query, semantic_query) if query]
+    recent_notice_query = any(
+        _is_recent_notice_query(query, route) for query in query_variants
+    )
+    notice_board_filter = next(
+        (
+            board
+            for query in query_variants
+            if (board := _extract_notice_board_filter(query, route)) is not None
+        ),
+        None,
+    )
+
+    # Keep existing all-dataset scoring unchanged for ordinary questions. The
+    # dedicated policy is needed only when the newest-notice path is active.
+    retrieval_policy = (
+        _resolve_retrieval_policy(
+            next(
+                query
+                for query in query_variants
+                if _is_recent_notice_query(query, route)
+            ),
+            route,
+        )
+        if recent_notice_query
+        else RetrievalPolicy(name="all_datasets", min_score=MIN_RETRIEVAL_SCORE)
+    )
+    return recent_notice_query, notice_board_filter, retrieval_policy
+
+
 def _extract_notice_focus_terms(query: str) -> List[str]:
     return [term for term in NOTICE_FOCUS_TERMS if term in query]
 
@@ -1239,6 +1467,11 @@ def _apply_date_filter(hits: pd.DataFrame, dataset: str, date_filter: QueryDateF
     if date_filter is None or hits.empty or dataset not in ["notices", "schedule", "rules", "meals"]:
         return hits, False
 
+    if dataset == "schedule":
+        filtered, was_eliminated = _filter_schedule_date_range(hits, date_filter)
+        filtered.drop(columns=["_schedule_start_ts", "_schedule_end_ts"], inplace=True, errors="ignore")
+        return filtered, was_eliminated
+
     date_column = "published_at"
     if dataset == "notices" and getattr(date_filter, "kind", "published") == "deadline":
         date_column = "apply_deadline"
@@ -1270,6 +1503,46 @@ def _apply_date_filter(hits: pd.DataFrame, dataset: str, date_filter: QueryDateF
 
     filtered.drop(columns=["_temp_date"], inplace=True, errors="ignore")
     return filtered, was_eliminated
+
+
+def _apply_schedule_calendar_alignment(hits: pd.DataFrame, query: str) -> pd.DataFrame:
+    """Use schedule dates to honor an explicit academic year/semester."""
+    if hits.empty or "schedule_start" not in hits.columns:
+        return hits
+
+    year_match = re.search(r"\b(20\d{2})\s*(?:학년도|년도|년)?", query)
+    semester_match = re.search(r"([12])\s*학기", query)
+    if year_match is None and semester_match is None:
+        return hits
+
+    aligned = hits.copy()
+    starts = pd.to_datetime(aligned["schedule_start"], errors="coerce")
+    adjustment = pd.Series(0.0, index=aligned.index)
+    if year_match is not None:
+        requested_year = int(year_match.group(1))
+        has_date = starts.notna()
+        adjustment += pd.Series(
+            np.where(~has_date, 0.0, np.where(starts.dt.year == requested_year, 0.05, -0.05)),
+            index=aligned.index,
+        )
+    if semester_match is not None:
+        requested_semester = int(semester_match.group(1))
+        is_requested_semester = (
+            starts.dt.month.between(1, 6)
+            if requested_semester == 1
+            else starts.dt.month.between(7, 12)
+        )
+        has_date = starts.notna()
+        adjustment += pd.Series(
+            np.where(~has_date, 0.0, np.where(is_requested_semester, 0.12, -0.12)),
+            index=aligned.index,
+        )
+
+    aligned["hybrid_score"] = (
+        pd.to_numeric(aligned.get("hybrid_score"), errors="coerce").fillna(0.0)
+        + adjustment
+    )
+    return aligned.sort_values("hybrid_score", ascending=False, kind="stable").reset_index(drop=True)
 
 
 def _matches_where_filter(row: pd.Series, where_filter: Dict | None) -> bool:
@@ -1308,6 +1581,7 @@ def _latest_notice_hits(
     top_k: int,
     where_filter: Dict | None = None,
     date_filter: QueryDateFilter | None = None,
+    title_terms: List[str] | None = None,
 ) -> pd.DataFrame:
     """최신 공지 질의는 유사도 검색 없이 게시일 역순으로 직접 조회한다.
 
@@ -1323,6 +1597,38 @@ def _latest_notice_hits(
         eligible = eligible[eligible.apply(lambda row: _matches_where_filter(row, where_filter), axis=1)].copy()
     if eligible.empty:
         return eligible
+
+    if title_terms:
+        normalized_terms = [re.sub(r"\s+", "", str(term).lower()) for term in title_terms if str(term).strip()]
+        if normalized_terms:
+            title_series = (
+                eligible.get("title", pd.Series("", index=eligible.index))
+                .fillna("")
+                .astype(str)
+                .str.replace(r"\s+", "", regex=True)
+                .str.lower()
+            )
+            eligible = eligible[title_series.apply(lambda title: any(term in title for term in normalized_terms))].copy()
+            if eligible.empty:
+                return eligible
+            # Every notice chunk repeats its title prefix.  For a detailed
+            # operational question, prefer the first chunk whose *body* has
+            # the requested term; parent-context expansion can then include
+            # the nearby date/time rather than stopping at the title chunk.
+            def body_term_match(value: object) -> int:
+                text = str(value or "")
+                if text.startswith("[") and "]\n\n" in text:
+                    text = text.split("]\n\n", 1)[1]
+                compact_body = re.sub(r"\s+", "", text).lower()
+                return int(any(term in compact_body for term in normalized_terms))
+
+            eligible["_title_term_body_match"] = eligible.get(
+                "chunk_text", pd.Series("", index=eligible.index)
+            ).apply(body_term_match)
+        else:
+            eligible["_title_term_body_match"] = 0
+    else:
+        eligible["_title_term_body_match"] = 0
 
     eligible["_published_ts"] = pd.to_datetime(eligible["published_at"], errors="coerce")
     eligible = eligible[eligible["_published_ts"].notna()].copy()
@@ -1360,8 +1666,8 @@ def _latest_notice_hits(
 
     eligible["_notice_key"] = eligible.apply(notice_key, axis=1)
     eligible.sort_values(
-        by=["_published_ts", "_notice_order", "_position"],
-        ascending=[False, False, True],
+        by=["_published_ts", "_notice_order", "_title_term_body_match", "_position"],
+        ascending=[False, False, False, True],
         kind="stable",
         inplace=True,
     )
@@ -1387,10 +1693,64 @@ def _latest_notice_hits(
     eligible["vector_score"] = 0.0
     eligible["sparse_score"] = 0.0
     eligible.drop(
-        columns=["_published_ts", "_notice_order", "_position", "_notice_key"],
+        columns=["_published_ts", "_notice_order", "_title_term_body_match", "_position", "_notice_key"],
         inplace=True,
         errors="ignore",
     )
+    return eligible.reset_index(drop=True)
+
+
+def _filter_schedule_date_range(
+    schedule_df: pd.DataFrame,
+    date_filter: QueryDateFilter,
+) -> tuple[pd.DataFrame, bool]:
+    """Keep schedule rows whose effective period overlaps the requested range."""
+    if schedule_df.empty or "schedule_start" not in schedule_df.columns:
+        return schedule_df.iloc[:0].copy(), not schedule_df.empty
+
+    filtered = schedule_df.copy()
+    filtered["_schedule_start_ts"] = pd.to_datetime(filtered["schedule_start"], errors="coerce")
+    if "schedule_end" in filtered.columns:
+        filtered["_schedule_end_ts"] = pd.to_datetime(filtered["schedule_end"], errors="coerce")
+    else:
+        filtered["_schedule_end_ts"] = pd.NaT
+    filtered["_schedule_end_ts"] = filtered["_schedule_end_ts"].fillna(filtered["_schedule_start_ts"])
+
+    requested_start = pd.Timestamp(date_filter.start)
+    requested_end = pd.Timestamp(date_filter.end)
+    overlaps = (
+        filtered["_schedule_start_ts"].notna()
+        & (filtered["_schedule_start_ts"] <= requested_end)
+        & (filtered["_schedule_end_ts"] >= requested_start)
+    )
+    in_range = filtered[overlaps].copy()
+    return in_range, len(schedule_df) > 0 and in_range.empty
+
+
+def _schedule_date_hits(
+    *,
+    chunks_df: pd.DataFrame,
+    top_k: int,
+    date_filter: QueryDateFilter,
+) -> pd.DataFrame:
+    """Return a chronological schedule list before semantic top-k truncation."""
+    eligible, _ = _filter_schedule_date_range(chunks_df, date_filter)
+    if eligible.empty:
+        return eligible.drop(columns=["_schedule_start_ts", "_schedule_end_ts"], errors="ignore")
+
+    eligible.sort_values(
+        by=["_schedule_start_ts", "_schedule_end_ts"],
+        ascending=[True, True],
+        kind="stable",
+        inplace=True,
+    )
+    if "chunk_id" in eligible.columns:
+        eligible.drop_duplicates(subset=["chunk_id"], keep="first", inplace=True)
+    eligible = eligible.head(top_k).copy()
+    eligible["hybrid_score"] = 1.0
+    eligible["vector_score"] = 0.0
+    eligible["sparse_score"] = 0.0
+    eligible.drop(columns=["_schedule_start_ts", "_schedule_end_ts"], inplace=True, errors="ignore")
     return eligible.reset_index(drop=True)
 
 
@@ -1526,7 +1886,11 @@ def _expand_chunk_with_neighbors(row: pd.Series) -> str:
         if len(siblings) <= 1:
             return chunk_text
         positions = siblings["position"].astype(float).astype(int)
-        window = siblings[positions.isin([pos - 1, pos, pos + 1])].copy()
+        # Official tables often split a label, a category row, and its numeric
+        # threshold across three consecutive chunks. Two siblings on either
+        # side recover that value while the downstream context limit still
+        # bounds total prompt size.
+        window = siblings[positions.between(pos - 2, pos + 2)].copy()
         allow_wise_value = row.get("campus_allow_wise", False)
         allow_wise = allow_wise_value is True or str(allow_wise_value).strip().lower() in {"1", "true", "yes"}
         # Parent expansion reads from the unfiltered dataset cache, so every
@@ -1671,6 +2035,7 @@ async def _retrieve_frames(
     entry_year: int | None,
     request_id: str,
     recent_notice_query: bool = False,
+    current_operational_notice_terms: List[str] | None = None,
     allow_wise: bool = False,
 ) -> tuple[List[pd.DataFrame], bool, List[str]]:
     frames: List[pd.DataFrame] = []
@@ -1704,14 +2069,21 @@ async def _retrieve_frames(
         dataset_top_k = DEFAULT_TOP_K * 2
         if dataset == "meals":
             dataset_top_k = max(dataset_top_k, 40)
-        if dataset == "notices" and recent_notice_query and getattr(date_filter, "kind", "published") != "deadline":
+        if (
+            dataset == "notices"
+            and (recent_notice_query or current_operational_notice_terms)
+            and getattr(date_filter, "kind", "published") != "deadline"
+        ):
             hits = await run_in_threadpool(
                 functools.partial(
                     _latest_notice_hits,
                     chunks_df=chunks_df,
                     top_k=dataset_top_k,
                     where_filter=final_filter,
-                    date_filter=date_filter,
+                    # "내일 수강신청"의 내일은 공지 게시일이 아니라 행사 시점이다.
+                    # 운영성 조회는 최신 제목 일치 공지를 먼저 고른다.
+                    date_filter=None if current_operational_notice_terms else date_filter,
+                    title_terms=current_operational_notice_terms,
                 )
             )
             eliminated = (
@@ -1719,6 +2091,16 @@ async def _retrieve_frames(
                 and date_filter is not None
                 and getattr(date_filter, "label", None) != "recent"
             )
+        elif dataset == "schedule" and date_filter is not None:
+            hits = await run_in_threadpool(
+                functools.partial(
+                    _schedule_date_hits,
+                    chunks_df=chunks_df,
+                    top_k=dataset_top_k,
+                    date_filter=date_filter,
+                )
+            )
+            eliminated = hits.empty
         elif dataset == "notices" and date_filter is not None and getattr(date_filter, "kind", "published") == "deadline":
             search_func = functools.partial(
                 _deadline_filter_rank_notices,
@@ -1748,6 +2130,8 @@ async def _retrieve_frames(
             )
             hits = await run_in_threadpool(search_func)
             hits, eliminated = _apply_date_filter(hits, dataset, date_filter)
+            if dataset == "schedule":
+                hits = _apply_schedule_calendar_alignment(hits, query)
         hits, campus_blocked = apply_campus_safety_boundary(hits, allow_wise=allow_wise)
         if campus_blocked:
             _log_event(
@@ -1787,6 +2171,7 @@ async def _retrieve_frames_for_queries(
     entry_year: int | None,
     request_id: str,
     recent_notice_query: bool = False,
+    current_operational_notice_terms: List[str] | None = None,
     allow_wise: bool = False,
 ) -> tuple[List[pd.DataFrame], bool, List[str]]:
     all_frames: List[pd.DataFrame] = []
@@ -1803,6 +2188,7 @@ async def _retrieve_frames_for_queries(
             entry_year=entry_year,
             request_id=request_id,
             recent_notice_query=recent_notice_query,
+            current_operational_notice_terms=current_operational_notice_terms,
             allow_wise=allow_wise,
         )
         for frame in frames:
@@ -1815,6 +2201,69 @@ async def _retrieve_frames_for_queries(
         unavailable_datasets.extend(unavailable)
 
     return all_frames, date_filter_eliminated_any, list(dict.fromkeys(unavailable_datasets))
+
+
+def _staff_enrichment_queries(question: str, frames: List[pd.DataFrame]) -> list[str]:
+    """Derive official department contact lookups from first-hop evidence."""
+    if not _is_staff_lookup_query(question, SEARCHABLE_DATASETS):
+        return []
+
+    departments: list[str] = []
+    for frame in frames:
+        if frame.empty or "department" not in frame.columns:
+            continue
+        ranked = frame
+        if "hybrid_score" in frame.columns:
+            ranked = frame.assign(
+                _department_rank=pd.to_numeric(frame["hybrid_score"], errors="coerce").fillna(-1.0)
+            ).sort_values("_department_rank", ascending=False, kind="stable")
+        for raw in ranked["department"].head(5).tolist():
+            if not isinstance(raw, str):
+                continue
+            for value in re.split(r"\s*(?:/|,|·|;|\|)\s*", raw):
+                cleaned = re.sub(r"\s+", " ", value).strip(" -()")
+                if not (2 <= len(cleaned) <= 30):
+                    continue
+                if cleaned in {"각 학과별", "각 학과", "해당 학과", "관련 부서"}:
+                    continue
+                if cleaned not in departments:
+                    departments.append(cleaned)
+                if len(departments) >= 4:
+                    return [f"{department} 연락처" for department in departments]
+    return [f"{department} 연락처" for department in departments]
+
+
+async def _enrich_staff_lookup_frames(
+    *,
+    question: str,
+    frames: List[pd.DataFrame],
+    final_where_filter: Dict,
+    entry_year: int | None,
+    request_id: str,
+    allow_wise: bool,
+) -> tuple[List[pd.DataFrame], List[str]]:
+    queries = _staff_enrichment_queries(question, frames)
+    if not queries:
+        return frames, []
+    staff_frames, _, unavailable = await _retrieve_frames_for_queries(
+        route=["staff"],
+        queries=queries,
+        final_where_filter=final_where_filter,
+        notice_board_filter=None,
+        date_filter=None,
+        entry_year=entry_year,
+        request_id=request_id,
+        recent_notice_query=False,
+        allow_wise=allow_wise,
+    )
+    _log_event(
+        logging.INFO,
+        "staff_lookup_enriched",
+        request_id=request_id,
+        derived_query_count=len(queries),
+        added_frame_count=len(staff_frames),
+    )
+    return [*frames, *staff_frames], unavailable
 
 
 def _coalesce_series(series: pd.Series):
@@ -1868,7 +2317,7 @@ def _build_balanced_shortlist(
     query result contributes reciprocal-rank evidence inside its own dataset; a fixed quota
     and round-robin ordering keep one corpus from consuming the whole OpenAI shortlist.
     """
-    per_dataset = max(1, min(int(per_dataset), 5))
+    per_dataset = max(1, min(int(per_dataset), 10))
     max_candidates = max(1, min(int(max_candidates), 30))
     ranked_frames: list[pd.DataFrame] = []
     for frame_order, frame in enumerate(frames):
@@ -1880,6 +2329,10 @@ def _build_balanced_shortlist(
             ranked.sort_values("_numeric_hybrid", ascending=False, kind="stable", inplace=True)
         else:
             ranked["_numeric_hybrid"] = -1.0
+        if "sparse_score" in ranked.columns:
+            ranked["_numeric_sparse"] = pd.to_numeric(ranked["sparse_score"], errors="coerce").fillna(0.0)
+        else:
+            ranked["_numeric_sparse"] = 0.0
         ranked["_retrieval_rank"] = range(1, len(ranked) + 1)
         ranked["_rrf_contribution"] = 1.0 / (60.0 + ranked["_retrieval_rank"])
         ranked["_frame_order"] = frame_order
@@ -1905,6 +2358,11 @@ def _build_balanced_shortlist(
             kind="stable",
         ).iloc[0].copy()
         best["retrieval_fusion_score"] = float(group["_rrf_contribution"].sum())
+        # The same chunk can arrive through multiple query variants. Preserve
+        # its strongest exact-word signal even when another variant supplied
+        # the row chosen for metadata.
+        best["sparse_score"] = float(group["_numeric_sparse"].max())
+        best["_numeric_sparse"] = float(group["_numeric_sparse"].max())
         matched_queries: list[str] = []
         if "matched_query" in group.columns:
             for value in group["matched_query"].tolist():
@@ -1918,11 +2376,35 @@ def _build_balanced_shortlist(
     selected: list[pd.DataFrame] = []
     dataset_order = {name: index for index, name in enumerate(SEARCHABLE_DATASETS)}
     for dataset, group in fused.groupby("dataset", sort=False):
-        local = group.sort_values(
+        ranked_local = group.sort_values(
             ["retrieval_fusion_score", "_numeric_hybrid"],
             ascending=[False, False],
             kind="stable",
-        ).head(max(1, per_dataset)).copy()
+        )
+        selected_indices: list[int] = []
+        if not ranked_local.empty:
+            selected_indices.append(int(ranked_local.index[0]))
+
+        # Keep the strongest exact-word candidate in every corpus alongside
+        # the fusion winner. This prevents a semantically related result from
+        # consuming all three slots when an exact title/date match exists.
+        lexical_ranked = group[group["_numeric_sparse"] > 0].sort_values(
+            ["_numeric_sparse", "retrieval_fusion_score", "_numeric_hybrid"],
+            ascending=[False, False, False],
+            kind="stable",
+        )
+        if not lexical_ranked.empty:
+            lexical_index = int(lexical_ranked.index[0])
+            if lexical_index not in selected_indices:
+                selected_indices.append(lexical_index)
+
+        for index in ranked_local.index:
+            numeric_index = int(index)
+            if numeric_index not in selected_indices:
+                selected_indices.append(numeric_index)
+            if len(selected_indices) >= per_dataset:
+                break
+        local = group.loc[selected_indices[:per_dataset]].copy()
         local["dataset_rank"] = range(1, len(local) + 1)
         local["_dataset_order"] = dataset_order.get(str(dataset), len(dataset_order))
         selected.append(local)
@@ -1939,6 +2421,7 @@ def _build_balanced_shortlist(
     return shortlist.drop(
         columns=[
             "_numeric_hybrid",
+            "_numeric_sparse",
             "_retrieval_rank",
             "_rrf_contribution",
             "_frame_order",
@@ -1948,6 +2431,246 @@ def _build_balanced_shortlist(
         ],
         errors="ignore",
     )
+
+
+_INTER_INSTITUTION_QUERY_RE = re.compile(
+    r"(?:학점\s*교류|교류\s*(?:수학|대학)|타\s*대학|다른\s*대학|교환\s*학생|교환학생)"
+)
+_EXTERNAL_INSTITUTION_TITLE_RE = re.compile(
+    r"(?P<name>[가-힣A-Za-z]{2,20}?)(?:대학교|대)(?!학)\s*(?:수학|학점\s*교류|교류)"
+)
+_DONGGUK_INSTITUTION_NAMES = {"동국", "동국서울", "동국WISE", "동국wise"}
+_ENTRY_YEAR_SCOPE_QUERY_RE = re.compile(
+    r"(?:\d{2,4}\s*학번|입학\s*년도|졸업\s*(?:요건|기준|학점)|이수\s*(?:기준|요건)|교과\s*과정)"
+)
+_GRADUATE_SCOPE_RE = re.compile(r"(?:대학원|대학원생|석사|박사)\s*")
+_FOREIGN_STUDENT_AUDIENCE_RE = re.compile(r"(?:외국인|유학생|국제\s*학생|교환\s*학생)")
+_CONTACT_QUERY_RE = re.compile(r"(?:전화(?:번호)?|연락처|문의처|대표번호)")
+_PHONE_NUMBER_RE = re.compile(r"(?<!\d)0\d{1,2}\)?[-\s]?\d{3,4}[-\s]?\d{4}(?!\d)")
+_LITERAL_SCOPE_ANCHORS = (
+    "장바구니",
+    "수강정정",
+    "수강취소",
+    "계절학기",
+    "학점교류",
+    "졸업유예",
+    "조기졸업",
+    "추천채용",
+    "중앙동아리",
+)
+
+
+def _query_academic_period(question: str) -> tuple[int | None, str | None]:
+    year_match = re.search(r"\b(20\d{2})(?:\s*학년도|\s*년도|\s*년)?", question)
+    compact_semester = re.search(r"\b20\d{2}\s*[-./]\s*([12])\b", question)
+    semester_match = compact_semester or re.search(r"([12])\s*학기", question)
+    return (
+        int(year_match.group(1)) if year_match else None,
+        semester_match.group(1) if semester_match else None,
+    )
+
+
+def _candidate_academic_period(row: pd.Series) -> tuple[set[int], set[str]]:
+    """Extract declared applicability, not merely a document publication year."""
+    title = _clean_response_str(row.get("title")) or ""
+    text_head = (_clean_response_str(row.get("chunk_text")) or "")[:320]
+
+    def declared_period(text: str) -> tuple[set[int], set[str]]:
+        years = {int(value) for value in re.findall(r"\b(20\d{2})\s*(?:학년도|학번|년)", text)}
+        semesters = set(re.findall(r"([12])\s*학기", text))
+        if re.search(r"(?:여름|겨울)\s*계절학기|계절\s*학기", text):
+            semesters.add("seasonal")
+        return years, semesters
+
+    title_years, title_semesters = declared_period(title)
+    body_years, body_semesters = declared_period(text_head)
+    # The title is the document's declared applicability. Years mentioned in
+    # body examples or comparison tables must not broaden a title such as
+    # "2024학번 ..." into evidence for a 2022-cohort question.
+    years = title_years or body_years
+    semesters = title_semesters or body_semesters
+
+    # Schedule rows have an explicit effective date even when their title omits
+    # the year/semester. Publication dates are intentionally not used here:
+    # an older regulation can remain effective unless it declares an old scope.
+    if str(row.get("dataset") or "") == "schedule":
+        start = pd.to_datetime(row.get("schedule_start"), errors="coerce")
+        if pd.notna(start):
+            if not years:
+                years.add(int(start.year))
+            if not semesters:
+                semesters.add("1" if int(start.month) <= 6 else "2")
+    return years, semesters
+
+
+def _period_bound_response_instruction(question: str, selected: pd.DataFrame) -> str | None:
+    """Prevent a historical notice from being phrased as the current procedure."""
+    requested_year, requested_semester = _query_academic_period(question)
+    if selected.empty or requested_year is not None or requested_semester is not None:
+        return None
+
+    current_year = kst_now().year
+    historical_sources: list[str] = []
+    for _, row in selected.iterrows():
+        if str(row.get("dataset") or "") != "notices":
+            continue
+        years, semesters = _candidate_academic_period(row)
+        if not years or max(years) >= current_year:
+            continue
+        citation = int(row.get("citation_number") or len(historical_sources) + 1)
+        scope = ", ".join(f"{year}학년도" for year in sorted(years))
+        if "seasonal" in semesters:
+            scope += " 계절학기"
+        historical_sources.append(f"문서{citation}({scope})")
+
+    if not historical_sources:
+        return None
+    return (
+        "기간 안전 제약: 사용자는 적용 학기를 지정하지 않았고, "
+        f"{', '.join(historical_sources)}는 현재 연도보다 이전 기간의 안내입니다. "
+        "답변 첫 문장에서 이 자료의 적용 기간을 먼저 밝히고, 현재 학기에도 같은 절차가 적용되는지는 "
+        "제공된 자료만으로 확인되지 않는다고 명시하세요. 이후 내용을 설명할 때는 반드시 '해당 기간에는'처럼 "
+        "과거 자료의 범위로 한정하고, 현재 사용자가 그대로 따라야 한다는 명령형 절차로 쓰지 마세요."
+    )
+
+
+def _external_institutions(row: pd.Series) -> set[str]:
+    title = _clean_response_str(row.get("title")) or ""
+    names = {match.group("name") for match in _EXTERNAL_INSTITUTION_TITLE_RE.finditer(title)}
+    return {name for name in names if name not in _DONGGUK_INSTITUTION_NAMES and not name.startswith("동국")}
+
+
+def _candidate_scope_text(row: pd.Series) -> str:
+    title = _clean_response_str(row.get("title")) or ""
+    text = _clean_response_str(row.get("chunk_text")) or ""
+    return f"{title}\n{text[:1600]}".replace(" ", "")
+
+
+def _candidate_restricted_audiences(row: pd.Series) -> set[str]:
+    """Return audiences explicitly declared by the source title.
+
+    Titles are used deliberately: a broad document may mention foreign
+    students in one table row without being foreign-student-only evidence.
+    """
+    title = _clean_response_str(row.get("title")) or ""
+    audiences: set[str] = set()
+    if _FOREIGN_STUDENT_AUDIENCE_RE.search(title):
+        audiences.add("foreign_student")
+    return audiences
+
+
+def _query_audiences(question: str) -> set[str]:
+    audiences: set[str] = set()
+    if _FOREIGN_STUDENT_AUDIENCE_RE.search(question):
+        audiences.add("foreign_student")
+    return audiences
+
+
+def _candidate_has_phone_number(row: pd.Series) -> bool:
+    return bool(_PHONE_NUMBER_RE.search(_candidate_scope_text(row)))
+
+
+def _refine_final_candidate_scope(question: str, shortlist: pd.DataFrame) -> pd.DataFrame:
+    """Remove deterministically wrong period/institution scope before selection.
+
+    Undated/timeless evidence is retained. A conflicting declared year or
+    semester is removed only when at least one candidate explicitly matches the
+    requested period, so sparse corpora do not become empty merely because the
+    newest known source is older.
+    """
+    if shortlist.empty:
+        return shortlist
+    refined = shortlist.copy()
+    compact_question = question.replace(" ", "")
+    requested_anchors = [
+        value for value in _LITERAL_SCOPE_ANCHORS if value in compact_question
+    ]
+
+    # Entry-year guides answer cohort-specific graduation/curriculum questions,
+    # not a generic current-semester registration question. A guide that is
+    # the only exact source for a narrow operation named by the user remains
+    # eligible; its cohort scope must then be explained in the answer.
+    if not _ENTRY_YEAR_SCOPE_QUERY_RE.search(question):
+        entry_year_mask = refined.apply(
+            lambda row: (
+                bool(re.search(r"\b20\d{2}\s*학번", _clean_response_str(row.get("title")) or ""))
+                and not any(anchor in _candidate_scope_text(row) for anchor in requested_anchors)
+            ),
+            axis=1,
+        )
+        refined = refined[~entry_year_mask].copy()
+
+    # A named partner-university exchange notice is not evidence for ordinary
+    # Dongguk registration unless the user explicitly asks about inter-school
+    # study/credit exchange.
+    if not _INTER_INSTITUTION_QUERY_RE.search(question):
+        external_mask = refined.apply(lambda row: bool(_external_institutions(row)), axis=1)
+        refined = refined[~external_mask].copy()
+
+    # A source whose title declares a restricted audience cannot answer an
+    # unqualified question for the default student audience. If no general
+    # source exists, returning no_results is safer than projecting the special
+    # audience's dates or requirements onto everyone.
+    requested_audiences = _query_audiences(question)
+    audience_mismatch = refined.apply(
+        lambda row: bool(_candidate_restricted_audiences(row) - requested_audiences),
+        axis=1,
+    )
+    refined = refined[~audience_mismatch].copy()
+
+    # When a user explicitly asks to call or contact a department, a staff row
+    # without a number is incomplete evidence. Keep non-staff context, but
+    # remove numberless staff rows whenever a phone-bearing staff candidate is
+    # available in the same shortlist.
+    if _CONTACT_QUERY_RE.search(question) and not refined.empty:
+        staff_mask = (
+            refined["dataset"].astype(str).eq("staff")
+            if "dataset" in refined.columns
+            else pd.Series(False, index=refined.index)
+        )
+        phone_mask = refined.apply(_candidate_has_phone_number, axis=1)
+        if (staff_mask & phone_mask).any():
+            refined = refined[~staff_mask | phone_mask].copy()
+
+    # The default audience is an enrolled undergraduate. Graduate-only
+    # schedules must not answer an unqualified student question when other
+    # candidate evidence exists.
+    if not _GRADUATE_SCOPE_RE.search(question):
+        graduate_mask = refined.apply(
+            lambda row: bool(_GRADUATE_SCOPE_RE.search(_candidate_scope_text(row))),
+            axis=1,
+        )
+        if (~graduate_mask).any():
+            refined = refined[~graduate_mask].copy()
+
+    # Preserve exact operational scope. If the user names a narrow feature
+    # and at least one document names it too, generic parent-topic documents
+    # cannot replace that evidence merely because their date is newer.
+    for anchor in requested_anchors:
+        anchor_mask = refined.apply(lambda row: anchor in _candidate_scope_text(row), axis=1)
+        if anchor_mask.any():
+            refined = refined[anchor_mask].copy()
+
+    requested_year, requested_semester = _query_academic_period(question)
+    periods = {index: _candidate_academic_period(row) for index, row in refined.iterrows()}
+    if requested_year is not None and any(requested_year in years for years, _ in periods.values()):
+        year_keep = pd.Series(
+            [not periods[index][0] or requested_year in periods[index][0] for index in refined.index],
+            index=refined.index,
+        )
+        refined = refined[year_keep].copy()
+    if requested_semester is not None:
+        periods = {index: _candidate_academic_period(row) for index, row in refined.iterrows()}
+        if any(requested_semester in semesters for _, semesters in periods.values()):
+            semester_keep = pd.Series(
+                [
+                    not periods[index][1] or requested_semester in periods[index][1]
+                    for index in refined.index
+                ],
+                index=refined.index,
+            )
+            refined = refined[semester_keep].copy()
+    return refined.reset_index(drop=True)
 
 
 def _normalize_evidence_groups(
@@ -1990,6 +2713,56 @@ def _materialize_evidence_groups(shortlist: pd.DataFrame, groups: list[list[str]
     return selected
 
 
+def _fallback_query_terms(question: str) -> list[str]:
+    """Extract conservative content terms for a safe selector fallback."""
+    terms: list[str] = []
+    for raw_term in re.findall(r"[가-힣A-Za-z]{2,}", question.lower()):
+        term = raw_term
+        for particle in ("으로", "에서", "에게", "에는", "은", "는", "을", "를", "이", "가", "의", "에", "와", "과", "도", "만", "로"):
+            if term.endswith(particle) and len(term) > len(particle) + 1:
+                term = term[: -len(particle)]
+                break
+        if term and term not in EVIDENCE_FALLBACK_STOP_TERMS and term not in terms:
+            terms.append(term)
+    return terms
+
+
+def _deterministic_evidence_fallback(question: str, shortlist: pd.DataFrame) -> pd.DataFrame:
+    """Retain only lexically supported evidence when selection is unsafe."""
+    if shortlist.empty or "candidate_id" not in shortlist.columns:
+        return shortlist
+
+    terms = _fallback_query_terms(question)
+    if not terms:
+        return shortlist.iloc[:0].copy()
+
+    candidate_text = shortlist.apply(
+        lambda row: re.sub(
+            r"\s+",
+            "",
+            " ".join(
+                str(row.get(column) or "")
+                for column in ("title", "chunk_text", "topics", "category")
+            ).lower(),
+        ),
+        axis=1,
+    )
+    matched = shortlist[candidate_text.apply(lambda text: any(term in text for term in terms))].copy()
+    if matched.empty:
+        return shortlist.iloc[:0].copy()
+
+    if "dataset_rank" in matched.columns:
+        matched.sort_values("dataset_rank", ascending=True, kind="stable", inplace=True)
+        fallback_ids = matched.groupby("dataset", sort=False)["candidate_id"].first().astype(str).tolist()
+    else:
+        fallback_ids = [str(matched.iloc[0]["candidate_id"])]
+    if not fallback_ids:
+        return shortlist.iloc[:0].copy()
+    fallback = _materialize_evidence_groups(shortlist, [fallback_ids])
+    fallback["selector_fallback"] = 1
+    return fallback
+
+
 async def _select_evidence_for_answer(
     question: str,
     shortlist: pd.DataFrame,
@@ -1998,31 +2771,111 @@ async def _select_evidence_for_answer(
     """Return selected evidence and whether OpenAI selection fell back deterministically."""
     if shortlist.empty:
         return shortlist, False
+    shortlist = _refine_final_candidate_scope(question, shortlist)
+    if shortlist.empty:
+        return shortlist, False
     candidates = [
         {
             "candidate_id": row.get("candidate_id"),
             "dataset": row.get("dataset"),
             "title": _clean_response_str(row.get("title")) or "",
             "published_at": _clean_response_str(row.get("published_at")) or "",
+            "schedule_start": _clean_response_str(row.get("schedule_start")) or "",
+            "campus_scope": _clean_response_str(row.get("campus_scope")) or "",
+            "source_type": _clean_response_str(row.get("source_type")) or "",
             "text": _expand_chunk_with_neighbors(row),
         }
         for _, row in shortlist.iterrows()
     ]
     decision = await select_evidence_groups(question, candidates, usage_collector)
     if decision is None:
-        # 점수 분포를 직접 비교할 수 없으므로 selector 장애 시에도 각 데이터셋의
-        # 1위 후보를 하나씩 유지하고, 하나의 답변 컨텍스트로만 전달한다.
-        fallback_ids = (
-            shortlist[shortlist["dataset_rank"] == 1]["candidate_id"].astype(str).tolist()
-        )
-        fallback = _materialize_evidence_groups(shortlist, [fallback_ids])
-        fallback["selector_fallback"] = 1
-        return fallback, True
+        return _deterministic_evidence_fallback(question, shortlist), True
 
     groups = _normalize_evidence_groups(decision, set(shortlist["candidate_id"].astype(str)))
+    if not groups:
+        # A syntactically valid empty decision can still be a false negative.
+        # Retrieval and deterministic scope checks already passed, so preserve
+        # bounded, cited evidence instead of converting it into no-results.
+        return _deterministic_evidence_fallback(question, shortlist), True
     selected = _materialize_evidence_groups(shortlist, groups)
     selected["selector_fallback"] = 0
     return selected, False
+
+
+def _select_latest_notice_evidence(shortlist: pd.DataFrame) -> pd.DataFrame:
+    """Keep the newest notice rows in date order for a latest-notices query.
+
+    A latest-notice request is a chronological list request, not a relevance
+    comparison. Passing it to the general LLM selector can silently omit the
+    newest row, so retain the first three board-filtered notice candidates
+    deterministically.
+    """
+    if shortlist.empty or "dataset" not in shortlist.columns:
+        return shortlist
+
+    notices = shortlist[shortlist["dataset"] == "notices"].copy()
+    if notices.empty or "candidate_id" not in notices.columns:
+        return notices
+
+    if "published_at" in notices.columns:
+        notices["_published_ts"] = pd.to_datetime(notices["published_at"], errors="coerce")
+        notices.sort_values("_published_ts", ascending=False, kind="stable", inplace=True)
+    notices["_notice_key"] = notices["candidate_id"].astype(str)
+    for column in ("notice_id", "doc_id", "url"):
+        if column not in notices.columns:
+            continue
+        values = notices[column].fillna("").astype(str).str.strip()
+        valid = values.ne("")
+        notices.loc[valid, "_notice_key"] = f"{column}:" + values[valid]
+        # Use the first stable document identity that is available.
+        if valid.any():
+            break
+    notices.drop_duplicates(subset=["_notice_key"], keep="first", inplace=True)
+    notices = notices.head(3)
+    selected = _materialize_evidence_groups(
+        shortlist,
+        [notices["candidate_id"].astype(str).tolist()],
+    )
+    selected["selector_fallback"] = 0
+    return selected
+
+
+def _select_date_bound_schedule_evidence(shortlist: pd.DataFrame) -> pd.DataFrame:
+    """Keep every chronological schedule item for an explicit date-range query."""
+    if shortlist.empty or "dataset" not in shortlist.columns:
+        return shortlist
+
+    schedules = shortlist[shortlist["dataset"] == "schedule"].copy()
+    if schedules.empty or "candidate_id" not in schedules.columns:
+        return schedules
+
+    if "schedule_start" in schedules.columns:
+        schedules["_schedule_start_ts"] = pd.to_datetime(schedules["schedule_start"], errors="coerce")
+        schedules.sort_values("_schedule_start_ts", ascending=True, kind="stable", inplace=True)
+    if "chunk_id" in schedules.columns:
+        schedules.drop_duplicates(subset=["chunk_id"], keep="first", inplace=True)
+    selected = _materialize_evidence_groups(
+        shortlist,
+        [schedules["candidate_id"].astype(str).tolist()],
+    )
+    selected["selector_fallback"] = 0
+    return selected
+
+
+async def _select_answer_evidence(
+    question: str,
+    shortlist: pd.DataFrame,
+    usage_collector: list[dict],
+    *,
+    recent_notice_query: bool,
+    date_bound_schedule_query: bool = False,
+) -> tuple[pd.DataFrame, bool]:
+    """Select answer evidence while preserving chronological latest notices."""
+    if recent_notice_query:
+        return _select_latest_notice_evidence(shortlist), False
+    if date_bound_schedule_query:
+        return _select_date_bound_schedule_evidence(shortlist), False
+    return await _select_evidence_for_answer(question, shortlist, usage_collector)
 
 
 def _multiple_evidence_response_instructions(group_count: int) -> str | None:
@@ -2402,12 +3255,12 @@ def _build_notices_ingestion_status(session) -> dict:
     )
     raw_count = (
         session.query(SourceDocument)
-        .filter(SourceDocument.dataset == "notices", SourceDocument.raw_path.isnot(None))
+        .filter(SourceDocument.dataset == "notices", SourceDocument.raw_payload_json.isnot(None))
         .count()
     )
     normalized_count = (
         session.query(SourceDocument)
-        .filter(SourceDocument.dataset == "notices", SourceDocument.normalized_path.isnot(None))
+        .filter(SourceDocument.dataset == "notices", SourceDocument.normalized_payload_json.isnot(None))
         .count()
     )
     linkage = build_notice_linkage_summary(session)
@@ -2523,6 +3376,82 @@ def _ensure_dataset_locked(key: str) -> Tuple[pd.DataFrame, object, object, list
     )
     return chunks_df, vectorizer, matrix, tfidf_chunk_ids
 
+
+def refresh_runtime_dataset_state(targets: List[str] | None = None) -> dict[str, object]:
+    """Reload refreshed artifacts and publish the same snapshot through `/ready`.
+
+    Ingestion changes parquet/TF-IDF/Chroma on disk, while retrieval and
+    readiness each retain process-local state.  Refreshing them together keeps
+    the served corpus and the health report from drifting apart.
+    """
+    requested = list(dict.fromkeys(targets or list(_REQUIRED_DATASETS)))
+    invalid = [key for key in requested if key not in _REQUIRED_DATASETS]
+    if invalid:
+        raise ValueError(f"Unsupported runtime refresh dataset(s): {invalid}")
+
+    counts: dict[str, int] = {}
+    dense_counts: dict[str, int] = {}
+    dense_errors: dict[str, dict[str, str]] = {}
+    errors: dict[str, dict[str, str]] = {}
+    with _datasets_lock:
+        for key in requested:
+            _datasets.pop(key, None)
+
+        for key in _REQUIRED_DATASETS:
+            try:
+                chunks, _, _, _ = _ensure_dataset_locked(key)
+                count = len(chunks)
+                if count <= 0:
+                    raise ValueError(f"required dataset '{key}' contains no chunks")
+                counts[key] = count
+                try:
+                    dense_count = count_items(DATASET_ARTIFACTS[key].collection)
+                    dense_counts[key] = dense_count
+                    if dense_count != count:
+                        dense_errors[key] = {
+                            "code": "dense_index_count_mismatch",
+                            "type": "IndexAlignmentError",
+                            "message": f"cached chunks={count}, dense vectors={dense_count}",
+                        }
+                except Exception as exc:  # noqa: BLE001 - keep serving sparse retrieval where possible
+                    dense_errors[key] = _readiness_error("dense_index_probe_failed", exc)
+            except Exception as exc:  # noqa: BLE001 - surface a per-dataset refresh error in readiness
+                errors[key] = _readiness_error("runtime_dataset_reload_failed", exc)
+
+    _set_readiness_check(
+        "datasets",
+        ready=not errors and len(counts) == len(_REQUIRED_DATASETS),
+        detail=(
+            "refresh_failed"
+            if errors
+            else "refreshed_degraded"
+            if dense_errors
+            else "refreshed"
+        ),
+        counts=counts,
+        dense_counts=dense_counts,
+        dense_errors=dense_errors,
+        errors=errors,
+    )
+    quality_snapshot = _refresh_data_quality_readiness()
+    _log_event(
+        logging.INFO if not errors else logging.ERROR,
+        "runtime_dataset_state_refreshed",
+        targets=requested,
+        counts=counts,
+        dense_counts=dense_counts,
+        errors=errors,
+        data_quality_gate_passed=quality_snapshot.get("gate_passed"),
+    )
+    return {
+        "targets": requested,
+        "counts": counts,
+        "dense_counts": dense_counts,
+        "dense_errors": dense_errors,
+        "errors": errors,
+        "data_quality": quality_snapshot,
+    }
+
 def _validate_required_configuration() -> str:
     """명시적으로 필수 설정된 구성만 startup을 중단한다."""
     from src.config import OPENAI_API_KEY, RAG_REQUIRE_OPENAI_API_KEY
@@ -2539,30 +3468,13 @@ def _validate_required_configuration() -> str:
     return "ok"
 
 
-def _run_required_startup_checks() -> None:
-    """필수 컴포넌트를 준비하고 실패를 readiness 상태에 누적한다.
+def _refresh_data_quality_readiness() -> dict[str, object]:
+    """Recompute the source-document quality check after a data mutation.
 
-    DB·인덱스·임베딩 오류는 프로세스를 종료하지 않는다. liveness를 유지해야 `/ready`의
-    구조화된 원인을 확인할 수 있고, 오케스트레이터는 503으로 트래픽을 차단할 수 있다.
+    The quality report is database-derived, unlike the loaded search caches.
+    Keeping it only at startup makes ``/ready`` report stale warnings after a
+    successful collection, repair, or reindex operation.
     """
-    try:
-        config_detail = _validate_required_configuration()
-        _set_readiness_check("configuration", ready=True, detail=config_detail, error=None)
-    except Exception as exc:
-        error = _readiness_error("required_configuration_invalid", exc)
-        _set_readiness_check("configuration", ready=False, detail="failed", error=error)
-        _log_event(logging.ERROR, "startup_component_failed", component="configuration", error=error)
-        raise
-
-    try:
-        init_db()
-        _set_readiness_check("database", ready=True, detail="initialized", error=None)
-        logging.info("✅ Database tables initialized.")
-    except Exception as exc:
-        error = _readiness_error("database_initialization_failed", exc)
-        _set_readiness_check("database", ready=False, detail="failed", error=error)
-        _log_event(logging.ERROR, "startup_component_failed", component="database", error=error, exc_info=True)
-
     try:
         mode = data_quality_mode()
         session = SessionLocal()
@@ -2582,8 +3494,11 @@ def _run_required_startup_checks() -> None:
             violations=quality_report["violations"],
             error=None,
         )
+        return quality_report
     except Exception as exc:
         mode = os.getenv("RAG_DATA_QUALITY_MODE", "observe").strip().lower()
+        if mode not in {"observe", "strict"}:
+            mode = "observe"
         error = _readiness_error("data_quality_report_failed", exc)
         _set_readiness_check(
             "data_quality",
@@ -2595,13 +3510,43 @@ def _run_required_startup_checks() -> None:
         )
         _log_event(
             logging.ERROR if mode == "strict" else logging.WARNING,
-            "startup_component_failed",
-            component="data_quality",
+            "runtime_data_quality_refresh_failed",
             error=error,
             exc_info=True,
         )
+        return {"gate_passed": False, "error": error}
+
+
+def _run_required_startup_checks() -> None:
+    """필수 컴포넌트를 준비하고 실패를 readiness 상태에 누적한다.
+
+    DB·인덱스·임베딩 오류는 프로세스를 종료하지 않는다. liveness를 유지해야 `/ready`의
+    구조화된 원인을 확인할 수 있고, 오케스트레이터는 503으로 트래픽을 차단할 수 있다.
+    """
+    try:
+        config_detail = _validate_required_configuration()
+        _set_readiness_check("configuration", ready=True, detail=config_detail, error=None)
+    except Exception as exc:
+        error = _readiness_error("required_configuration_invalid", exc)
+        _set_readiness_check("configuration", ready=False, detail="failed", error=error)
+        _log_event(logging.ERROR, "startup_component_failed", component="configuration", error=error)
+        raise
+
+    try:
+        init_db()
+        verify_database_writable()
+        _set_readiness_check("database", ready=True, detail="initialized_and_writable", error=None)
+        logging.info("✅ Database tables initialized and write lock verified.")
+    except Exception as exc:
+        error = _readiness_error("database_initialization_failed", exc)
+        _set_readiness_check("database", ready=False, detail="failed", error=error)
+        _log_event(logging.ERROR, "startup_component_failed", component="database", error=error, exc_info=True)
+
+    _refresh_data_quality_readiness()
 
     dataset_counts: dict[str, int] = {}
+    dense_counts: dict[str, int] = {}
+    dense_errors: dict[str, dict[str, str]] = {}
     dataset_errors: dict[str, dict[str, str]] = {}
     for key in _REQUIRED_DATASETS:
         try:
@@ -2610,6 +3555,17 @@ def _run_required_startup_checks() -> None:
             if count <= 0:
                 raise ValueError(f"required dataset '{key}' contains no chunks")
             dataset_counts[key] = count
+            try:
+                dense_count = count_items(DATASET_ARTIFACTS[key].collection)
+                dense_counts[key] = dense_count
+                if dense_count != count:
+                    dense_errors[key] = {
+                        "code": "dense_index_count_mismatch",
+                        "type": "IndexAlignmentError",
+                        "message": f"cached chunks={count}, dense vectors={dense_count}",
+                    }
+            except Exception as exc:
+                dense_errors[key] = _readiness_error("dense_index_probe_failed", exc)
             logging.info(f"✅ Dataset '{key}' successfully loaded.")
         except Exception as exc:
             error = _readiness_error("required_dataset_warmup_failed", exc)
@@ -2625,8 +3581,16 @@ def _run_required_startup_checks() -> None:
     _set_readiness_check(
         "datasets",
         ready=not dataset_errors and len(dataset_counts) == len(_REQUIRED_DATASETS),
-        detail="loaded" if not dataset_errors else "failed",
+        detail=(
+            "failed"
+            if dataset_errors
+            else "loaded_degraded"
+            if dense_errors
+            else "loaded"
+        ),
         counts=dataset_counts,
+        dense_counts=dense_counts,
+        dense_errors=dense_errors,
         errors=dataset_errors,
     )
 
@@ -2672,8 +3636,11 @@ def bootstrap_artifacts() -> None:
     # 공지/학식 데이터 주기적 자동 갱신(RAG_SCHEDULER_ENABLED=1일 때만).
     try:
         from src.services.scheduler import start_scheduler
-        start_scheduler()
-        _set_readiness_check("scheduler", ready=True, detail="started", error=None)
+        if rag_config.RAG_SCHEDULER_ENABLED:
+            start_scheduler()
+            _set_readiness_check("scheduler", ready=True, detail="started", error=None)
+        else:
+            _set_readiness_check("scheduler", ready=True, detail="disabled", error=None)
     except Exception as exc:  # noqa: BLE001 — 스케줄러 실패가 서빙 부팅을 막지 않도록
         error = _readiness_error("scheduler_start_failed", exc)
         _set_readiness_check("scheduler", ready=False, detail="failed", error=error)
@@ -3511,6 +4478,8 @@ def _completion_stream_event(
     suggested_questions: list[str],
     fallback_reason: str | None,
     sources: list[SourceChunk] | list[dict],
+    suggested_question_details: list[SuggestedQuestionDetail] | list[dict] | None = None,
+    resolved_intents: list[str] | None = None,
 ) -> str:
     """Build final persistence metadata; callers emit it immediately before ``done``."""
     serialized_sources = [
@@ -3523,6 +4492,11 @@ def _completion_stream_event(
         "grounded": grounded,
         "grounding_score": grounding_score,
         "suggested_questions": suggested_questions,
+        "suggested_question_details": [
+            detail.model_dump() if hasattr(detail, "model_dump") else detail
+            for detail in (suggested_question_details or [])
+        ],
+        "resolved_intents": resolved_intents or [],
         "fallback_reason": fallback_reason,
         "sources": serialized_sources,
     }
@@ -3573,6 +4547,8 @@ async def ask_stream(req: AskRequest, request: Request):
                     suggested_questions=hit.get("suggested_questions", []),
                     fallback_reason=None,
                     sources=hit.get("sources", []),
+                    suggested_question_details=hit.get("suggested_question_details", []),
+                    resolved_intents=hit.get("resolved_intents", hit.get("route", [])),
                 )
                 return
 
@@ -3584,6 +4560,40 @@ async def ask_stream(req: AskRequest, request: Request):
             analysis_result = await analyze_query(raw_query, history_text)
             _mark_stage(stage_timings, "query_analysis", stage_started_at)
             analysis_meta = _analysis_to_meta(analysis_result, failed=analysis_result is None)
+
+        clarification_fields = _first_turn_clarification_fields(
+            raw_query,
+            analysis_meta,
+            history_text,
+        )
+        if clarification_fields:
+            clarification_answer = _build_clarification_answer(clarification_fields)
+            _mark_stage(stage_timings, "total", request_started_at)
+            yield f"data: {json.dumps({'type': 'metadata', 'request_id': request_id, 'sources': [], 'citations': '', 'route': ['unknown'], 'fallback_triggered': False}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'text', 'content': clarification_answer}, ensure_ascii=False)}\n\n"
+            await run_in_threadpool(
+                _save_rag_evaluation_log,
+                request_id, session_id, raw_query, raw_query, ["unknown"], clarification_answer,
+                False, None, False, False,
+                None if analysis_meta.result is None else analysis_meta.result.intent,
+                None if analysis_meta.result is None else json.dumps(analysis_meta.result.entities, ensure_ascii=False),
+                None if analysis_meta.result is None else analysis_meta.result.time_focus,
+                None if analysis_meta.result is None else json.dumps(analysis_meta.result.search_queries, ensure_ascii=False),
+                True,
+                ", ".join(clarification_fields),
+                analysis_meta.used, analysis_meta.failed, None, None, [], stage_timings, llm_usage,
+            )
+            await run_in_threadpool(append_manual_history, session_id, raw_query, clarification_answer)
+            yield _completion_stream_event(
+                request_id=request_id,
+                grounded=None,
+                grounding_score=None,
+                suggested_questions=[],
+                fallback_reason=None,
+                sources=[],
+                resolved_intents=["unknown"],
+            )
+            return
 
         # 1. 일반 대화 처리 (검색 불필요한 경우)
         if (
@@ -3630,6 +4640,7 @@ async def ask_stream(req: AskRequest, request: Request):
                 suggested_questions=[],
                 fallback_reason=None,
                 sources=[],
+                resolved_intents=["unknown"],
             )
             return
 
@@ -3658,8 +4669,7 @@ async def ask_stream(req: AskRequest, request: Request):
                 final_where_filter["major"] = {"$eq": user_major}
 
         stage_started_at = time.perf_counter()
-        # 질의분석 intent와 무관하게 항상 전체 데이터셋을 검색한다.
-        route = _routerless_retrieval_route()
+        route = _resolve_retrieval_route(raw_query, analysis_meta)
         _mark_stage(stage_timings, "routing", stage_started_at)
 
         entry_year = _extract_entry_year_from_query(semantic_query) or _extract_entry_year_from_query(raw_query)
@@ -3668,15 +4678,19 @@ async def ask_stream(req: AskRequest, request: Request):
         _mark_stage(stage_timings, "date_filter_parse", stage_started_at)
         date_filter_applied = date_filter is not None
         date_filter_relaxed = False
-        recent_notice_query = False
-        notice_board_filter = None
-        retrieval_policy = RetrievalPolicy(name="all_datasets", min_score=MIN_RETRIEVAL_SCORE)
+        recent_notice_query, notice_board_filter, retrieval_policy = _resolve_notice_retrieval_controls(
+            raw_query,
+            semantic_query,
+            route,
+        )
+        current_operational_notice_terms = _current_operational_notice_terms(raw_query, route)
 
         stage_started_at = time.perf_counter()
         frames, date_filter_eliminated_any, unavailable_datasets = await _retrieve_frames_for_queries(
             route=route, queries=retrieval_queries, final_where_filter=final_where_filter,
             notice_board_filter=notice_board_filter, date_filter=date_filter, entry_year=entry_year,
             request_id=request_id, recent_notice_query=recent_notice_query,
+            current_operational_notice_terms=current_operational_notice_terms,
             allow_wise=allow_wise,
         )
 
@@ -3691,13 +4705,27 @@ async def ask_stream(req: AskRequest, request: Request):
                 route=route, queries=retrieval_queries, final_where_filter=final_where_filter,
                 notice_board_filter=notice_board_filter, date_filter=relaxed_filter, entry_year=entry_year,
                 request_id=request_id, recent_notice_query=recent_notice_query,
+                current_operational_notice_terms=current_operational_notice_terms,
                 allow_wise=allow_wise,
             )
             if relaxed_frames:
                 frames = relaxed_frames
             unavailable_datasets = list(dict.fromkeys(unavailable_datasets + relaxed_unavailable))
 
-        merged = _build_balanced_shortlist(frames)
+        frames, staff_unavailable = await _enrich_staff_lookup_frames(
+            question=raw_query,
+            frames=frames,
+            final_where_filter=final_where_filter,
+            entry_year=entry_year,
+            request_id=request_id,
+            allow_wise=allow_wise,
+        )
+        unavailable_datasets = list(dict.fromkeys(unavailable_datasets + staff_unavailable))
+
+        merged = _build_balanced_shortlist(
+            frames,
+            per_dataset=(DEFAULT_TOP_K * 2 if date_filter is not None and "schedule" in route else RAG_EVIDENCE_CANDIDATES_PER_DATASET),
+        )
         _mark_stage(stage_timings, "retrieval_and_fusion", stage_started_at)
 
         # 3. Fallback 체크
@@ -3723,7 +4751,13 @@ async def ask_stream(req: AskRequest, request: Request):
         selector_fallback = False
         if fallback_reason is None:
             stage_started_at = time.perf_counter()
-            merged, selector_fallback = await _select_evidence_for_answer(semantic_query, merged, llm_usage)
+            merged, selector_fallback = await _select_answer_evidence(
+                semantic_query,
+                merged,
+                llm_usage,
+                recent_notice_query=recent_notice_query,
+                date_bound_schedule_query=(date_filter is not None and "schedule" in route),
+            )
             _mark_stage(stage_timings, "evidence_selection", stage_started_at)
             _log_event(
                 logging.WARNING if selector_fallback else logging.INFO,
@@ -3768,6 +4802,11 @@ async def ask_stream(req: AskRequest, request: Request):
                 suggested_questions=[],
                 fallback_reason=fallback_reason,
                 sources=[],
+                resolved_intents=(
+                    [analysis_meta.result.intent]
+                    if analysis_meta.result is not None
+                    else []
+                ),
             )
             return
 
@@ -3775,31 +4814,20 @@ async def ask_stream(req: AskRequest, request: Request):
         stage_started_at = time.perf_counter()
         group_count = int(pd.to_numeric(merged["evidence_group"], errors="coerce").max())
         context_text = _build_selected_evidence_context(merged, prefix=_user_profile_prefix(req.major))
-        response_instructions = _multiple_evidence_response_instructions(group_count)
+        response_instructions = "\n".join(
+            instruction
+            for instruction in (
+                _multiple_evidence_response_instructions(group_count),
+                _period_bound_response_instruction(raw_query, merged),
+            )
+            if instruction
+        ) or None
         selected_route = list(dict.fromkeys(merged["dataset"].astype(str).tolist()))
         _mark_stage(stage_timings, "context_build", stage_started_at)
         current_date = _get_current_kst_string()
 
         # 소스 데이터 정리
-        sources = [
-            SourceChunk(
-                source=_clean_response_str(row.get("dataset")) or "",
-                metadata=_source_metadata(row),
-                snippet=_clean_response_str(row.get("chunk_text")) or "",
-                citation_number=int(row.get("citation_number")),
-                chunk_id=_clean_response_str(row.get("chunk_id")),
-                title=_clean_response_str(row.get("title")),
-                url=_clean_response_str(row.get("url")),
-                published_at=_clean_response_str(row.get("published_at")),
-                vector_score=_clean_response_float(row.get("vector_score")),
-                sparse_score=_clean_response_float(row.get("sparse_score")),
-                hybrid_score=_clean_response_float(row.get("hybrid_score")),
-                recency_score=_clean_response_float(row.get("norm_recency")),
-                final_score=_clean_response_float(row.get("final_score")),
-                sort_date=_clean_response_str(row.get("sort_date")),
-            ).dict()
-            for row_index, row in merged.iterrows()
-        ]
+        sources = [_source_chunk_from_row(row).model_dump() for _, row in merged.iterrows()]
         
         citations_raw = await run_in_threadpool(format_citations, merged)
         citations = re.sub(r'<[^>]+>', '', citations_raw)
@@ -3825,6 +4853,7 @@ async def ask_stream(req: AskRequest, request: Request):
         # 최종 로깅
         final_answer = "".join(full_answer)
         suggested_questions: list[str] = []
+        suggested_question_details: list[dict[str, Any]] = []
         grounding_result = None
         grounded_flag: bool | None = None
         grounding_score: float | None = None
@@ -3850,6 +4879,7 @@ async def ask_stream(req: AskRequest, request: Request):
                     )
                     full_answer.append(guard_text)
                     suggested_questions = []
+                    suggested_question_details = []
                     yield f"data: {json.dumps({'type': 'text', 'content': guard_text}, ensure_ascii=False)}\n\n"
             except Exception as exc:  # noqa: BLE001
                 _log_event(
@@ -3875,6 +4905,11 @@ async def ask_stream(req: AskRequest, request: Request):
                     campus_scope="wise" if allow_wise else "seoul_bmc",
                     supported_domains=selected_route,
                 )
+                suggested_question_details = build_followup_question_details(
+                    suggested_questions,
+                    sources,
+                )
+                suggested_questions = [detail["question"] for detail in suggested_question_details]
                 _mark_stage(stage_timings, "followup_generation", stage_started_at)
                 if suggested_questions:
                     yield f"data: {json.dumps({'type': 'suggestions', 'questions': suggested_questions}, ensure_ascii=False)}\n\n"
@@ -3885,6 +4920,12 @@ async def ask_stream(req: AskRequest, request: Request):
                     request_id=request_id,
                     error=str(exc),
                 )
+        resolved_intents = list(
+            dict.fromkeys(
+                ([analysis_meta.result.intent] if analysis_meta.result is not None else [])
+                + selected_route
+            )
+        )
         _mark_stage(stage_timings, "total", request_started_at)
         await run_in_threadpool(
             _save_rag_evaluation_log,
@@ -3923,6 +4964,8 @@ async def ask_stream(req: AskRequest, request: Request):
                     "route": route,
                     "sources": sources,
                     "suggested_questions": suggested_questions,
+                    "suggested_question_details": suggested_question_details,
+                    "resolved_intents": resolved_intents,
                     "grounded": grounded_flag,
                     "grounding_score": grounding_score,
                 },
@@ -3934,6 +4977,8 @@ async def ask_stream(req: AskRequest, request: Request):
             suggested_questions=suggested_questions,
             fallback_reason=None,
             sources=sources,
+            suggested_question_details=suggested_question_details,
+            resolved_intents=resolved_intents,
         )
 
     return StreamingResponse(
@@ -3974,8 +5019,13 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
                 answer=hit["answer"],
                 citations=hit.get("citations", ""),
                 route=hit.get("route", []),
+                resolved_intents=hit.get("resolved_intents", hit.get("route", [])),
                 sources=[SourceChunk(**s) for s in hit.get("sources", [])],
                 suggested_questions=hit.get("suggested_questions", []),
+                suggested_question_details=[
+                    SuggestedQuestionDetail(**detail)
+                    for detail in hit.get("suggested_question_details", [])
+                ],
                 grounded=hit.get("grounded"),
                 grounding_score=hit.get("grounding_score"),
                 fallback_triggered=False,
@@ -3989,6 +5039,52 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
         analysis_result = await analyze_query(raw_query, history_text)
         _mark_stage(stage_timings, "query_analysis", stage_started_at)
         analysis_meta = _analysis_to_meta(analysis_result, failed=analysis_result is None)
+
+    clarification_fields = _first_turn_clarification_fields(
+        raw_query,
+        analysis_meta,
+        history_text,
+    )
+    if clarification_fields:
+        clarification_answer = _build_clarification_answer(clarification_fields)
+        _mark_stage(stage_timings, "total", request_started_at)
+        await run_in_threadpool(
+            _save_rag_evaluation_log,
+            request_id,
+            session_id,
+            raw_query,
+            raw_query,
+            ["unknown"],
+            clarification_answer,
+            False,
+            None,
+            False,
+            False,
+            None if analysis_meta.result is None else analysis_meta.result.intent,
+            None if analysis_meta.result is None else json.dumps(analysis_meta.result.entities, ensure_ascii=False),
+            None if analysis_meta.result is None else analysis_meta.result.time_focus,
+            None if analysis_meta.result is None else json.dumps(analysis_meta.result.search_queries, ensure_ascii=False),
+            True,
+            ", ".join(clarification_fields),
+            analysis_meta.used,
+            analysis_meta.failed,
+            None,
+            None,
+            [],
+            stage_timings,
+            llm_usage,
+        )
+        await run_in_threadpool(append_manual_history, session_id, raw_query, clarification_answer)
+        return AskResponse(
+            request_id=request_id,
+            answer=clarification_answer,
+            citations="",
+            route=["unknown"],
+            sources=[],
+            resolved_intents=["unknown"],
+            fallback_triggered=False,
+            fallback_reason=None,
+        )
 
     if (
         analysis_meta.result is not None
@@ -4044,6 +5140,7 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
             citations="",
             route=["unknown"],
             sources=[],
+            resolved_intents=["unknown"],
             fallback_triggered=False,
             fallback_reason=None,
         )
@@ -4086,7 +5183,7 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
 
     _log_event(logging.INFO, "ask_filters", request_id=request_id, filters=final_where_filter)
     stage_started_at = time.perf_counter()
-    route = _routerless_retrieval_route()
+    route = _resolve_retrieval_route(raw_query, analysis_meta)
     _mark_stage(stage_timings, "routing", stage_started_at)
     entry_year = _extract_entry_year_from_query(semantic_query) or _extract_entry_year_from_query(raw_query)
     stage_started_at = time.perf_counter()
@@ -4097,9 +5194,12 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
     _mark_stage(stage_timings, "date_filter_parse", stage_started_at)
     date_filter_applied = date_filter is not None
     date_filter_relaxed = False
-    recent_notice_query = False
-    notice_board_filter = None
-    retrieval_policy = RetrievalPolicy(name="all_datasets", min_score=MIN_RETRIEVAL_SCORE)
+    recent_notice_query, notice_board_filter, retrieval_policy = _resolve_notice_retrieval_controls(
+        raw_query,
+        semantic_query,
+        route,
+    )
+    current_operational_notice_terms = _current_operational_notice_terms(raw_query, route)
 
     stage_started_at = time.perf_counter()
     frames, date_filter_eliminated_any, unavailable_datasets = await _retrieve_frames_for_queries(
@@ -4111,6 +5211,7 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
         entry_year=entry_year,
         request_id=request_id,
         recent_notice_query=recent_notice_query,
+        current_operational_notice_terms=current_operational_notice_terms,
         allow_wise=allow_wise,
     )
 
@@ -4132,13 +5233,27 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
             entry_year=entry_year,
             request_id=request_id,
             recent_notice_query=recent_notice_query,
+            current_operational_notice_terms=current_operational_notice_terms,
             allow_wise=allow_wise,
         )
         if relaxed_frames:
             frames = relaxed_frames
         unavailable_datasets = list(dict.fromkeys(unavailable_datasets + relaxed_unavailable))
 
-    merged = _build_balanced_shortlist(frames)
+    frames, staff_unavailable = await _enrich_staff_lookup_frames(
+        question=raw_query,
+        frames=frames,
+        final_where_filter=final_where_filter,
+        entry_year=entry_year,
+        request_id=request_id,
+        allow_wise=allow_wise,
+    )
+    unavailable_datasets = list(dict.fromkeys(unavailable_datasets + staff_unavailable))
+
+    merged = _build_balanced_shortlist(
+        frames,
+        per_dataset=(DEFAULT_TOP_K * 2 if date_filter is not None and "schedule" in route else RAG_EVIDENCE_CANDIDATES_PER_DATASET),
+    )
     if merged.empty:
         _log_event(logging.INFO, "retrieval_no_results", request_id=request_id, route=route)
 
@@ -4171,7 +5286,13 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
     selector_fallback = False
     if fallback_reason is None:
         stage_started_at = time.perf_counter()
-        merged, selector_fallback = await _select_evidence_for_answer(semantic_query, merged, llm_usage)
+        merged, selector_fallback = await _select_answer_evidence(
+            semantic_query,
+            merged,
+            llm_usage,
+            recent_notice_query=recent_notice_query,
+            date_bound_schedule_query=(date_filter is not None and "schedule" in route),
+        )
         _mark_stage(stage_timings, "evidence_selection", stage_started_at)
         _log_event(
             logging.WARNING if selector_fallback else logging.INFO,
@@ -4249,6 +5370,11 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
             citations="",
             route=route,
             sources=[],
+            resolved_intents=(
+                [analysis_meta.result.intent]
+                if analysis_meta.result is not None
+                else []
+            ),
             fallback_triggered=True,
             fallback_reason=fallback_reason,
         )
@@ -4256,7 +5382,14 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
     stage_started_at = time.perf_counter()
     group_count = int(pd.to_numeric(merged["evidence_group"], errors="coerce").max())
     context_text = _build_selected_evidence_context(merged, prefix=_user_profile_prefix(req.major))
-    response_instructions = _multiple_evidence_response_instructions(group_count)
+    response_instructions = "\n".join(
+        instruction
+        for instruction in (
+            _multiple_evidence_response_instructions(group_count),
+            _period_bound_response_instruction(raw_query, merged),
+        )
+        if instruction
+    ) or None
     selected_route = list(dict.fromkeys(merged["dataset"].astype(str).tolist()))
     _mark_stage(stage_timings, "context_build", stage_started_at)
     # LLM에게 현재 날짜를 전달하여 "오늘", "이번 학기" 등의 표현을 해석하도록 돕습니다.
@@ -4283,27 +5416,10 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
     citations_raw = await run_in_threadpool(format_citations, merged)
     citations = re.sub(r'<[^>]+>', '', citations_raw)
 
-    sources = [
-        SourceChunk(
-            source=_clean_response_str(row.get("dataset")) or "",
-            metadata=_source_metadata(row),
-            snippet=_clean_response_str(row.get("chunk_text")) or "",
-            citation_number=int(row.get("citation_number")),
-            chunk_id=_clean_response_str(row.get("chunk_id")),
-            title=_clean_response_str(row.get("title")),
-            url=_clean_response_str(row.get("url")),
-            published_at=_clean_response_str(row.get("published_at")),
-            vector_score=_clean_response_float(row.get("vector_score")),
-            sparse_score=_clean_response_float(row.get("sparse_score")),
-            hybrid_score=_clean_response_float(row.get("hybrid_score")),
-            recency_score=_clean_response_float(row.get("norm_recency")),
-            final_score=_clean_response_float(row.get("final_score")),
-            sort_date=_clean_response_str(row.get("sort_date")),
-        )
-        for row_index, row in merged.iterrows()
-    ]
+    sources = [_source_chunk_from_row(row) for _, row in merged.iterrows()]
 
     suggested_questions: list[str] = []
+    suggested_question_details: list[dict[str, Any]] = []
     grounding_result = None
     grounded: bool | None = None
     grounding_score: float | None = None
@@ -4324,6 +5440,7 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
                 if not grounding_result.grounded:
                     answer = answer + "\n\n" + _build_grounding_confirmation_answer(grounding_result, sources)
                     suggested_questions = []
+                    suggested_question_details = []
         except Exception as exc:  # noqa: BLE001
             _log_event(
                 logging.WARNING,
@@ -4347,6 +5464,11 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
                 campus_scope="wise" if allow_wise else "seoul_bmc",
                 supported_domains=selected_route,
             )
+            suggested_question_details = build_followup_question_details(
+                suggested_questions,
+                [source.model_dump() for source in sources],
+            )
+            suggested_questions = [detail["question"] for detail in suggested_question_details]
             _mark_stage(stage_timings, "followup_generation", stage_started_at)
         except Exception as exc:  # noqa: BLE001
             _log_event(
@@ -4355,6 +5477,12 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
                 request_id=request_id,
                 error=str(exc),
             )
+    resolved_intents = list(
+        dict.fromkeys(
+            ([analysis_meta.result.intent] if analysis_meta.result is not None else [])
+            + selected_route
+        )
+    )
     _mark_stage(stage_timings, "total", request_started_at)
     await run_in_threadpool(
         _save_rag_evaluation_log,
@@ -4421,6 +5549,8 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
                 "route": route,
                 "sources": [s.dict() if hasattr(s, "dict") else s for s in sources],
                 "suggested_questions": suggested_questions,
+                "suggested_question_details": suggested_question_details,
+                "resolved_intents": resolved_intents,
                 "grounded": grounded,
                 "grounding_score": grounding_score,
             },
@@ -4431,8 +5561,10 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
         answer=answer,
         citations=citations,
         route=route,
+        resolved_intents=resolved_intents,
         sources=sources,
         suggested_questions=suggested_questions,
+        suggested_question_details=[SuggestedQuestionDetail(**detail) for detail in suggested_question_details],
         grounded=grounded,
         grounding_score=grounding_score,
         fallback_triggered=False,
@@ -4465,24 +5597,16 @@ async def reindex_dataset(target: str):
         target_param = None if target == "all" else target
         # run_in_threadpool because reindexing can be slow and blocking
         results = await run_in_threadpool(reindex_from_db, target_param)
-
-        # meals는 SQLite가 아닌 CSV 기반이라 reindex_from_db가 다루지 않는다.
-        # meals/all 대상이면 CSV에서 직접 재빌드한다.
-        if target in ("meals", "all"):
-            results["meals"] = await run_in_threadpool(ingest_meals)
-
-        # Clear cache to force reload
-        if target == "all":
-            with _datasets_lock:
-                _datasets.clear()
-        else:
-            with _datasets_lock:
-                _datasets.pop(target, None)
+        runtime_state = await run_in_threadpool(
+            refresh_runtime_dataset_state,
+            list(results.keys()),
+        )
 
         return {
             "status": "ok",
             "message": f"Reindexing for '{target}' completed.",
-            "details": {k: len(v[0]) for k, v in results.items()}
+            "details": {k: len(v[0]) for k, v in results.items()},
+            "runtime_state": runtime_state,
         }
     except Exception as e:
         _log_event(logging.ERROR, "reindex_failed", exc_info=True, target=target)
@@ -4493,6 +5617,129 @@ async def reindex_dataset(target: str):
 def health() -> dict:
     """프로세스가 HTTP 요청에 응답할 수 있는지만 나타내는 liveness."""
     return {"status": "ok"}
+
+
+_evaluation_hash_cache: dict[str, tuple[int, int, str]] = {}
+_evaluation_hash_lock = threading.Lock()
+
+
+def _evaluation_file_record(path: Path) -> dict[str, object]:
+    resolved = path.resolve()
+    stat = resolved.stat()
+    cache_key = str(resolved)
+    with _evaluation_hash_lock:
+        cached = _evaluation_hash_cache.get(cache_key)
+    signature = (stat.st_mtime_ns, stat.st_size)
+    if cached is not None and cached[:2] == signature:
+        digest = cached[2]
+    else:
+        hasher = hashlib.sha256()
+        with resolved.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                hasher.update(block)
+        digest = hasher.hexdigest()
+        with _evaluation_hash_lock:
+            _evaluation_hash_cache[cache_key] = (signature[0], signature[1], digest)
+    try:
+        relative_path = resolved.relative_to(rag_config.BASE_DIR.resolve()).as_posix()
+    except ValueError:
+        relative_path = resolved.name
+    return {"path": relative_path, "bytes": stat.st_size, "sha256": digest}
+
+
+def _build_evaluation_fingerprint() -> dict[str, object]:
+    """Attest the configuration and artifacts used by this exact process.
+
+    The response deliberately excludes environment values, API keys, absolute
+    paths, user content, and query logs.  A runner must obtain this payload from
+    the candidate URL; calculating it from its own checkout is not evidence
+    that it evaluated the deployed candidate.
+    """
+    artifact_paths: list[Path] = []
+    datasets: list[dict[str, object]] = []
+    dense_index_ready = True
+    for key, artifacts in sorted(DATASET_ARTIFACTS.items()):
+        chunk_path = artifacts.chunk_path
+        if not chunk_path.exists() and artifacts.csv_path.exists():
+            chunk_path = artifacts.csv_path
+        vectorizer_path = VECTORIZER_DIR / f"{key}_tfidf.pkl"
+        for path in (chunk_path, vectorizer_path):
+            if path.exists():
+                artifact_paths.append(path)
+        cached_dataset = _datasets.get(key)
+        cached_chunk_count = None if cached_dataset is None else len(cached_dataset.chunks)
+        chroma_count = count_items(artifacts.collection)
+        dataset_dense_ready = (
+            cached_chunk_count is not None
+            and cached_chunk_count > 0
+            and chroma_count == cached_chunk_count
+        )
+        dense_index_ready = dense_index_ready and dataset_dense_ready
+        datasets.append(
+            {
+                "key": key,
+                "collection": artifacts.collection,
+                "chroma_count": chroma_count,
+                "cached_chunk_count": cached_chunk_count,
+                "dense_index_ready": dataset_dense_ready,
+                "retrieval_mode": "hybrid" if dataset_dense_ready else "sparse_degraded",
+                "chunk_artifact": None if not chunk_path.exists() else chunk_path.name,
+                "vectorizer_artifact": None if not vectorizer_path.exists() else vectorizer_path.name,
+            }
+        )
+    manifest_path = VECTORIZER_DIR / "manifest.json"
+    if manifest_path.exists():
+        artifact_paths.append(manifest_path)
+    artifact_records = [
+        _evaluation_file_record(path)
+        for path in sorted(set(artifact_paths), key=lambda item: item.as_posix())
+    ]
+    artifact_digest = hashlib.sha256(
+        json.dumps(
+            artifact_records,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "build_revision": os.getenv("RAG_BUILD_REVISION", "local-unversioned").strip() or "local-unversioned",
+        "answer_contract_version": "ask-response-v3-source-lineage",
+        "dense_index_ready": dense_index_ready,
+        "runtime_config": {
+            "llm_provider": rag_config.LLM_PROVIDER,
+            "query_analysis_model": rag_config.OPENAI_MODEL,
+            "answer_model": (
+                rag_config.OPENAI_CHAT_MODEL
+                if rag_config.LLM_PROVIDER == "openai"
+                else rag_config.OLLAMA_CHAT_MODEL
+            ),
+            "embedding_model": rag_config.EMBED_MODEL_NAME,
+            "embedding_revision": rag_config.EMBED_MODEL_REVISION,
+            "embedding_device": rag_config.EMBED_DEVICE,
+            "reranker_enabled": rag_config.RERANKER_ENABLED,
+            "reranker_model": rag_config.RERANKER_MODEL if rag_config.RERANKER_ENABLED else None,
+            "reranker_revision": (
+                rag_config.RERANKER_MODEL_REVISION if rag_config.RERANKER_ENABLED else None
+            ),
+            "top_k": rag_config.DEFAULT_TOP_K,
+            "routerless": rag_config.RAG_SEARCH_ALL_DATASETS,
+            "scheduler_enabled": rag_config.RAG_SCHEDULER_ENABLED,
+        },
+        "artifact_manifest_sha256": artifact_digest,
+        "artifacts": artifact_records,
+        "datasets": datasets,
+    }
+    payload["fingerprint_sha256"] = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return payload
+
+
+@app.get("/evaluation/fingerprint")
+async def evaluation_fingerprint() -> dict[str, object]:
+    return await run_in_threadpool(_build_evaluation_fingerprint)
 
 
 @app.get("/ready")
