@@ -47,6 +47,8 @@ NOTICE_SPLIT_PATTERN = re.compile(r"※")
 CLOSED_KEYWORD = re.compile(r"휴무")
 PRICE_PATTERN = re.compile(r"￦\s*[\d,]+|\d[\d,]*\s*원")
 DEFAULT_REQUEST_DELAY = 0.4
+DEFAULT_REQUEST_TIMEOUT = 20.0
+DEFAULT_REQUEST_RETRIES = 3
 
 # === D-Flex(경영관) 학식 — 주간 PDF 식단표를 텍스트/표로 추출(OCR 불필요) ===
 # dongguk.edu 게시판 CMS의 FOODDFLEX 보드를 공지 크롤러로 재사용해 PDF 첨부를 받는다.
@@ -70,14 +72,44 @@ def make_soup(markup: str) -> BeautifulSoup:
     raise RuntimeError("HTML 파서를 초기화하지 못했습니다.")
 
 
-def fetch_day_html(target: date, *, timeout: float = 20.0) -> str:
+def _get_with_retry(
+    url: str,
+    *,
+    params: dict | None = None,
+    timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    retries: int = DEFAULT_REQUEST_RETRIES,
+):
+    """일시적 요청 실패를 제한된 횟수만큼 재시도한다."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+    raise last_exc  # type: ignore[misc]
+
+
+def fetch_day_html(
+    target: date,
+    *,
+    timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    retries: int = DEFAULT_REQUEST_RETRIES,
+) -> str:
     """특정 날짜의 식단표 페이지 HTML을 가져옵니다."""
     # 사이트가 KST 기준 자정 타임스탬프로 날짜를 식별하므로 KST 자정으로 계산한다.
     midnight_kst = datetime(target.year, target.month, target.day, tzinfo=KST)
     sday = int(midnight_kst.timestamp())
     params = {**MEALS_QUERY_BASE, "sday": sday, "sdate": target.weekday()}
-    response = requests.get(MEALS_URL, params=params, headers=HEADERS, timeout=timeout)
-    response.raise_for_status()
+    response = _get_with_retry(
+        MEALS_URL,
+        params=params,
+        timeout=timeout,
+        retries=retries,
+    )
     response.encoding = response.apparent_encoding
     return response.text
 
@@ -262,6 +294,8 @@ def crawl_dflex_meals(
     *,
     max_posts: int = 3,
     delay: float = DEFAULT_REQUEST_DELAY,
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    request_retries: int = DEFAULT_REQUEST_RETRIES,
 ) -> List[dict]:
     """D-Flex 게시판 최근 주간 식단표 글들의 PDF를 받아 요일별 메뉴 레코드를 만든다.
 
@@ -275,7 +309,12 @@ def crawl_dflex_meals(
         return []
 
     try:
-        posts = fetch_notice_list(DFLEX_BOARD_CODE, page=1)
+        posts = fetch_notice_list(
+            DFLEX_BOARD_CODE,
+            page=1,
+            timeout=request_timeout,
+            retries=request_retries,
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"⚠️ D-Flex 목록 수집 실패: {exc}")
         return []
@@ -286,7 +325,12 @@ def crawl_dflex_meals(
         if article_id is None:
             continue
         try:
-            detail = fetch_notice_detail(DFLEX_BOARD_CODE, article_id)
+            detail = fetch_notice_detail(
+                DFLEX_BOARD_CODE,
+                article_id,
+                timeout=request_timeout,
+                retries=request_retries,
+            )
         except Exception as exc:  # noqa: BLE001
             print(f"⚠️ D-Flex 상세 수집 실패 (article_id={article_id}): {exc}")
             continue
@@ -298,8 +342,11 @@ def crawl_dflex_meals(
                 time.sleep(delay)
             continue
         try:
-            resp = requests.get(pdf_atts[0]["url"], headers=HEADERS, timeout=40)
-            resp.raise_for_status()
+            resp = _get_with_retry(
+                pdf_atts[0]["url"],
+                timeout=request_timeout,
+                retries=request_retries,
+            )
             records.extend(parse_dflex_pdf(resp.content, ref_date))
         except Exception as exc:  # noqa: BLE001
             print(f"⚠️ D-Flex PDF 다운로드/파싱 실패 (article_id={article_id}): {exc}")
@@ -316,6 +363,8 @@ def crawl_meals(
     delay: float = DEFAULT_REQUEST_DELAY,
     today: date | None = None,
     include_dflex: bool = True,
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    request_retries: int = DEFAULT_REQUEST_RETRIES,
 ) -> pd.DataFrame:
     """이번 주 월요일(기본)부터 향후 days_ahead일까지 식단을 수집합니다.
 
@@ -333,7 +382,11 @@ def crawl_meals(
     cur = start
     while cur <= end:
         try:
-            html = fetch_day_html(cur)
+            html = fetch_day_html(
+                cur,
+                timeout=request_timeout,
+                retries=request_retries,
+            )
             day_records = parse_day_menus(html, cur)
             records.extend(day_records)
         except Exception as exc:  # noqa: BLE001 — 하루 실패가 전체 수집을 막지 않도록
@@ -349,7 +402,11 @@ def crawl_meals(
     # D-Flex(경영관) 주간 PDF 식단표 병합 — 수집 윈도우([start, end]) 안의 날짜만.
     if include_dflex:
         try:
-            dflex_records = crawl_dflex_meals(delay=delay)
+            dflex_records = crawl_dflex_meals(
+                delay=delay,
+                request_timeout=request_timeout,
+                request_retries=request_retries,
+            )
             for rec in dflex_records:
                 try:
                     rec_date = datetime.strptime(rec["date"], "%Y-%m-%d").date()
