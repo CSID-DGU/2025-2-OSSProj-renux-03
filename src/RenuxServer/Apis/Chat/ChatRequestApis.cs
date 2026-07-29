@@ -434,12 +434,13 @@ static public class ChatRequestApis
                 fullAnswer.Append(DefaultRagFailureMessage);
                 try
                 {
-                    var meta = JsonSerializer.Serialize(
-                        new { type = "metadata", sources = Array.Empty<object>(), fallback_triggered = true, fallback_reason = (string?)null },
-                        JsonOptions);
-                    var text = JsonSerializer.Serialize(new { type = "text", content = DefaultRagFailureMessage }, JsonOptions);
-                    await context.Response.WriteAsync($"data: {meta}\n\n", context.RequestAborted);
-                    await context.Response.WriteAsync($"data: {text}\n\n", context.RequestAborted);
+                    foreach (string payload in RagStreamContract.CreateGracefulFallbackPayloads(
+                                 backendRequestId,
+                                 fallbackReason,
+                                 DefaultRagFailureMessage))
+                    {
+                        await context.Response.WriteAsync($"data: {payload}\n\n", context.RequestAborted);
+                    }
                     await context.Response.Body.FlushAsync(context.RequestAborted);
                 }
                 catch (Exception ex)

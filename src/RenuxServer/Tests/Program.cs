@@ -146,6 +146,34 @@ failedAfterTerminal.ObserveTransportFailure();
 Check(!failedAfterTerminal.IsSuccessful,
     "A transport exception must be fatal even if terminal events arrived first.");
 
+const string fallbackBackendRequestId = "fallback-backend-request";
+IReadOnlyList<string> fallbackPayloads = RagStreamContract.CreateGracefulFallbackPayloads(
+    fallbackBackendRequestId,
+    "rag_stream_http_error",
+    "fallback answer");
+JsonElement[] fallbackEvents = fallbackPayloads.Select(JsonEvent).ToArray();
+string[] expectedFallbackTypes = ["metadata", "text", "completion", "done"];
+Check(
+    fallbackEvents.Length == expectedFallbackTypes.Length
+    && fallbackEvents.Select(payload => payload.GetProperty("type").GetString())
+        .SequenceEqual(expectedFallbackTypes),
+    "The graceful fallback must emit exactly metadata -> text -> completion -> done.");
+Check(
+    fallbackEvents.All(payload =>
+        payload.TryGetProperty("request_id", out JsonElement requestId)
+        && requestId.ValueKind == JsonValueKind.String
+        && requestId.GetString() == fallbackBackendRequestId),
+    "Every graceful fallback payload must carry the backend request id.");
+
+var fallbackTerminal = new RagTerminalStateMachine(fallbackBackendRequestId);
+foreach (JsonElement payload in fallbackEvents)
+{
+    fallbackTerminal.Observe(payload, out _);
+}
+fallbackTerminal.ObserveEndOfStream();
+Check(fallbackTerminal.IsSuccessful,
+    "The graceful fallback sequence must satisfy the strict completion -> done terminal contract.");
+
 string keyDirectory = Path.Combine(Path.GetTempPath(), $"dongttok-dp-{Guid.NewGuid():N}");
 string otherKeyDirectory = Path.Combine(Path.GetTempPath(), $"dongttok-dp-other-{Guid.NewGuid():N}");
 Directory.CreateDirectory(keyDirectory);
