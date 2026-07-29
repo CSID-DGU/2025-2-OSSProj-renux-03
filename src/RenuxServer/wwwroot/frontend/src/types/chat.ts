@@ -8,4 +8,5 @@ export interface ActiveChat {
   id: string
   title?: string | null
   organization?: ActiveChatOrganization | null
+  guestToken?: string
 }

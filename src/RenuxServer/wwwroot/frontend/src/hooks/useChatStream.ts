@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { resolveApiUrl, withNgrokHeader } from '../api/client'
+import { withGuestTokenHeader } from '../chat/guestToken'
 import type { ChatSource } from '../components/chat/SourceCards'
 
 export interface ChatStreamPayload {
@@ -7,6 +8,7 @@ export interface ChatStreamPayload {
   chatId: string
   content: string
   createdTime: string | number
+  guestToken?: string
 }
 
 export interface ChatStreamMetadata {
@@ -70,10 +72,13 @@ export const useChatStream = () => {
       const openStream = async () => {
         const response = await fetch(url, {
           method: 'POST',
-          headers: withNgrokHeader(url, {
-            'Content-Type': 'application/json',
-            Accept: 'text/event-stream',
-          }),
+          headers: withNgrokHeader(
+            url,
+            withGuestTokenHeader({
+              'Content-Type': 'application/json',
+              Accept: 'text/event-stream',
+            }, payload.guestToken),
+          ),
           body: JSON.stringify({
             id: payload.id,
             chatId: payload.chatId,

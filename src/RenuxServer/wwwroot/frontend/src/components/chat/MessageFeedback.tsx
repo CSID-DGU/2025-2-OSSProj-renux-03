@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { apiFetch } from '../../api/client'
+import { withGuestTokenHeader } from '../../chat/guestToken'
 
 type MessageFeedbackProps = {
   requestId: string
   disabled?: boolean
+  guestToken?: string
 }
 
 type ReasonOption = {
@@ -19,7 +21,7 @@ const reasonOptions: ReasonOption[] = [
   { value: 'other', label: '기타' },
 ]
 
-const MessageFeedback = ({ requestId, disabled = false }: MessageFeedbackProps) => {
+const MessageFeedback = ({ requestId, disabled = false, guestToken }: MessageFeedbackProps) => {
   const [mode, setMode] = useState<'idle' | 'down' | 'submitting' | 'confirmed'>('idle')
   const [selectedReason, setSelectedReason] = useState<string>('')
   const [comment, setComment] = useState('')
@@ -27,6 +29,7 @@ const MessageFeedback = ({ requestId, disabled = false }: MessageFeedbackProps) 
   const submitFeedback = async (rating: 1 | -1, reason?: string, feedbackComment?: string) => {
     await apiFetch('/chat/feedback', {
       method: 'POST',
+      headers: withGuestTokenHeader({}, guestToken),
       json: {
         requestId,
         rating,

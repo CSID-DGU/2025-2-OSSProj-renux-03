@@ -6,6 +6,7 @@ using System.Text.Json;
 
 using RenuxServer.Apis;
 using RenuxServer.DbContexts;
+using RenuxServer.Dtos.ChatDtos;
 using RenuxServer.Models;
 using RenuxServer.Services;
 
@@ -153,11 +154,27 @@ try
 {
     IDataProtectionProvider firstProvider = DataProtectionProvider.Create(new DirectoryInfo(keyDirectory), builder => builder.SetApplicationName("Dongttok"));
     string protectedGuest = GuestIdentity.Issue(firstProvider);
+    var headerGuestContext = new DefaultHttpContext();
+    headerGuestContext.Request.Headers[GuestIdentity.HeaderName] = protectedGuest;
+    Check(GuestIdentity.TryValidate(
+              headerGuestContext.Request,
+              firstProvider,
+              out string headerGuestId,
+              out string validatedHeaderToken)
+          && headerGuestId.Length == 32
+          && validatedHeaderToken == protectedGuest,
+        "A server-issued protected guest header token should validate and be reusable.");
+
     var firstGuestContext = new DefaultHttpContext();
     firstGuestContext.Request.Headers.Cookie = $"{GuestIdentity.CookieName}={Uri.EscapeDataString(protectedGuest)}";
-    Check(GuestIdentity.TryValidate(firstGuestContext.Request, firstProvider, out string firstGuestId)
-          && firstGuestId.Length == 32,
-        "A server-issued protected guest cookie should validate.");
+    Check(GuestIdentity.TryValidate(
+              firstGuestContext.Request,
+              firstProvider,
+              out string firstGuestId,
+              out string validatedCookieToken)
+          && firstGuestId == headerGuestId
+          && validatedCookieToken == protectedGuest,
+        "The guest cookie fallback should validate and expose the same reusable token.");
 
     IDataProtectionProvider restartedProvider = DataProtectionProvider.Create(new DirectoryInfo(keyDirectory), builder => builder.SetApplicationName("Dongttok"));
     Check(GuestIdentity.TryValidate(firstGuestContext.Request, restartedProvider, out string restartedGuestId)
@@ -174,6 +191,8 @@ try
         "A blank guest cookie must be rejected.");
 
     IDataProtectionProvider unrelatedProvider = DataProtectionProvider.Create(new DirectoryInfo(otherKeyDirectory), builder => builder.SetApplicationName("Dongttok"));
+    Check(!GuestIdentity.TryValidate(headerGuestContext.Request, unrelatedProvider, out _),
+        "A header token must not validate under an unrelated key ring.");
     Check(!GuestIdentity.TryValidate(firstGuestContext.Request, unrelatedProvider, out _),
         "A cookie must not validate under an unrelated key ring.");
 }
@@ -182,6 +201,18 @@ finally
     Directory.Delete(keyDirectory, recursive: true);
     Directory.Delete(otherKeyDirectory, recursive: true);
 }
+
+var webJsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+using JsonDocument guestChatJson = JsonDocument.Parse(JsonSerializer.Serialize(
+    new ActiveChatDto { Id = Guid.NewGuid(), Title = "guest", GuestToken = "protected-token" },
+    webJsonOptions));
+Check(guestChatJson.RootElement.GetProperty("guestToken").GetString() == "protected-token",
+    "Guest chat responses must include the protected guest token.");
+using JsonDocument authenticatedChatJson = JsonDocument.Parse(JsonSerializer.Serialize(
+    new ActiveChatDto { Id = Guid.NewGuid(), Title = "authenticated" },
+    webJsonOptions));
+Check(!authenticatedChatJson.RootElement.TryGetProperty("guestToken", out _),
+    "Authenticated chat responses must omit the guest token field.");
 
 string[] forbiddenNames = ["Question", "Answer", "Content", "Name", "StudentNumber", "Email", "IpAddress"];
 var persistedPropertyNames = typeof(ProductEvent).GetProperties().Select(property => property.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);

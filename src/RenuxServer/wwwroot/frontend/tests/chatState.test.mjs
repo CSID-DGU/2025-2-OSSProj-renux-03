@@ -10,8 +10,10 @@ import {
   resolveGuestChatRoute,
   toChatPath,
   updateGuestChatMessages,
+  upsertGuestChat,
   writeGuestChatRecords,
 } from '../src/chat/chatState.ts'
+import { GUEST_TOKEN_HEADER, withGuestTokenHeader } from '../src/chat/guestToken.ts'
 
 const question = {
   id: 'question-1',
@@ -52,6 +54,7 @@ test('로드된 빈 assistant 행은 영구 타이핑 표시 대신 완료되지
 test('기존 배열형 게스트 저장 포맷을 읽고 known/unknown URL을 구분한다', () => {
   const records = parseGuestChatRecords(JSON.stringify([{ id: 'chat-1', title: '장학 상담' }]))
 
+  assert.equal('guestToken' in records[0], false)
   assert.equal(resolveGuestChatRoute(undefined, records).kind, 'root')
   assert.equal(resolveGuestChatRoute('chat-1', records).kind, 'known')
   assert.deepEqual(resolveGuestChatRoute('other-device-chat', records), {
@@ -59,6 +62,34 @@ test('기존 배열형 게스트 저장 포맷을 읽고 known/unknown URL을 �
     chatId: 'other-device-chat',
   })
   assert.equal(toChatPath('chat-1'), '/chat/chat-1')
+})
+
+test('게스트 토큰은 새 대화와 메시지 갱신을 거쳐 저장되고 기존 무토큰 대화도 안전하게 로드된다', () => {
+  const created = upsertGuestChat(
+    [{ id: 'legacy-chat', title: '기존 대화' }],
+    { id: 'chat-1', title: '장학 상담', guestToken: 'protected-token' },
+    '2026-07-29T00:00:00Z',
+  )
+  const updated = updateGuestChatMessages(
+    created,
+    'chat-1',
+    [question, latestAnswer],
+    '2026-07-29T00:01:00Z',
+  )
+  const reloaded = parseGuestChatRecords(JSON.stringify(updated))
+
+  assert.equal(reloaded[0].guestToken, 'protected-token')
+  assert.deepEqual(reloaded[0].messages, [question, latestAnswer])
+  assert.equal('guestToken' in reloaded[1], false)
+})
+
+test('게스트 토큰 헤더는 토큰이 있을 때만 추가된다', () => {
+  assert.deepEqual(withGuestTokenHeader({ Accept: 'application/json' }), {
+    Accept: 'application/json',
+  })
+  assert.deepEqual(withGuestTokenHeader({}, 'protected-token'), {
+    [GUEST_TOKEN_HEADER]: 'protected-token',
+  })
 })
 
 test('storage 읽기가 차단되면 게스트 목록 대신 빈 배열을 반환한다', () => {

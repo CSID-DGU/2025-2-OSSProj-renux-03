@@ -1,4 +1,5 @@
 import { apiFetch } from '../api/client'
+import { withGuestTokenHeader } from './guestToken'
 import {
   buildSuggestionTelemetryPayload,
   type SuggestionTelemetryPayload,
@@ -10,6 +11,7 @@ export const trackSuggestionEvent = (
   eventType: SuggestionTelemetryPayload['eventType'],
   requestId: string,
   value: number,
+  guestToken?: string,
 ) => {
   if (!requestId) return
 
@@ -21,6 +23,7 @@ export const trackSuggestionEvent = (
   // cancel the user's next chat action.
   void apiFetch('/telemetry/events', {
     method: 'POST',
+    headers: withGuestTokenHeader({}, guestToken),
     json: buildSuggestionTelemetryPayload(eventType, requestId, value),
   }).catch((error) => {
     console.debug('Suggestion telemetry was not recorded', error)

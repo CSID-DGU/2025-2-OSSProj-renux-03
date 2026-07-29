@@ -5,14 +5,21 @@ type SuggestedQuestionsProps = {
   questions: string[]
   requestId?: string
   disabled?: boolean
+  guestToken?: string
   onSelect: (q: string) => void
 }
 
-const SuggestedQuestions = ({ questions, requestId, disabled = false, onSelect }: SuggestedQuestionsProps) => {
+const SuggestedQuestions = ({
+  questions,
+  requestId,
+  disabled = false,
+  guestToken,
+  onSelect,
+}: SuggestedQuestionsProps) => {
   useEffect(() => {
     if (disabled || !requestId || questions.length === 0) return
-    trackSuggestionEvent('suggestion_shown', requestId, questions.length)
-  }, [disabled, questions.length, requestId])
+    trackSuggestionEvent('suggestion_shown', requestId, questions.length, guestToken)
+  }, [disabled, guestToken, questions.length, requestId])
 
   if (questions.length === 0) return null
 
@@ -26,7 +33,7 @@ const SuggestedQuestions = ({ questions, requestId, disabled = false, onSelect }
             type="button"
             className="suggested-questions__chip"
             onClick={() => {
-              if (requestId) trackSuggestionEvent('suggestion_clicked', requestId, index)
+              if (requestId) trackSuggestionEvent('suggestion_clicked', requestId, index, guestToken)
               onSelect(question)
             }}
             disabled={disabled}

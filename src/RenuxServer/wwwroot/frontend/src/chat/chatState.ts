@@ -89,6 +89,9 @@ const normalizeGuestRecord = (value: unknown): GuestChatRecord | null => {
     organization: isObject(value.organization) || value.organization === null
       ? value.organization as ActiveChat['organization']
       : null,
+    ...(typeof value.guestToken === 'string' && value.guestToken.length > 0
+      ? { guestToken: value.guestToken }
+      : {}),
     ...(messages.length > 0 ? { messages } : {}),
     ...(typeof value.updatedAt === 'string' ? { updatedAt: value.updatedAt } : {}),
   }

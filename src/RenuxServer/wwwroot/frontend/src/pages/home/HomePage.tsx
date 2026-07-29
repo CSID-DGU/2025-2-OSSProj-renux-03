@@ -16,6 +16,7 @@ import {
   writeGuestChatRecords,
   type ChatViewMessage,
 } from '../../chat/chatState'
+import { withGuestTokenHeader } from '../../chat/guestToken'
 import { useChatStream } from '../../hooks/useChatStream'
 import donggukLogo from '../../assets/images/dongguk-logo.png'
 import dongddokiLogo from '../../assets/images/dongddoki-logo.png'
@@ -118,6 +119,13 @@ const HomePage = () => {
   const departmentSelectRef = useRef<HTMLSelectElement | null>(null)
   const { streamMessage, stopStream } = useChatStream()
   const isAuthenticated = authStatus === 'authenticated'
+  const selectedGuestToken = authStatus === 'guest'
+    ? activeChats.find((chat) => chat.id === selectedChatId)?.guestToken
+    : undefined
+  const reusableGuestToken = selectedGuestToken
+    ?? (authStatus === 'guest'
+      ? activeChats.find((chat) => chat.guestToken)?.guestToken
+      : undefined)
 
   // Mobile sidebar state
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
@@ -353,6 +361,7 @@ const HomePage = () => {
       setIsCreatingChat(true)
       const chatRoom = await apiFetch<ActiveChat>('/chat/start', {
         method: 'POST',
+        headers: withGuestTokenHeader({}, reusableGuestToken),
         json: { org: selectedOrg, title: trimmedTitle },
       })
       if (authStatus === 'guest') {
@@ -564,6 +573,7 @@ const HomePage = () => {
     question: ChatViewMessage,
     assistantId: string,
     restoreInputOnError: boolean,
+    guestToken = selectedGuestToken,
   ) => {
     setChatSending(true)
     setChatError(null)
@@ -578,6 +588,7 @@ const HomePage = () => {
           createdTime: typeof question.createdTime === 'string'
             ? question.createdTime
             : new Date().toISOString(),
+          guestToken: authStatus === 'guest' ? guestToken : undefined,
         },
         {
           onText: (accumulated) => {
@@ -645,7 +656,11 @@ const HomePage = () => {
     }
   }
 
-  const sendChatMessage = async (text: string, chatId: string | number) => {
+  const sendChatMessage = async (
+    text: string,
+    chatId: string | number,
+    guestToken = selectedGuestToken,
+  ) => {
     const resolvedChatId = String(chatId)
     const newMsg: ChatViewMessage = {
       id: typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
@@ -668,7 +683,7 @@ const HomePage = () => {
 
     // 내 메시지 + 빈 봇 말풍선을 함께 추가
     setChatMessages((prev) => [...prev, newMsg, botPlaceholder])
-    await streamIntoAssistant(newMsg, botMessageId, true)
+    await streamIntoAssistant(newMsg, botMessageId, true, guestToken)
   }
 
   const regenerateChatMessage = async (assistantId: string) => {
@@ -697,6 +712,7 @@ const HomePage = () => {
     }
 
     let currentChatId = selectedChatId
+    let currentGuestToken = selectedGuestToken
 
     // 채팅방이 없으면 자동 생성
     if (!currentChatId) {
@@ -712,11 +728,13 @@ const HomePage = () => {
         
         const chatRoom = await apiFetch<ActiveChat>('/chat/start', {
           method: 'POST',
+          headers: withGuestTokenHeader({}, reusableGuestToken),
           json: { org: defaultOrg, title },
         })
 
         if (authStatus === 'guest') {
           storeGuestChat(chatRoom)
+          currentGuestToken = chatRoom.guestToken
         } else {
           setActiveChats((prev) => [chatRoom, ...prev])
         }
@@ -752,7 +770,7 @@ const HomePage = () => {
 
     setChatInput('')
     resizeChatInput()
-    await sendChatMessage(trimmed, currentChatId)
+    await sendChatMessage(trimmed, currentChatId, currentGuestToken)
   }
 
   const isHeroPrimaryDisabled = isNewChatDisabled
@@ -1122,13 +1140,18 @@ const HomePage = () => {
                               />
                             )}
                             {!message.isAsk && !isStoppedAttempt && message.requestId && (
-                              <MessageFeedback requestId={message.requestId} disabled={chatSending} />
+                              <MessageFeedback
+                                requestId={message.requestId}
+                                disabled={chatSending}
+                                guestToken={selectedGuestToken}
+                              />
                             )}
                             {!message.isAsk && !isStoppedAttempt && (
                               <SuggestedQuestions
                                 questions={message.suggestedQuestions ?? []}
                                 requestId={message.requestId}
                                 disabled={chatSending}
+                                guestToken={selectedGuestToken}
                                 onSelect={(question) => {
                                   if (selectedChatId) {
                                     sendChatMessage(question, selectedChatId)

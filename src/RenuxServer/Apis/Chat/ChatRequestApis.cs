@@ -104,19 +104,29 @@ static public class ChatRequestApis
                 // Guest flow: Do NOT save to DB
                 // Create a temporary ID for the frontend session
                 Guid guestChatId = Guid.NewGuid();
-                
-                // Ensure the guest cookie exists for session consistency (optional but good practice)
-                if (!GuestIdentity.TryValidate(context.Request, dataProtectionProvider, out _))
+
+                string guestToken;
+                if (GuestIdentity.TryValidate(
+                    context.Request,
+                    dataProtectionProvider,
+                    out _,
+                    out string validatedGuestToken))
                 {
+                    guestToken = validatedGuestToken;
+                }
+                else
+                {
+                    guestToken = GuestIdentity.Issue(dataProtectionProvider);
                     CookieOptions opt = BuildGuestCookieOptions(configuration);
-                    context.Response.Cookies.Append(GuestIdentity.CookieName, GuestIdentity.Issue(dataProtectionProvider), opt);
+                    context.Response.Cookies.Append(GuestIdentity.CookieName, guestToken, opt);
                 }
 
                 ActiveChatDto guestChatDto = new()
                 {
                     Id = guestChatId,
                     Organization = stch.Org,
-                    Title = stch.Title
+                    Title = stch.Title,
+                    GuestToken = guestToken
                 };
                 return Results.Ok(guestChatDto);
             }
