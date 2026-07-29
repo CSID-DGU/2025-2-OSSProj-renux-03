@@ -23,10 +23,10 @@ def test_collect_board_continues_past_known_articles(monkeypatch):
         {"article_id": 6, "title": "새 공지", "category": "", "posted_at": date(2026, 6, 1), "views": 1, "is_pinned": False}
     )
 
-    def fake_fetch_notice_list(board_code: str, page: int = 1):
+    def fake_fetch_notice_list(board_code: str, page: int = 1, **_request_limits):
         return list_rows if page == 1 else []
 
-    def fake_fetch_notice_detail(board_code: str, article_id: int):
+    def fake_fetch_notice_detail(board_code: str, article_id: int, **_request_limits):
         return {
             "posted_at": date(2026, 6, 1),
             "views": 2,
@@ -64,10 +64,10 @@ def test_collect_board_continues_after_page_with_only_known_articles(monkeypatch
         ],
     }
 
-    def fake_fetch_notice_list(board_code: str, page: int = 1):
+    def fake_fetch_notice_list(board_code: str, page: int = 1, **_request_limits):
         return pages.get(page, [])
 
-    def fake_fetch_notice_detail(board_code: str, article_id: int):
+    def fake_fetch_notice_detail(board_code: str, article_id: int, **_request_limits):
         return {
             "posted_at": date(2026, 6, 1),
             "views": 2,
@@ -94,7 +94,7 @@ def test_collect_board_continues_after_page_with_only_known_articles(monkeypatch
 
 
 def test_collect_board_keeps_notice_when_detail_fetch_fails(monkeypatch):
-    def fake_fetch_notice_list(board_code: str, page: int = 1):
+    def fake_fetch_notice_list(board_code: str, page: int = 1, **_request_limits):
         if page != 1:
             return []
         return [
@@ -108,7 +108,7 @@ def test_collect_board_keeps_notice_when_detail_fetch_fails(monkeypatch):
             }
         ]
 
-    def fake_fetch_notice_detail(board_code: str, article_id: int):
+    def fake_fetch_notice_detail(board_code: str, article_id: int, **_request_limits):
         raise RuntimeError("detail parse failed")
 
     monkeypatch.setattr(dongguk_notices, "fetch_notice_list", fake_fetch_notice_list)

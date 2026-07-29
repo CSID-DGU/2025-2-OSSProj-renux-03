@@ -167,6 +167,12 @@ RAG_NOTICES_REFRESH_HOURS = float(os.getenv("RAG_NOTICES_REFRESH_HOURS", "6"))
 RAG_MEALS_REFRESH_HOURS = float(os.getenv("RAG_MEALS_REFRESH_HOURS", "24"))
 # 공지 갱신 시 게시판당 페이지 수(known-id 조기 중단의 안전 상한).
 RAG_NOTICES_REFRESH_MAX_PAGES = int(os.getenv("RAG_NOTICES_REFRESH_MAX_PAGES", "30"))
+# 스케줄러 크롤 요청 한 번당 제한과 최대 시도 횟수. 수동 크롤러 기본값과 분리해
+# 백그라운드 갱신이 장시간 네트워크 대기에 묶이지 않도록 한다.
+RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS = float(
+    os.getenv("RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS", "15")
+)
+RAG_SCHEDULER_REQUEST_RETRIES = int(os.getenv("RAG_SCHEDULER_REQUEST_RETRIES", "2"))
 # 공지 인덱스 재생성 시 Chroma 전량 재임베딩을 피하고 증분 dense 유지를 사용한다.
 # (변경/신규 공지는 _upsert_notice_chunks가 이미 Chroma에 증분 upsert/삭제하므로,
 #  refresh 단계에서는 parquet/TF-IDF만 전체 재생성하면 된다. Chroma 카운트가 어긋나면
@@ -272,6 +278,8 @@ __all__ = [
     "RAG_NOTICES_REFRESH_HOURS",
     "RAG_MEALS_REFRESH_HOURS",
     "RAG_NOTICES_REFRESH_MAX_PAGES",
+    "RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS",
+    "RAG_SCHEDULER_REQUEST_RETRIES",
     "RAG_NOTICES_INCREMENTAL_EMBED",
     "MAX_HISTORY_STORE_SIZE",
     "REDIS_URL",

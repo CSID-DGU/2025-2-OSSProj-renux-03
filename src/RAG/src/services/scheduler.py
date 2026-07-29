@@ -15,7 +15,12 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
-from src.config import RAG_NOTICES_REFRESH_MAX_PAGES, RAG_SCHEDULER_ENABLED
+from src.config import (
+    RAG_NOTICES_REFRESH_MAX_PAGES,
+    RAG_SCHEDULER_ENABLED,
+    RAG_SCHEDULER_REQUEST_RETRIES,
+    RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS,
+)
 
 logger = logging.getLogger(__name__)
 KST = timezone(timedelta(hours=9))
@@ -45,7 +50,12 @@ def refresh_notices_job() -> None:
     from src.pipelines.notices_sync import load_known_article_ids_by_board, sync_notices
 
     start = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-    logger.info("[scheduler] 공지 갱신 시작 (%s)", start)
+    logger.info(
+        "[scheduler] 공지 갱신 시작 (%s) request_timeout=%ss request_retries=%s",
+        start,
+        RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS,
+        RAG_SCHEDULER_REQUEST_RETRIES,
+    )
     try:
         try:
             known_ids_by_board = load_known_article_ids_by_board()
@@ -55,6 +65,8 @@ def refresh_notices_job() -> None:
             known_ids_by_board=known_ids_by_board,
             max_pages=RAG_NOTICES_REFRESH_MAX_PAGES,
             delay=0.2,
+            request_timeout=RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS,
+            request_retries=RAG_SCHEDULER_REQUEST_RETRIES,
         )
         summary = sync_notices(df, allow_missing_detection=False, mode="full-sync")
         _refresh_runtime_dataset_state("notices")
@@ -73,9 +85,18 @@ def refresh_meals_job() -> None:
     from src.pipelines.ingest import ingest_meals
 
     start = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-    logger.info("[scheduler] 학식 갱신 시작 (%s)", start)
+    logger.info(
+        "[scheduler] 학식 갱신 시작 (%s) request_timeout=%ss request_retries=%s",
+        start,
+        RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS,
+        RAG_SCHEDULER_REQUEST_RETRIES,
+    )
     try:
-        df = crawl_meals(days_ahead=13)
+        df = crawl_meals(
+            days_ahead=13,
+            request_timeout=RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS,
+            request_retries=RAG_SCHEDULER_REQUEST_RETRIES,
+        )
         if df.empty:
             logger.warning("[scheduler] 학식 수집 0건 — 기존 인덱스 보존(갱신 건너뜀)")
             return
