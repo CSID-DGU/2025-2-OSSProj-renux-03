@@ -575,47 +575,53 @@ static public class ChatRequestApis
             try
             {
                 string answerKey = ProductTelemetry.BuildPseudonymousKey(configuration, "answer", feedback.RequestId);
-                await using var feedbackTransaction = await db.Database.BeginTransactionAsync(context.RequestAborted);
-                await db.Database.ExecuteSqlInterpolatedAsync(
-                    $"SELECT pg_advisory_xact_lock(hashtextextended({answerKey}, 0));",
-                    context.RequestAborted);
-                int? existingRating = await ProductTelemetry.FindFeedbackRatingAsync(
-                    db,
-                    configuration,
-                    eventContext,
-                    feedback.RequestId,
-                    context.RequestAborted);
-                FeedbackDecision feedbackDecision = FeedbackPolicy.Decide(existingRating, feedback.Rating);
-                if (feedbackDecision is not FeedbackDecision.Accept)
-                {
-                    await feedbackTransaction.CommitAsync(context.RequestAborted);
-                    return feedbackDecision == FeedbackDecision.Duplicate
-                        ? Results.Ok(new { ok = true, duplicate = true })
-                        : Results.Conflict(new { message = "이미 반대 평가가 제출된 답변입니다." });
-                }
+                var strategy = db.Database.CreateExecutionStrategy();
 
-                using var response = await client.PostAsJsonAsync($"{ragUrl}/feedback", payload, JsonOptions, context.RequestAborted);
-                if (response.IsSuccessStatusCode)
+                // EnableRetryOnFailure requires user-initiated transactions to run inside the execution strategy.
+                return await strategy.ExecuteAsync(async () =>
                 {
-                    await ProductTelemetry.RecordAsync(
+                    await using var feedbackTransaction = await db.Database.BeginTransactionAsync(context.RequestAborted);
+                    await db.Database.ExecuteSqlInterpolatedAsync(
+                        $"SELECT pg_advisory_xact_lock(hashtextextended({answerKey}, 0));",
+                        context.RequestAborted);
+                    int? existingRating = await ProductTelemetry.FindFeedbackRatingAsync(
                         db,
                         configuration,
                         eventContext,
-                        new ProductEventData(
-                            ProductEventTypes.FeedbackSubmitted,
-                            feedback.RequestId,
-                            verifiedChatId,
-                            Rating: feedback.Rating),
+                        feedback.RequestId,
                         context.RequestAborted);
-                    await feedbackTransaction.CommitAsync(context.RequestAborted);
-                    return Results.Ok(new { ok = true });
-                }
+                    FeedbackDecision feedbackDecision = FeedbackPolicy.Decide(existingRating, feedback.Rating);
+                    if (feedbackDecision is not FeedbackDecision.Accept)
+                    {
+                        await feedbackTransaction.CommitAsync(context.RequestAborted);
+                        return feedbackDecision == FeedbackDecision.Duplicate
+                            ? Results.Ok(new { ok = true, duplicate = true })
+                            : Results.Conflict(new { message = "이미 반대 평가가 제출된 답변입니다." });
+                    }
 
-                logger.LogWarning(
-                    "RAG feedback request failed. StatusCode={StatusCode}",
-                    (int)response.StatusCode
-                );
-                return Results.StatusCode(StatusCodes.Status502BadGateway);
+                    using var response = await client.PostAsJsonAsync($"{ragUrl}/feedback", payload, JsonOptions, context.RequestAborted);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        await ProductTelemetry.RecordAsync(
+                            db,
+                            configuration,
+                            eventContext,
+                            new ProductEventData(
+                                ProductEventTypes.FeedbackSubmitted,
+                                feedback.RequestId,
+                                verifiedChatId,
+                                Rating: feedback.Rating),
+                            context.RequestAborted);
+                        await feedbackTransaction.CommitAsync(context.RequestAborted);
+                        return Results.Ok(new { ok = true });
+                    }
+
+                    logger.LogWarning(
+                        "RAG feedback request failed. StatusCode={StatusCode}",
+                        (int)response.StatusCode
+                    );
+                    return Results.StatusCode(StatusCodes.Status502BadGateway);
+                });
             }
             catch (Exception ex)
             {
