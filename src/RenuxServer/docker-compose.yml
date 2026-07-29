@@ -1,6 +1,6 @@
 services:
     
-    db: # docker run -d --name renux_db_test --env-file .\.env -v postgres_data_test:/var/lib/postgresql -p 5678:5432 postgres:latest
+    db: # docker run -d --name renux_db_test --env-file .\.env -v postgres_data_test:/var/lib/postgresql postgres:latest
         container_name: renux_db_test
         image: postgres:latest
         env_file: .env
@@ -10,8 +10,6 @@ services:
             POSTGRES_DB: ${POSTGRES_DB}
         volumes:
             - postgres_data_test:/var/lib/postgresql
-        ports:
-            - "5678:5432"
         healthcheck:
             test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
             interval: 5s 
