@@ -936,6 +936,10 @@ def build_course_chunks(combined: pd.DataFrame) -> pd.DataFrame:
         major_name = str(row.get("major", "")).strip() or str(row.get("department_name", "")).strip()
         college_name = str(row.get("college_name", "")).strip()
         curriculum_url = str(row.get("curriculum_url", "")).strip() or str(row.get("source_url", "")).strip()
+        credit = _first_nonempty(row, ["credit_value", "credit", "학점"])
+        grade = _first_nonempty(row, ["recommended_grades", "grade", "이수대상", "학년"])
+        semester = _first_nonempty(row, ["offered_semesters", "semester", "개설학기", "학기"])
+        course_type = _first_nonempty(row, ["course_type", "전공구분", "이수구분"])
         doc_id = make_doc_id(
             "courses",
             major_name,
@@ -978,6 +982,18 @@ def build_course_chunks(combined: pd.DataFrame) -> pd.DataFrame:
                 "course_id": db_id,
                 "major": major_name,
                 "college_name": college_name,
+                "credit": credit,
+                "grade": grade,
+                "semester": semester,
+                "course_type": course_type,
+                "curriculum_year": row.get("curriculum_year", ""),
+                "source_page": row.get("source_page", ""),
+                "source_type": row.get("source_type", ""),
+                "source_priority": row.get("source_priority", ""),
+                "course_code_conflict": row.get("course_code_conflict", False),
+                "availability_status": row.get("availability_status", "curriculum_only"),
+                "data_quality_score": row.get("data_quality_score", ""),
+                "collection_status": row.get("collection_status", ""),
             }
         )
 
@@ -1036,10 +1052,14 @@ def _load_general_courses_df(path: Path) -> pd.DataFrame:
     return df
 
 
-def ingest_courses() -> Tuple[pd.DataFrame, object, object]:
+def ingest_courses(*, refresh_from_csv: bool = False) -> Tuple[pd.DataFrame, object, object]:
     session = SessionLocal()
     try:
-        if session.query(Course.id).first() is not None and session.query(Chunk.id).filter(Chunk.course_id.isnot(None)).first() is not None:
+        if (
+            not refresh_from_csv
+            and session.query(Course.id).first() is not None
+            and session.query(Chunk.id).filter(Chunk.course_id.isnot(None)).first() is not None
+        ):
             existing = reindex_from_db("courses").get("courses")
             if existing is not None:
                 return existing
@@ -1465,7 +1485,7 @@ def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, 
                     "relative_dir": rule.relative_dir,
                     "filename": rule.filename,
                     "source": "rules",
-                    "url": "",
+                    "url": raw_data.get("curriculum_url") or raw_data.get("source_url", ""),
                     "published_at": "",
                     "rule_id": rule.id
                 })
@@ -1542,7 +1562,19 @@ def reindex_from_db(target: str | None = None) -> Dict[str, Tuple[pd.DataFrame, 
                     "published_at": "",
                     "course_id": course.id,
                     "major": raw_data.get("major", ""),
-                    "college_name": raw_data.get("college_name", "")
+                    "college_name": raw_data.get("college_name", ""),
+                    "credit": raw_data.get("credit_value") or raw_data.get("credit", ""),
+                    "grade": raw_data.get("recommended_grades") or raw_data.get("grade", ""),
+                    "semester": raw_data.get("offered_semesters") or raw_data.get("semester", ""),
+                    "course_type": raw_data.get("course_type", ""),
+                    "curriculum_year": raw_data.get("curriculum_year", ""),
+                    "source_page": raw_data.get("source_page", ""),
+                    "source_type": raw_data.get("source_type", ""),
+                    "source_priority": raw_data.get("source_priority", ""),
+                    "course_code_conflict": raw_data.get("course_code_conflict", False),
+                    "availability_status": raw_data.get("availability_status", "curriculum_only"),
+                    "data_quality_score": raw_data.get("data_quality_score", ""),
+                    "collection_status": raw_data.get("collection_status", ""),
                 })
             if data:
                 df = _canonicalize_campus_scope_frame(pd.DataFrame(data))

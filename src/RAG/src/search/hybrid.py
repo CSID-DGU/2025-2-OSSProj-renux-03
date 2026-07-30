@@ -613,6 +613,9 @@ def hybrid_search_with_meta(
         "chunk_id", "title", "chunk_text", "hybrid_score", "vector_score", "sparse_score",
         "topics", "category", "published_at", "apply_deadline", "url", "source", "notice_id",
         "major", "college_name", "entry_year", "source_type", "attachments",
+        "course_code", "credit", "grade", "semester", "course_type",
+        "curriculum_year", "source_page", "source_priority", "course_code_conflict",
+        "availability_status", "data_quality_score", "collection_status",
         "doc_id", "position",  # parent-document 확장(이웃 청크 결합)에 사용
         "is_closed", "restaurant", "meal_date",  # 학식: 휴무 패널티·식당/날짜 표시에 사용
         "schedule_start", "schedule_end", "department", "campus_scope",
