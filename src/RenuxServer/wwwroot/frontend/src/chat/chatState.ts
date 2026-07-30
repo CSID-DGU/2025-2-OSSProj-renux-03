@@ -89,6 +89,9 @@ const normalizeGuestRecord = (value: unknown): GuestChatRecord | null => {
     organization: isObject(value.organization) || value.organization === null
       ? value.organization as ActiveChat['organization']
       : null,
+    ...(typeof value.guestToken === 'string' && value.guestToken.length > 0
+      ? { guestToken: value.guestToken }
+      : {}),
     ...(messages.length > 0 ? { messages } : {}),
     ...(typeof value.updatedAt === 'string' ? { updatedAt: value.updatedAt } : {}),
   }
@@ -166,6 +169,23 @@ export const updateGuestChatMessages = (
     updatedAt,
   }
   return [next, ...records.filter((record) => record.id !== chatId)]
+}
+
+/** 게스트 대화를 이 기기 저장소에서 제거한다(서버에는 애초에 없다). */
+export const removeGuestChat = (
+  records: GuestChatRecord[],
+  chatId: string,
+): GuestChatRecord[] => records.filter((record) => record.id !== chatId)
+
+/** 게스트 대화 제목을 바꾼다. 없는 대화면 목록을 그대로 돌려준다. */
+export const renameGuestChat = (
+  records: GuestChatRecord[],
+  chatId: string,
+  title: string,
+): GuestChatRecord[] => {
+  const trimmed = title.trim()
+  if (!trimmed) return records
+  return records.map((record) => (record.id === chatId ? { ...record, title: trimmed } : record))
 }
 
 export const resolveGuestChatRoute = (

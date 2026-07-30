@@ -34,6 +34,7 @@ static public class EtcApis
                 {
                     Id = organization.Id,
                     Major = new MajorDto(organization.Major!.Id, organization.Major.Majorname),
+                    UpdatedTime = organization.UpdatedTime,
                 })
                 .ToList();
 
@@ -46,9 +47,18 @@ static public class EtcApis
                 .Select(g => new { MajorId = g.Key, Name = g.Select(u => u.Username).FirstOrDefault() })
                 .ToDictionaryAsync(x => x.MajorId, x => x.Name);
 
+            // 관리자 화면의 '대기 요청' 열이 프런트 하드코딩 0이 아니라 실제 건수를 보여주도록
+            // 학과별 미처리 가입 요청 수를 함께 내려준다.
+            var pendingByMajor = await db.CouncilSignupRequests
+                .Where(request => request.Status == "pending")
+                .GroupBy(request => request.MajorId)
+                .Select(g => new { MajorId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.MajorId, x => x.Count);
+
             foreach (var orgDto in orgDtos)
             {
                 orgDto.ManagerName = managersByMajor.GetValueOrDefault(orgDto.Major.Id) ?? "-";
+                orgDto.PendingRequests = pendingByMajor.GetValueOrDefault(orgDto.Major.Id);
             }
 
             return Results.Ok(orgDtos);

@@ -1,90 +1,132 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { apiFetch, resolveApiUrl, withNgrokHeader } from '../../api/client'
+import { useSearchParams } from 'react-router-dom'
+import { resolveApiUrl, withNgrokHeader } from '../../api/client'
+import { fetchChatLogs } from '../../admin/adminApi'
 import { getCsvFilename, triggerBlobDownload } from '../../admin/csvDownload'
+import { formatDateTime, formatFullDateTime, getApiErrorMessage } from '../../admin/format'
+import QuickFaqModal, { type QuickFaqSeed } from '../../components/admin/QuickFaqModal'
+import { useAdminConsole } from '../../components/admin/adminConsoleContext'
+import {
+  EmptyState,
+  ErrorNote,
+  FilterBar,
+  FilterChip,
+  LoadingNote,
+  PageHeader,
+  Panel,
+  StatusPill,
+} from '../../components/admin/ui'
 import type { RagChatLog } from '../../types/admin'
 
-const formatDateTime = (value?: string | null) => {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '-'
-  return new Intl.DateTimeFormat('ko-KR', {
-    month: 'numeric',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(date)
+const PAGE_SIZE = 50
+
+const RANGE_OPTIONS = [
+  { key: '1', label: '오늘' },
+  { key: '7', label: '7일' },
+  { key: '30', label: '30일' },
+  { key: 'all', label: '전체' },
+]
+
+/** 기간 칩 → API에 넘길 ISO 날짜. 'all'이면 조건 없음. */
+const rangeToFrom = (range: string): string | undefined => {
+  if (range === 'all') return undefined
+  const days = Number(range)
+  if (!Number.isFinite(days)) return undefined
+  const date = new Date()
+  date.setDate(date.getDate() - (days - 1))
+  date.setHours(0, 0, 0, 0)
+  return date.toISOString()
 }
 
 const ChatLogPage = () => {
-  const navigate = useNavigate()
+  const { showToast } = useAdminConsole()
+  const [searchParams, setSearchParams] = useSearchParams()
+
   const [logs, setLogs] = useState<RagChatLog[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [refreshing, setRefreshing] = useState(false)
   const [exporting, setExporting] = useState(false)
-  const [exportNotice, setExportNotice] = useState<string | null>(null)
-  const [exportError, setExportError] = useState<string | null>(null)
-  // 200건 일괄 렌더링 방지: 검색 필터 + 점진 표시
-  const [searchTerm, setSearchTerm] = useState('')
-  const [selectedUser, setSelectedUser] = useState<string>('')
-  const [visibleCount, setVisibleCount] = useState(25)
+  const [hasMore, setHasMore] = useState(false)
 
-  const userOptions = useMemo(
-    () => Array.from(new Set(logs.map((log) => log.username).filter((username): username is string => Boolean(username)))),
-    [logs],
-  )
+  const [range, setRange] = useState('7')
+  const [fallbackOnly, setFallbackOnly] = useState(searchParams.get('fallback') === '1')
+  const [routeFilter, setRouteFilter] = useState('all')
+  const [userFilter, setUserFilter] = useState('all')
+  const [search, setSearch] = useState('')
+  const [page, setPage] = useState(0)
 
-  const filteredLogs = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase()
-    let result = logs
-    if (term) {
-      result = result.filter(
-        (log) =>
-        (log.question ?? '').toLowerCase().includes(term) ||
-        (log.answer ?? '').toLowerCase().includes(term),
-      )
-    }
-    if (selectedUser) {
-      result = result.filter((log) => (log.username ?? '게스트') === selectedUser)
-    }
-    return result
-  }, [logs, searchTerm, selectedUser])
-  const visibleLogs = filteredLogs.slice(0, visibleCount)
+  const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [faqSeed, setFaqSeed] = useState<QuickFaqSeed | null>(null)
 
-  const fetchLogs = useCallback(async () => {
+  const loadLogs = useCallback(async (targetPage: number) => {
     setLoading(true)
     setError(null)
     try {
-      const data = await apiFetch<RagChatLog[]>('/admin/rag-logs-list?limit=200')
-      if (data && Array.isArray(data)) {
+      const data = await fetchChatLogs({
+        limit: PAGE_SIZE,
+        offset: targetPage * PAGE_SIZE,
+        from: rangeToFrom(range),
+        route: routeFilter === 'all' ? undefined : routeFilter,
+        fallbackOnly,
+        search: search.trim() || undefined,
+      })
+      if (Array.isArray(data)) {
         setLogs(data)
+        // 서버가 요청한 만큼 채워 보냈으면 다음 페이지가 있을 가능성이 있다.
+        setHasMore(data.length === PAGE_SIZE)
       } else {
-        console.error('Invalid data received:', data)
         setLogs([])
+        setHasMore(false)
         setError('서버에서 올바르지 않은 데이터를 반환했습니다.')
       }
-    } catch (e) {
-      console.error('Failed to fetch logs:', e)
-      setError('질문 로그를 불러오는데 실패했습니다.')
+    } catch (fetchError) {
+      setLogs([])
+      setHasMore(false)
+      setError(getApiErrorMessage(fetchError, '질문 로그를 불러오지 못했습니다.'))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [range, routeFilter, fallbackOnly, search])
 
-  const handleRefresh = async () => {
-    setRefreshing(true)
-    await fetchLogs()
-    setRefreshing(false)
-  }
+  useEffect(() => {
+    void loadLogs(page)
+  }, [loadLogs, page])
+
+  // 필터가 바뀌면 항상 첫 페이지로 돌아간다.
+  useEffect(() => { setPage(0) }, [range, routeFilter, fallbackOnly, search])
+
+  useEffect(() => {
+    if (fallbackOnly) searchParams.set('fallback', '1')
+    else searchParams.delete('fallback')
+    setSearchParams(searchParams, { replace: true })
+  }, [fallbackOnly, searchParams, setSearchParams])
+
+  const routeOptions = useMemo(
+    () => Array.from(new Set(logs.map((log) => log.route).filter(Boolean))).sort(),
+    [logs],
+  )
+  const userOptions = useMemo(
+    () => Array.from(new Set(logs.map((log) => log.username ?? '게스트'))).sort(),
+    [logs],
+  )
+
+  // 사용자 필터는 서버가 username을 조인해 준 뒤에야 알 수 있어 클라이언트에서 적용한다.
+  const visibleLogs = useMemo(
+    () => (userFilter === 'all' ? logs : logs.filter((log) => (log.username ?? '게스트') === userFilter)),
+    [logs, userFilter],
+  )
 
   const handleExport = async () => {
     setExporting(true)
-    setExportNotice(null)
-    setExportError(null)
-
     try {
-      const url = resolveApiUrl('/admin/rag-logs/export?limit=1000')
+      const params = new URLSearchParams({ limit: '1000' })
+      const from = rangeToFrom(range)
+      if (from) params.set('from', from)
+      if (routeFilter !== 'all') params.set('route', routeFilter)
+      if (fallbackOnly) params.set('fallback_only', '1')
+      if (search.trim()) params.set('search', search.trim())
+
+      const url = resolveApiUrl(`/admin/rag-logs/export?${params.toString()}`)
       const response = await fetch(url, {
         method: 'GET',
         credentials: 'include',
@@ -109,147 +151,142 @@ const ChatLogPage = () => {
 
       const filename = getCsvFilename(response.headers.get('Content-Disposition'))
       triggerBlobDownload(blob, filename)
-      setExportNotice(`${filename} 다운로드를 시작했습니다.`)
-    } catch (error) {
-      console.error('Failed to export RAG logs:', error)
-      setExportError(error instanceof Error ? error.message : 'CSV 파일을 내려받지 못했습니다.')
+      showToast(`${filename} 다운로드를 시작했습니다.`, 'success')
+    } catch (exportError) {
+      showToast(getApiErrorMessage(exportError, 'CSV 파일을 내려받지 못했습니다.'), 'error')
     } finally {
       setExporting(false)
     }
   }
 
-  useEffect(() => {
-    fetchLogs()
-  }, [fetchLogs])
-
   return (
-    <div className="admin-page-wrapper">
-      <div className="admin-shell">
-        <header className="admin-header glass-panel compact">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-              <button
-                type="button"
-                className="ghost-btn"
-                onClick={() => navigate('/admin/university')}
-                style={{ padding: '8px 12px', fontSize: '0.9rem' }}
-              >
-                ← 뒤로가기
-              </button>
-              <h1 className="admin-title compact" style={{ margin: 0 }}>전체 질문 로그</h1>
-            </div>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button
-                type="button"
-                className="ghost-btn"
-                onClick={handleExport}
-                disabled={exporting || loading}
-                aria-describedby="rag-log-export-status"
-              >
-                {exporting ? 'CSV 생성 중...' : '최근 1,000건 CSV'}
-              </button>
-              <button type="button" className="ghost-btn" onClick={handleRefresh} disabled={refreshing || loading}>
-                {refreshing ? '새로고침 중...' : '새로고침'}
-              </button>
-              <button type="button" className="hero-btn hero-btn--primary" onClick={() => navigate('/')}>
-                홈으로
-              </button>
-            </div>
-          </div>
-        </header>
+    <>
+      <PageHeader
+        title="대화 로그"
+        description="사용자 질문과 챗봇 답변을 확인하고, 부족한 답변은 바로 FAQ로 등록합니다."
+        actions={
+          <>
+            <button type="button" className="ac-btn" onClick={handleExport} disabled={exporting || loading}>
+              {exporting ? 'CSV 생성 중...' : '현재 조건 CSV (최대 1,000건)'}
+            </button>
+            <button type="button" className="ac-btn" onClick={() => { void loadLogs(page) }} disabled={loading}>
+              {loading ? '새로고침 중...' : '새로고침'}
+            </button>
+          </>
+        }
+      />
 
-        <div id="rag-log-export-status" aria-live="polite">
-          {exportNotice ? (
-            <div className="admin-alert" role="status" style={{ marginTop: '12px', color: '#15803d', background: '#f0fdf4', borderColor: '#bbf7d0' }}>
-              {exportNotice}
-            </div>
-          ) : exportError ? (
-            <div className="admin-alert admin-alert--danger" role="alert" style={{ marginTop: '12px' }}>
-              {exportError}
-            </div>
-          ) : null}
-        </div>
+      <Panel padded={false}>
+        <FilterBar>
+          {RANGE_OPTIONS.map((option) => (
+            <FilterChip key={option.key} active={range === option.key} onClick={() => setRange(option.key)}>
+              {option.label}
+            </FilterChip>
+          ))}
+          <FilterChip active={fallbackOnly} onClick={() => setFallbackOnly((on) => !on)}>
+            Fallback만
+          </FilterChip>
+          <select
+            className="ac-select"
+            value={routeFilter}
+            onChange={(event) => setRouteFilter(event.target.value)}
+            aria-label="분류(route) 필터"
+          >
+            <option value="all">전체 분류</option>
+            {routeOptions.map((route) => <option key={route} value={route}>{route}</option>)}
+          </select>
+          <select
+            className="ac-select"
+            value={userFilter}
+            onChange={(event) => setUserFilter(event.target.value)}
+            aria-label="사용자 필터"
+          >
+            <option value="all">전체 사용자</option>
+            {userOptions.map((username) => <option key={username} value={username}>{username}</option>)}
+          </select>
+          <input
+            type="search"
+            className="ac-input ac-input--grow"
+            placeholder="질문·답변 내용 검색"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            aria-label="로그 검색"
+          />
+        </FilterBar>
 
-        <section className="admin-content glass-panel" style={{ marginTop: '20px', padding: '20px', maxHeight: 'calc(100vh - 150px)', overflowY: 'auto' }}>
-          <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap' }}>
-            <input
-              type="search"
-              className="admin-input"
-              placeholder="질문/답변 내용 검색"
-              value={searchTerm}
-              onChange={(e) => {
-                setSearchTerm(e.target.value)
-                setVisibleCount(25)
-              }}
-              style={{ width: '100%', maxWidth: '420px' }}
-            />
-            <select
-              className="admin-input"
-              value={selectedUser}
-              onChange={(e) => {
-                setSelectedUser(e.target.value)
-                setVisibleCount(25)
-              }}
-              style={{ width: '180px' }}
-            >
-              <option value="">전체 사용자</option>
-              {userOptions.map((username) => (
-                <option key={username} value={username}>{username}</option>
-              ))}
-            </select>
-          </div>
-          {loading ? (
-            <div className="admin-table__empty">로딩 중...</div>
-          ) : error ? (
-            <div className="admin-alert admin-alert--danger" role="alert">{error}</div>
-          ) : filteredLogs.length === 0 ? (
-            <div className="admin-table__empty">{searchTerm ? '검색 결과가 없습니다.' : '기록된 질문 로그가 없습니다.'}</div>
-          ) : (
-            <div className="admin-table">
-              <div className="admin-table__head" style={{ gridTemplateColumns: '0.7fr 0.8fr 1fr 3fr 0.5fr' }}>
-                <span>일시</span>
-                <span>사용자</span>
-                <span>분류 / 상태</span>
-                <span>대화 내용</span>
-                <span style={{ textAlign: 'center' }}>참조</span>
-              </div>
-              <ul className="admin-table__body">
-                {visibleLogs.map((log) => (
-                  <li key={log.id} className="admin-table__row" style={{ gridTemplateColumns: '0.7fr 0.8fr 1fr 3fr 0.5fr', alignItems: 'start', padding: '16px 12px' }}>
-                    <span style={{ opacity: 0.8, fontSize: '0.9rem' }}>{formatDateTime(log.created_at)}</span>
-                    <span style={{ fontSize: '0.9rem', opacity: 0.85 }}>{log.username ?? '게스트'}</span>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                      <span className="status-pill status-pill--pending" style={{ alignSelf: 'flex-start' }}>{log.route}</span>
+        {loading ? (
+          <LoadingNote />
+        ) : error ? (
+          <ErrorNote>{error}</ErrorNote>
+        ) : visibleLogs.length === 0 ? (
+          <EmptyState>조건에 맞는 질문 로그가 없습니다.</EmptyState>
+        ) : (
+          <>
+            <div className="ac-list" style={{ maxHeight: 'none' }}>
+              {visibleLogs.map((log) => {
+                const expanded = expandedId === log.id
+                return (
+                  <div key={log.id} className="ac-list-item" style={{ flexDirection: 'column', alignItems: 'stretch', cursor: 'default' }}>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '6px' }}>
+                      <span className="ac-list-item__meta" title={formatFullDateTime(log.created_at)} style={{ margin: 0 }}>
+                        {formatDateTime(log.created_at)}
+                      </span>
+                      <span className="ac-list-item__meta" style={{ margin: 0 }}>{log.username ?? '게스트'}</span>
+                      <StatusPill tone="pending">{log.route}</StatusPill>
                       {log.fallback_triggered && (
-                        <span className="status-pill status-pill--danger" style={{ alignSelf: 'flex-start' }}>Fallback: {log.fallback_reason}</span>
+                        <StatusPill tone="danger">Fallback: {log.fallback_reason ?? '사유 미상'}</StatusPill>
                       )}
+                      <span className="ac-list-item__meta" style={{ margin: 0 }}>참조 {log.source_count}개</span>
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                        <strong style={{ color: '#007AFF', minWidth: '24px' }}>Q.</strong>
-                        <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '0.95rem' }}>{log.question}</span>
+
+                    <div className="ac-qa">
+                      <div className="ac-qa__row">
+                        <span className="ac-qa__tag ac-qa__tag--q">Q.</span>
+                        <span className="ac-qa__text">{log.question}</span>
                       </div>
-                      <div style={{ display: 'flex', gap: '8px', backgroundColor: 'rgba(255,255,255,0.03)', padding: '10px', borderRadius: '6px' }}>
-                        <strong style={{ color: '#34C759', minWidth: '24px' }}>A.</strong>
-                        <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', opacity: 0.9, fontSize: '0.95rem' }}>{log.answer}</span>
+                      <div className="ac-qa__row">
+                        <span className="ac-qa__tag ac-qa__tag--a">A.</span>
+                        <span className={`ac-qa__text ${expanded ? '' : 'ac-qa__text--clamp'}`}>{log.answer}</span>
                       </div>
                     </div>
-                    <span style={{ textAlign: 'center', opacity: 0.8, fontSize: '0.9rem' }}>{log.source_count}개</span>
-                  </li>
-                ))}
-              </ul>
-              {visibleCount < filteredLogs.length && (
-                <div style={{ textAlign: 'center', padding: '16px' }}>
-                  <button className="ghost-btn" type="button" onClick={() => setVisibleCount((c) => c + 25)}>
-                    더 보기 ({visibleCount}/{filteredLogs.length})
-                  </button>
-                </div>
-              )}
+
+                    <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', marginTop: '8px', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        className="ac-btn ac-btn--sm ac-btn--ghost"
+                        onClick={() => setExpandedId(expanded ? null : log.id)}
+                        aria-expanded={expanded}
+                      >
+                        {expanded ? '접기' : '전체 보기'}
+                      </button>
+                      <button
+                        type="button"
+                        className="ac-btn ac-btn--sm"
+                        onClick={() => setFaqSeed({ question: log.question, answer: log.fallback_triggered ? '' : log.answer })}
+                      >
+                        FAQ로 등록
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
             </div>
-          )}
-        </section>
-      </div>
-    </div>
+
+            <div className="ac-filterbar" style={{ justifyContent: 'center', borderTop: '1px solid var(--ac-line)', borderBottom: 0 }}>
+              <button type="button" className="ac-btn ac-btn--sm" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>
+                이전
+              </button>
+              <span className="ac-hint">{page + 1}페이지 · {visibleLogs.length}건 표시</span>
+              <button type="button" className="ac-btn ac-btn--sm" onClick={() => setPage((p) => p + 1)} disabled={!hasMore}>
+                다음
+              </button>
+            </div>
+          </>
+        )}
+      </Panel>
+
+      <QuickFaqModal seed={faqSeed} onClose={() => setFaqSeed(null)} />
+    </>
   )
 }
 

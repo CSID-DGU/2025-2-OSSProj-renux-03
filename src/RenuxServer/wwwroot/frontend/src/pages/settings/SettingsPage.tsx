@@ -1,52 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { apiFetch, type ApiError } from '../../api/client'
-
-type NotificationTopic = 'scholarship' | 'course_registration' | 'tuition_payment' | 'document_submission' | 'academic_schedule'
-
-interface NotificationPreference {
-  topic: NotificationTopic
-  enabled: boolean
-  remindDaysBefore: number[]
-  channel: string
-}
-
-interface NotificationPreferenceResponse {
-  preferences: NotificationPreference[]
-}
-
-interface DeadlineItem {
-  id: string
-  source: string
-  sourceLabel: string
-  sourceId: string
-  title: string
-  topic: NotificationTopic
-  topicLabel: string
-  category?: string | null
-  targetDate: string
-  dDay: number
-  url?: string | null
-  snippet?: string | null
-  dateSource?: string | null
-}
-
-interface UserNotification {
-  id: string
-  topic: NotificationTopic
-  topicLabel: string
-  source: string
-  sourceId: string
-  title: string
-  body: string
-  targetDate: string
-  reminderDate: string
-  reminderDaysBefore: number
-  url?: string | null
-  isRead: boolean
-  createdTime: string
-  readTime?: string | null
-}
+import type {
+  DeadlineItem,
+  NotificationPreference,
+  NotificationPreferenceResponse,
+  NotificationTopic,
+  UserNotification,
+} from '../../types/notification'
 
 const TOPICS: Array<{ topic: NotificationTopic; label: string; description: string }> = [
   { topic: 'scholarship', label: '장학', description: '장학금 신청, 선발, 서류 제출 마감' },

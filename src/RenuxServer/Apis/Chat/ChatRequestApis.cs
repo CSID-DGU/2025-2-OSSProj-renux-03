@@ -15,6 +15,12 @@ namespace RenuxServer.Apis.Chat;
 
 public record StartChat(OrganizationDto Org, string Title);
 public record LoadChat(Guid ChatId, DateTime LastTime);
+public record RenameChat(string? Title);
+
+/// <summary>게스트 대화 이관 요청. 게스트 기록은 서버에 없어 클라이언트가 본문으로 보낸다.</summary>
+public record ClaimGuestChats(List<ClaimGuestChat>? Chats);
+public record ClaimGuestChat(Guid OrganizationId, string? Title, List<ClaimGuestMessage>? Messages);
+public record ClaimGuestMessage(bool IsAsk, string? Content, DateTime? CreatedTime);
 public record RagSource(
     string? Source,
     [property: JsonPropertyName("chunk_id")] string? ChunkId,
@@ -67,6 +73,30 @@ static public class ChatRequestApis
     // 채팅 메시지 최대 길이(자). 초과 시 RAG로 전달하지 않아 토큰 비용·OOM을 방어한다.
     private const int MaxChatContentLength = 2000;
 
+    private const int MaxChatTitleLength = 80;
+
+    // 게스트 대화 이관 상한. 클라이언트가 보낸 기록을 그대로 적재하므로 남용을 막는다.
+    private const int MaxClaimChats = 20;
+    private const int MaxClaimMessagesPerChat = 100;
+
+    /// <summary>이관된 메시지 시각을 UTC로 정규화한다. 미래 시각은 지금으로 눌러 순서를 지킨다.</summary>
+    static private DateTime NormalizeClaimedTime(DateTime? value, DateTime now)
+    {
+        if (value is null || value == default(DateTime))
+        {
+            return now;
+        }
+
+        DateTime utc = value.Value.Kind switch
+        {
+            DateTimeKind.Utc => value.Value,
+            DateTimeKind.Local => value.Value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value.Value, DateTimeKind.Utc),
+        };
+
+        return utc > now ? now : utc;
+    }
+
     static public void AddChatApis(this WebApplication application)
     {
         // IP 단위 레이트리밋(LLM 비용·남용 방어) 적용.
@@ -80,12 +110,44 @@ static public class ChatRequestApis
                 return Results.Ok(new List<ActiveChatDto>());
             }
 
-            List<ActiveChatDto> chats = (await db.Chats
-                    .Include(ch => ch.Organization)
-                    .ThenInclude(org => org!.Major)
-                    .Where(ch => Equals(ch.UserId, id))
-                    .ToListAsync())
-                .Select(ToActiveChatDto)
+            var chatEntities = await db.Chats
+                .Include(ch => ch.Organization)
+                .ThenInclude(org => org!.Major)
+                .Where(ch => Equals(ch.UserId, id))
+                .ToListAsync();
+
+            // 마지막 활동 시각·미리보기는 ActiveChat.UpdatedTime이 아니라 최근 메시지에서 구한다.
+            // UpdatedTime은 생성 시에만 기록되어 대화를 이어가도 갱신되지 않기 때문이다.
+            var chatIds = chatEntities.Select(ch => ch.Id).ToList();
+            var lastMessages = chatIds.Count == 0
+                ? []
+                : await db.ChatMessages
+                    .Where(m => chatIds.Contains(m.ChatId))
+                    .GroupBy(m => m.ChatId)
+                    .Select(g => g
+                        .OrderByDescending(m => m.CreatedTime)
+                        .Select(m => new { m.ChatId, m.Content, m.CreatedTime })
+                        .First())
+                    .ToListAsync();
+
+            var lastMessageByChat = lastMessages.ToDictionary(m => m.ChatId);
+
+            List<ActiveChatDto> chats = chatEntities
+                .Select(chat =>
+                {
+                    var dto = ToActiveChatDto(chat);
+                    if (lastMessageByChat.TryGetValue(chat.Id, out var last))
+                    {
+                        dto.UpdatedTime = last.CreatedTime;
+                        dto.LastMessage = BuildMessagePreview(last.Content);
+                    }
+                    else
+                    {
+                        dto.UpdatedTime = chat.CreatedTime;
+                    }
+                    return dto;
+                })
+                .OrderByDescending(dto => dto.UpdatedTime)
                 .ToList();
 
             return Results.Ok(chats);
@@ -104,19 +166,29 @@ static public class ChatRequestApis
                 // Guest flow: Do NOT save to DB
                 // Create a temporary ID for the frontend session
                 Guid guestChatId = Guid.NewGuid();
-                
-                // Ensure the guest cookie exists for session consistency (optional but good practice)
-                if (!GuestIdentity.TryValidate(context.Request, dataProtectionProvider, out _))
+
+                string guestToken;
+                if (GuestIdentity.TryValidate(
+                    context.Request,
+                    dataProtectionProvider,
+                    out _,
+                    out string validatedGuestToken))
                 {
+                    guestToken = validatedGuestToken;
+                }
+                else
+                {
+                    guestToken = GuestIdentity.Issue(dataProtectionProvider);
                     CookieOptions opt = BuildGuestCookieOptions(configuration);
-                    context.Response.Cookies.Append(GuestIdentity.CookieName, GuestIdentity.Issue(dataProtectionProvider), opt);
+                    context.Response.Cookies.Append(GuestIdentity.CookieName, guestToken, opt);
                 }
 
                 ActiveChatDto guestChatDto = new()
                 {
                     Id = guestChatId,
                     Organization = stch.Org,
-                    Title = stch.Title
+                    Title = stch.Title,
+                    GuestToken = guestToken
                 };
                 return Results.Ok(guestChatDto);
             }
@@ -424,12 +496,13 @@ static public class ChatRequestApis
                 fullAnswer.Append(DefaultRagFailureMessage);
                 try
                 {
-                    var meta = JsonSerializer.Serialize(
-                        new { type = "metadata", sources = Array.Empty<object>(), fallback_triggered = true, fallback_reason = (string?)null },
-                        JsonOptions);
-                    var text = JsonSerializer.Serialize(new { type = "text", content = DefaultRagFailureMessage }, JsonOptions);
-                    await context.Response.WriteAsync($"data: {meta}\n\n", context.RequestAborted);
-                    await context.Response.WriteAsync($"data: {text}\n\n", context.RequestAborted);
+                    foreach (string payload in RagStreamContract.CreateGracefulFallbackPayloads(
+                                 backendRequestId,
+                                 fallbackReason,
+                                 DefaultRagFailureMessage))
+                    {
+                        await context.Response.WriteAsync($"data: {payload}\n\n", context.RequestAborted);
+                    }
                     await context.Response.Body.FlushAsync(context.RequestAborted);
                 }
                 catch (Exception ex)
@@ -564,47 +637,53 @@ static public class ChatRequestApis
             try
             {
                 string answerKey = ProductTelemetry.BuildPseudonymousKey(configuration, "answer", feedback.RequestId);
-                await using var feedbackTransaction = await db.Database.BeginTransactionAsync(context.RequestAborted);
-                await db.Database.ExecuteSqlInterpolatedAsync(
-                    $"SELECT pg_advisory_xact_lock(hashtextextended({answerKey}, 0));",
-                    context.RequestAborted);
-                int? existingRating = await ProductTelemetry.FindFeedbackRatingAsync(
-                    db,
-                    configuration,
-                    eventContext,
-                    feedback.RequestId,
-                    context.RequestAborted);
-                FeedbackDecision feedbackDecision = FeedbackPolicy.Decide(existingRating, feedback.Rating);
-                if (feedbackDecision is not FeedbackDecision.Accept)
-                {
-                    await feedbackTransaction.CommitAsync(context.RequestAborted);
-                    return feedbackDecision == FeedbackDecision.Duplicate
-                        ? Results.Ok(new { ok = true, duplicate = true })
-                        : Results.Conflict(new { message = "이미 반대 평가가 제출된 답변입니다." });
-                }
+                var strategy = db.Database.CreateExecutionStrategy();
 
-                using var response = await client.PostAsJsonAsync($"{ragUrl}/feedback", payload, JsonOptions, context.RequestAborted);
-                if (response.IsSuccessStatusCode)
+                // EnableRetryOnFailure requires user-initiated transactions to run inside the execution strategy.
+                return await strategy.ExecuteAsync(async () =>
                 {
-                    await ProductTelemetry.RecordAsync(
+                    await using var feedbackTransaction = await db.Database.BeginTransactionAsync(context.RequestAborted);
+                    await db.Database.ExecuteSqlInterpolatedAsync(
+                        $"SELECT pg_advisory_xact_lock(hashtextextended({answerKey}, 0));",
+                        context.RequestAborted);
+                    int? existingRating = await ProductTelemetry.FindFeedbackRatingAsync(
                         db,
                         configuration,
                         eventContext,
-                        new ProductEventData(
-                            ProductEventTypes.FeedbackSubmitted,
-                            feedback.RequestId,
-                            verifiedChatId,
-                            Rating: feedback.Rating),
+                        feedback.RequestId,
                         context.RequestAborted);
-                    await feedbackTransaction.CommitAsync(context.RequestAborted);
-                    return Results.Ok(new { ok = true });
-                }
+                    FeedbackDecision feedbackDecision = FeedbackPolicy.Decide(existingRating, feedback.Rating);
+                    if (feedbackDecision is not FeedbackDecision.Accept)
+                    {
+                        await feedbackTransaction.CommitAsync(context.RequestAborted);
+                        return feedbackDecision == FeedbackDecision.Duplicate
+                            ? Results.Ok(new { ok = true, duplicate = true })
+                            : Results.Conflict(new { message = "이미 반대 평가가 제출된 답변입니다." });
+                    }
 
-                logger.LogWarning(
-                    "RAG feedback request failed. StatusCode={StatusCode}",
-                    (int)response.StatusCode
-                );
-                return Results.StatusCode(StatusCodes.Status502BadGateway);
+                    using var response = await client.PostAsJsonAsync($"{ragUrl}/feedback", payload, JsonOptions, context.RequestAborted);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        await ProductTelemetry.RecordAsync(
+                            db,
+                            configuration,
+                            eventContext,
+                            new ProductEventData(
+                                ProductEventTypes.FeedbackSubmitted,
+                                feedback.RequestId,
+                                verifiedChatId,
+                                Rating: feedback.Rating),
+                            context.RequestAborted);
+                        await feedbackTransaction.CommitAsync(context.RequestAborted);
+                        return Results.Ok(new { ok = true });
+                    }
+
+                    logger.LogWarning(
+                        "RAG feedback request failed. StatusCode={StatusCode}",
+                        (int)response.StatusCode
+                    );
+                    return Results.StatusCode(StatusCodes.Status502BadGateway);
+                });
             }
             catch (Exception ex)
             {
@@ -631,6 +710,125 @@ static public class ChatRequestApis
             return Results.Ok(chatMessages);
         });
 
+        app.MapPatch("/{chatId}", async (ServerDbContext db, HttpContext context, Guid chatId, RenameChat body) =>
+        {
+            // 게스트 대화는 서버에 없으므로 클라이언트가 자체 저장소에서 이름을 바꾼다.
+            if (!TryGetUserId(context, out Guid renameUserId))
+            {
+                return Results.Unauthorized();
+            }
+
+            string title = (body?.Title ?? string.Empty).Trim();
+            if (title.Length == 0)
+            {
+                return Results.BadRequest(new { message = "대화 이름을 입력해주세요." });
+            }
+            if (title.Length > MaxChatTitleLength)
+            {
+                return Results.BadRequest(new { message = $"대화 이름은 {MaxChatTitleLength}자까지 입력할 수 있습니다." });
+            }
+
+            var chat = await db.Chats.FirstOrDefaultAsync(c => c.Id == chatId && c.UserId == renameUserId);
+            if (chat is null)
+            {
+                return Results.NotFound(new { message = "대화를 찾을 수 없습니다." });
+            }
+
+            chat.Title = title;
+            await db.SaveChangesAsync();
+            return Results.Ok(new { id = chat.Id, title = chat.Title });
+        });
+
+        // 게스트 대화를 로그인 계정으로 옮긴다.
+        // 게스트 대화는 서버에 저장되지 않으므로(브라우저 localStorage에만 존재) 클라이언트가
+        // 보낸 기록을 그대로 적재한다. 유효한 게스트 토큰을 소유권 증명으로 요구하고,
+        // 남의 계정을 임의 기록으로 채우지 못하도록 건수·길이 상한을 둔다.
+        app.MapPost("/claim", async (
+            ServerDbContext db,
+            HttpContext context,
+            ClaimGuestChats body,
+            IDataProtectionProvider dataProtectionProvider) =>
+        {
+            if (!TryGetUserId(context, out Guid claimUserId))
+            {
+                return Results.Unauthorized();
+            }
+
+            if (!GuestIdentity.TryValidate(context.Request, dataProtectionProvider, out _))
+            {
+                return Results.Json(new { message = "유효한 게스트 세션이 없습니다." }, statusCode: StatusCodes.Status403Forbidden);
+            }
+
+            var incoming = body?.Chats ?? [];
+            if (incoming.Count == 0)
+            {
+                return Results.Ok(new { claimed = 0 });
+            }
+            if (incoming.Count > MaxClaimChats)
+            {
+                return Results.BadRequest(new { message = $"한 번에 옮길 수 있는 대화는 {MaxClaimChats}개까지입니다." });
+            }
+
+            var organizationIds = incoming.Select(chat => chat.OrganizationId).Distinct().ToList();
+            var knownOrganizationIds = await db.Organizations
+                .Where(org => organizationIds.Contains(org.Id))
+                .Select(org => org.Id)
+                .ToListAsync();
+
+            DateTime now = DateTime.UtcNow;
+            int claimed = 0;
+
+            foreach (var incomingChat in incoming)
+            {
+                if (!knownOrganizationIds.Contains(incomingChat.OrganizationId))
+                {
+                    continue;
+                }
+
+                string title = (incomingChat.Title ?? string.Empty).Trim();
+                if (title.Length == 0) title = "이전 대화";
+                if (title.Length > MaxChatTitleLength) title = title[..MaxChatTitleLength];
+
+                var chat = new ActiveChat
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = claimUserId,
+                    OrganizationId = incomingChat.OrganizationId,
+                    Title = title,
+                    CreatedTime = now,
+                    UpdatedTime = now,
+                };
+                await db.Chats.AddAsync(chat);
+
+                var messages = (incomingChat.Messages ?? [])
+                    .Where(message => !string.IsNullOrWhiteSpace(message.Content))
+                    .Take(MaxClaimMessagesPerChat)
+                    .ToList();
+
+                foreach (var message in messages)
+                {
+                    string content = message.Content!.Length > MaxChatContentLength
+                        ? message.Content[..MaxChatContentLength]
+                        : message.Content;
+
+                    await db.ChatMessages.AddAsync(new ChatMessage
+                    {
+                        Id = Guid.NewGuid(),
+                        ChatId = chat.Id,
+                        IsAsk = message.IsAsk,
+                        Content = content,
+                        // 클라이언트 시각을 그대로 믿으면 순서가 뒤집힐 수 있으므로 UTC로 정규화한다.
+                        CreatedTime = NormalizeClaimedTime(message.CreatedTime, now),
+                    });
+                }
+
+                claimed += 1;
+            }
+
+            await db.SaveChangesAsync();
+            return Results.Ok(new { claimed });
+        });
+
         app.MapDelete("/{chatId}", async (ServerDbContext db, HttpContext context, Guid chatId) =>
         {
             if (TryGetUserId(context, out Guid userId))
@@ -652,6 +850,44 @@ static public class ChatRequestApis
 
             return Results.Ok();
         });
+    }
+
+    /// <summary>사이드바 한 줄에 들어갈 미리보기 길이.</summary>
+    private const int MessagePreviewLength = 70;
+
+    // 줄바꿈과 마크다운 기호는 목록 한 줄에서 의미가 없으므로 단어 구분자로 취급한다.
+    private static readonly char[] MessagePreviewSeparators =
+        [' ', '\t', '\r', '\n', '#', '*', '_', '`', '>', '[', ']', '-'];
+
+    static private string? BuildMessagePreview(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return null;
+        }
+
+        var flattened = string.Join(
+            ' ',
+            content.Split(MessagePreviewSeparators, StringSplitOptions.RemoveEmptyEntries));
+
+        if (flattened.Length == 0)
+        {
+            return null;
+        }
+
+        if (flattened.Length <= MessagePreviewLength)
+        {
+            return flattened;
+        }
+
+        // 대리 쌍(이모지 등) 중간에서 자르면 깨진 문자가 남으므로 한 글자 앞에서 끊는다.
+        int cut = MessagePreviewLength;
+        if (char.IsLowSurrogate(flattened[cut]))
+        {
+            cut -= 1;
+        }
+
+        return $"{flattened[..cut]}…";
     }
 
     static private ActiveChatDto ToActiveChatDto(ActiveChat chat)

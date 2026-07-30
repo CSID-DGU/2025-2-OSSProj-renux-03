@@ -268,6 +268,7 @@ app.Use(async (context, next) =>
 app.AddAuthApis();
 app.AddChatApis();
 app.AddEtcApis();
+app.AddHomeApis();
 app.AddAdminProxyApis();
 app.AddNotificationApis();
 app.AddProductTelemetryApis();

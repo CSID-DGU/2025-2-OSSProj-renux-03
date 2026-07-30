@@ -345,23 +345,212 @@ static public class AdminProxyApis
             return Results.Stream(contentStream, contentType: proxyRes.Content.Headers.ContentType?.ToString() ?? "application/json");
         });
 
-        RequireUniversityLevel(app.MapPost("/approve/{id}", async (int id, HttpResponse response, IHttpClientFactory httpClientFactory) =>
+        RequireUniversityLevel(app.MapPost("/approve/{id}", async (
+            int id,
+            ReviewActionDto? body,
+            HttpContext context,
+            ServerDbContext db,
+            HttpResponse response,
+            IHttpClientFactory httpClientFactory) =>
         {
             var client = httpClientFactory.CreateClient();
-            var proxyRes = await client.PostAsync($"{RagServiceUrl}/admin/approve/{id}", null);
+            var payload = await BuildReviewPayloadAsync(context, db, body);
+            var proxyRes = await client.PostAsync($"{RagServiceUrl}/admin/approve/{id}", payload);
             response.StatusCode = (int)proxyRes.StatusCode;
             var contentStream = await proxyRes.Content.ReadAsStreamAsync();
             return Results.Stream(contentStream, contentType: proxyRes.Content.Headers.ContentType?.ToString() ?? "application/json");
         }));
 
-        RequireUniversityLevel(app.MapPost("/reject/{id}", async (int id, HttpResponse response, IHttpClientFactory httpClientFactory) =>
+        RequireUniversityLevel(app.MapPost("/reject/{id}", async (
+            int id,
+            ReviewActionDto? body,
+            HttpContext context,
+            ServerDbContext db,
+            HttpResponse response,
+            IHttpClientFactory httpClientFactory) =>
         {
             var client = httpClientFactory.CreateClient();
-            var proxyRes = await client.PostAsync($"{RagServiceUrl}/admin/reject/{id}", null);
+            var payload = await BuildReviewPayloadAsync(context, db, body);
+            var proxyRes = await client.PostAsync($"{RagServiceUrl}/admin/reject/{id}", payload);
             response.StatusCode = (int)proxyRes.StatusCode;
             var contentStream = await proxyRes.Content.ReadAsStreamAsync();
             return Results.Stream(contentStream, contentType: proxyRes.Content.Headers.ContentType?.ToString() ?? "application/json");
         }));
+
+        // 승인 전 수정 / 승인 후 정정. 학과 관리자는 본인 학과의 PENDING만 고칠 수 있고,
+        // 대학 수준 관리자는 승인된 항목도 정정할 수 있다(잘못된 답변을 즉시 바로잡기 위함).
+        app.MapPatch("/items/{id}", async (
+            int id,
+            UpdateItemDto body,
+            HttpContext context,
+            ServerDbContext db,
+            HttpResponse response,
+            IHttpClientFactory httpClientFactory) =>
+        {
+            if (body is null || string.IsNullOrWhiteSpace(body.Data))
+            {
+                return Results.BadRequest(new { message = "수정할 내용이 없습니다." });
+            }
+
+            var client = httpClientFactory.CreateClient();
+            var guard = await AuthorizeItemMutationAsync(client, RagServiceUrl, id, context, db);
+            if (guard is not null)
+            {
+                return guard;
+            }
+
+            using var content = new StringContent(
+                JsonSerializer.Serialize(new { data = body.Data }),
+                System.Text.Encoding.UTF8,
+                "application/json");
+            var proxyRes = await client.PatchAsync($"{RagServiceUrl}/admin/items/{id}", content);
+            response.StatusCode = (int)proxyRes.StatusCode;
+            var contentStream = await proxyRes.Content.ReadAsStreamAsync();
+            return Results.Stream(contentStream, contentType: proxyRes.Content.Headers.ContentType?.ToString() ?? "application/json");
+        });
+
+        RequireUniversityLevel(app.MapPost("/items/{id}/disabled", async (
+            int id,
+            SetDisabledDto body,
+            HttpResponse response,
+            IHttpClientFactory httpClientFactory) =>
+        {
+            var client = httpClientFactory.CreateClient();
+            using var content = new StringContent(
+                JsonSerializer.Serialize(new { disabled = body?.Disabled ?? false }),
+                System.Text.Encoding.UTF8,
+                "application/json");
+            var proxyRes = await client.PostAsync($"{RagServiceUrl}/admin/items/{id}/disabled", content);
+            response.StatusCode = (int)proxyRes.StatusCode;
+            var contentStream = await proxyRes.Content.ReadAsStreamAsync();
+            return Results.Stream(contentStream, contentType: proxyRes.Content.Headers.ContentType?.ToString() ?? "application/json");
+        }));
+
+        // 색인이 깨졌을 때 서버에 SSH로 붙지 않고 화면에서 복구할 수 있게 하는 통로.
+        // 비용이 큰 작업이라 대학 수준 관리자에게만 연다.
+        RequireUniversityLevel(app.MapPost("/reindex/{target}", async (
+            string target,
+            HttpResponse response,
+            IHttpClientFactory httpClientFactory,
+            ILogger<Program> logger) =>
+        {
+            if (!AllowedReindexTargets.Contains(target))
+            {
+                return Results.BadRequest(new { message = $"재인덱싱할 수 없는 대상입니다: {target}" });
+            }
+
+            logger.LogInformation("Proxying /admin/reindex/{Target} to RAG service", target);
+            // 재인덱싱은 임베딩 재계산까지 포함해 기본 HttpClient 타임아웃(100초)을 넘길 수 있다.
+            var client = httpClientFactory.CreateClient();
+            client.Timeout = ReindexTimeout;
+            try
+            {
+                var proxyRes = await client.PostAsync($"{RagServiceUrl}/admin/reindex/{target}", null);
+                response.StatusCode = (int)proxyRes.StatusCode;
+                var contentStream = await proxyRes.Content.ReadAsStreamAsync();
+                return Results.Stream(contentStream, contentType: proxyRes.Content.Headers.ContentType?.ToString() ?? "application/json");
+            }
+            catch (TaskCanceledException ex)
+            {
+                logger.LogError(ex, "Reindex request timed out for target {Target}", target);
+                return Results.Problem(
+                    detail: "재인덱싱 요청이 시간 내에 끝나지 않았습니다. 서버 로그에서 진행 상황을 확인해주세요.",
+                    statusCode: StatusCodes.Status504GatewayTimeout);
+            }
+            catch (HttpRequestException ex)
+            {
+                logger.LogError(ex, "Reindex request failed for target {Target}", target);
+                return Results.Problem(detail: "RAG 서비스 연결에 실패했습니다.", statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+        }));
+    }
+
+    // RAG /admin/reindex/{target}이 받는 값. 프록시에서 먼저 막아 잘못된 경로 호출을 줄인다.
+    private static readonly HashSet<string> AllowedReindexTargets = new(StringComparer.Ordinal)
+    {
+        "notices", "rules", "schedule", "courses", "staff", "meals", "all",
+    };
+
+    private static readonly TimeSpan ReindexTimeout = TimeSpan.FromMinutes(15);
+
+    public sealed record ReviewActionDto(string? Note);
+    public sealed record UpdateItemDto(string Data);
+    public sealed record SetDisabledDto(bool Disabled);
+
+    /// <summary>
+    /// 검수 처리 요청 본문에 처리자 이름을 채워 RAG로 넘긴다.
+    /// 처리자는 클라이언트가 자칭하는 값이 아니라 인증된 사용자에서 가져온다.
+    /// </summary>
+    private static async Task<StringContent> BuildReviewPayloadAsync(
+        HttpContext context,
+        ServerDbContext db,
+        ReviewActionDto? body)
+    {
+        string? actor = null;
+        var sub = context.User.FindFirstValue(JwtRegisteredClaimNames.Sub);
+        if (Guid.TryParse(sub, out Guid userId))
+        {
+            actor = await db.Users
+                .Where(u => u.Id == userId)
+                .Select(u => u.Username)
+                .FirstOrDefaultAsync();
+        }
+
+        var json = JsonSerializer.Serialize(new { note = body?.Note, actor });
+        return new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+    }
+
+    /// <summary>
+    /// 항목 변경 권한을 검사한다. 학과 관리자는 본인 학과의 PENDING 항목만,
+    /// 대학 수준 관리자는 승인된 항목까지 변경할 수 있다. 권한이 있으면 null을 반환한다.
+    /// </summary>
+    private static async Task<IResult?> AuthorizeItemMutationAsync(
+        HttpClient client,
+        string ragServiceUrl,
+        int id,
+        HttpContext context,
+        ServerDbContext db)
+    {
+        var sub = context.User.FindFirstValue(JwtRegisteredClaimNames.Sub);
+        if (!Guid.TryParse(sub, out Guid userId))
+        {
+            return Results.Unauthorized();
+        }
+
+        var caller = await db.Users
+            .Where(u => u.Id == userId)
+            .Select(u => new { Role = u.Role!.Rolename, Major = u.Major!.Majorname })
+            .FirstOrDefaultAsync();
+
+        if (caller != null && UniversityLevelRoles.Contains(caller.Role))
+        {
+            return null;
+        }
+
+        var itemsRes = await client.GetAsync($"{ragServiceUrl}/admin/items");
+        if (!itemsRes.IsSuccessStatusCode)
+        {
+            return Results.Problem(detail: "요청 목록을 확인하지 못했습니다.", statusCode: 502);
+        }
+
+        var itemsBody = await itemsRes.Content.ReadAsStringAsync();
+        if (!TryGetItem(itemsBody, id, out var status, out var itemDepartment))
+        {
+            return Results.NotFound(new { message = "요청을 찾을 수 없습니다." });
+        }
+
+        if (string.IsNullOrWhiteSpace(caller?.Major) || !string.Equals(itemDepartment, caller!.Major, StringComparison.Ordinal))
+        {
+            return Results.Json(new { message = "본인 학과의 요청만 수정할 수 있습니다." }, statusCode: 403);
+        }
+
+        // 승인된 항목의 정정은 색인 재구축을 동반하므로 대학 수준 관리자만 할 수 있다.
+        if (!string.Equals(status, "pending", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Json(new { message = "대기 중인 요청만 수정할 수 있습니다." }, statusCode: 409);
+        }
+
+        return null;
     }
 
     // RAG가 돌려준 항목 배열(JSON)을 호출자 학과 항목만 남기도록 필터한다.

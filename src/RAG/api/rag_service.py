@@ -28,7 +28,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from starlette.concurrency import run_in_threadpool
 from sklearn import __version__ as sklearn_version
 from sklearn.metrics.pairwise import cosine_similarity
@@ -102,6 +102,16 @@ from src.services.source_contract import source_reference
 from src.services.grounding import check_answer_grounding
 from src.services.query_analysis import QueryAnalysisResult, analyze_query
 from src.services.router import keyword_route
+from src.services.course_recommendation import (
+    CourseRecommendationPlan,
+    CourseRecommendationProfile,
+    extract_recommendation_profile,
+    format_recommendation_answer,
+    infer_completed_courses,
+    is_course_recommendation_query,
+    load_course_catalog,
+    recommend_courses,
+)
 from src.services.evidence_selector import EvidenceSelectionDecision, select_evidence_groups
 from src.services.campus_scope import (
     apply_campus_safety_boundary,
@@ -113,6 +123,8 @@ from src.services.data_quality import (
     data_quality_mode,
 )
 from src.models.embedding import get_embedder, encode_texts
+from src.utils.admin_filters import AdminFilterError, apply_review_record, parse_admin_datetime
+from src.utils.briefing import format_schedule_period, is_closed_row, split_meal_corners
 from src.utils.date_parser import QueryDateFilter, extract_date_filter_from_query
 from src.utils.query_expansion import expand_query
 from src.utils.dept_college import college_grad_queries, college_of, college_scope_queries, personalized_grad_queries, user_scope_label
@@ -438,6 +450,109 @@ def _build_notification_candidates_from_frames(
 @app.get("/notifications")
 async def notifications_dummy():
     return []
+
+
+def _briefing_meals(limit: int = 3) -> list[dict[str, str]]:
+    """오늘 운영하는 식당의 대표 코너 몇 개를 뽑는다."""
+    from src.config import DATA_SOURCES
+
+    path = DATA_SOURCES.get("meals")
+    if path is None or not path.exists():
+        return []
+
+    today = kst_now().strftime("%Y-%m-%d")
+    try:
+        frame = pd.read_csv(path, dtype=str).fillna("")
+    except Exception:
+        _log_event(logging.WARNING, "briefing_meals_read_failed", exc_info=True)
+        return []
+
+    if "date" not in frame.columns:
+        return []
+
+    todays = frame[frame["date"].astype(str).str.strip() == today]
+    results: list[dict[str, str]] = []
+    for _, row in todays.iterrows():
+        menu_text = str(row.get("menu_text", "")).strip()
+        if not menu_text or is_closed_row(row.get("is_closed", ""), menu_text):
+            continue
+
+        restaurant = str(row.get("restaurant", "")).strip() or "학생식당"
+        for corner in split_meal_corners(menu_text, limit):
+            results.append({"corner": f"{restaurant} {corner['corner']}".strip(), "menu": corner["menu"]})
+            if len(results) >= limit:
+                return results
+
+    return results
+
+
+def _briefing_schedules(session, limit: int = 3) -> list[dict[str, str]]:
+    """오늘 진행 중이거나 곧 시작하는 학사일정."""
+    today = kst_now().strftime("%Y-%m-%d")
+    horizon = (kst_now() + timedelta(days=14)).strftime("%Y-%m-%d")
+
+    try:
+        rows = (
+            session.query(Schedule)
+            # 진행 중(시작<=오늘<=종료) 또는 2주 안에 시작하는 일정
+            .filter(Schedule.end_date >= today, Schedule.start_date <= horizon)
+            .order_by(Schedule.start_date.asc())
+            .limit(limit)
+            .all()
+        )
+    except Exception:
+        _log_event(logging.WARNING, "briefing_schedule_query_failed", exc_info=True)
+        return []
+
+    return [
+        {
+            "title": (row.title or "").strip(),
+            "period": format_schedule_period(row.start_date, row.end_date),
+        }
+        for row in rows
+    ]
+
+
+def _briefing_notices(session, limit: int = 3) -> list[dict[str, str | None]]:
+    """가장 최근에 게시된 공지."""
+    try:
+        rows = (
+            session.query(Notice)
+            .order_by(Notice.published_date.desc(), Notice.id.desc())
+            .limit(limit)
+            .all()
+        )
+    except Exception:
+        _log_event(logging.WARNING, "briefing_notice_query_failed", exc_info=True)
+        return []
+
+    return [
+        {
+            "title": (row.title or "").strip(),
+            "url": row.detail_url,
+            "publishedAt": row.published_date,
+        }
+        for row in rows
+    ]
+
+
+@app.get("/home/briefing")
+async def home_briefing():
+    """홈 화면의 '오늘' 요약. 이미 수집해 둔 데이터셋에서 학식·일정·공지를 모아 준다.
+
+    질문을 입력하지 않아도 오늘 알아야 할 것이 첫 화면에 보이게 하는 용도로,
+    부분 실패(예: 학식 CSV 없음)는 빈 배열로 돌려 화면 전체를 막지 않는다.
+    """
+    session = SessionLocal()
+    try:
+        return {
+            "generatedAt": kst_now().isoformat(),
+            "meals": _briefing_meals(),
+            "schedules": _briefing_schedules(session),
+            "notices": _briefing_notices(session),
+        }
+    finally:
+        session.close()
 
 
 @app.get("/notifications/candidates", response_model=list[NotificationCandidate])
@@ -914,10 +1029,188 @@ class FeedbackRequest(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(..., description="사용자 질문", alias="question")
     session_id: str | None = Field(None, description="대화 세션 ID (없으면 기본 세션)", alias="sessionId")
-    major: str | None = Field(None, description="사용자 학과") # 새로 추가
+    major: str | None = Field(None, description="사용자 학과")
+    grade: int | None = Field(None, ge=1, le=6, description="현재 학년")
+    target_credits: float | None = Field(
+        None,
+        ge=1,
+        le=24,
+        alias="targetCredits",
+        description="이번 학기 목표 수강 학점",
+    )
+    semester: int | None = Field(None, ge=1, le=2, description="추천을 원하는 학기")
+    interests: list[str] = Field(default_factory=list, description="관심 분야 또는 원하는 과목 주제")
+    completed_courses: list[str] = Field(
+        default_factory=list,
+        alias="completedCourses",
+        description="이미 이수한 학수번호 또는 과목명",
+    )
 
     class Config:
         populate_by_name = True
+
+
+class CourseRecommendationRequest(BaseModel):
+    major: str
+    grade: int = Field(..., ge=1, le=6)
+    target_credits: float = Field(..., ge=1, le=24, alias="targetCredits")
+    semester: int | None = Field(None, ge=1, le=2)
+    interests: list[str] = Field(min_length=1)
+    completed_courses: list[str] = Field(default_factory=list, alias="completedCourses")
+
+    class Config:
+        populate_by_name = True
+
+
+class CourseRecommendationItem(BaseModel):
+    course_code: str = Field(alias="courseCode")
+    title: str
+    credit: float
+    department: str
+    course_type: str = Field(alias="courseType")
+    grades: list[int]
+    semesters: list[int]
+    reasons: list[str]
+    source_url: str = Field(alias="sourceUrl")
+
+    class Config:
+        populate_by_name = True
+
+
+class CourseRecommendationResponse(BaseModel):
+    major: str
+    grade: int
+    target_credits: float = Field(alias="targetCredits")
+    total_credits: float = Field(alias="totalCredits")
+    exact_credit_match: bool = Field(alias="exactCreditMatch")
+    semester: int | None
+    courses: list[CourseRecommendationItem]
+    warnings: list[str]
+
+    class Config:
+        populate_by_name = True
+
+
+def _build_course_plan(profile: CourseRecommendationProfile) -> CourseRecommendationPlan:
+    return recommend_courses(profile, load_course_catalog())
+
+
+def _course_plan_response(plan: CourseRecommendationPlan) -> CourseRecommendationResponse:
+    return CourseRecommendationResponse(
+        major=plan.profile.major,
+        grade=plan.profile.grade,
+        targetCredits=plan.profile.target_credits,
+        totalCredits=plan.total_credits,
+        exactCreditMatch=plan.exact_credit_match,
+        semester=plan.profile.semester,
+        courses=[
+            CourseRecommendationItem(
+                courseCode=item.course.course_code,
+                title=item.course.title,
+                credit=float(item.course.credit or 0),
+                department=item.course.department,
+                courseType=item.course.course_type,
+                grades=list(item.course.grades),
+                semesters=list(item.course.semesters),
+                reasons=list(item.reasons),
+                sourceUrl=item.course.source_url,
+            )
+            for item in plan.courses
+        ],
+        warnings=list(plan.warnings),
+    )
+
+
+def _course_plan_sources(plan: CourseRecommendationPlan) -> list[SourceChunk]:
+    sources: list[SourceChunk] = []
+    for index, item in enumerate(plan.courses, start=1):
+        course = item.course
+        normalized_score = min(1.0, max(0.0, item.score / 10.0))
+        grade_text = ", ".join(f"{grade}학년" for grade in course.grades) or "미표기"
+        semester_text = ", ".join(f"{semester}학기" for semester in course.semesters) or "미표기"
+        snippet = (
+            f"{course.title}\n"
+            f"학수번호: {course.course_code or '미표기'}\n"
+            f"학점: {course.credit:g}\n"
+            f"이수대상: {grade_text}\n"
+            f"개설학기: {semester_text}\n"
+            f"이수구분: {course.course_type or '미표기'}"
+        )
+        source = SourceChunk(
+            source="courses",
+            metadata={
+                "major": course.department,
+                "college_name": course.college,
+                "course_code": course.course_code,
+                "credit": course.credit,
+                "grades": list(course.grades),
+                "semesters": list(course.semesters),
+                "course_type": course.course_type,
+                "availability_status": course.availability_status,
+            },
+            snippet=snippet,
+            citation_number=index,
+            chunk_id=f"course-recommendation:{course.identity}",
+            title=course.title,
+            url=course.source_url or None,
+            hybrid_score=normalized_score,
+            final_score=normalized_score,
+        )
+        source.source_ref = source_reference(source.model_dump())
+        sources.append(source)
+    return sources
+
+
+def _build_course_clarification_answer(fields: tuple[str, ...]) -> str:
+    requested = ", ".join(fields)
+    return (
+        f"맞춤 수업 추천을 하려면 {requested} 정보가 더 필요해요. "
+        "예: “3학년이고 이번 학기 18학점, AI와 데이터 분석에 관심 있어.”처럼 알려주세요."
+    )
+
+
+def _chat_course_recommendation(
+    req: AskRequest,
+    raw_query: str,
+    history_text: str = "",
+) -> tuple[str, list[SourceChunk], tuple[str, ...]] | None:
+    prior_user_questions = "\n".join(
+        line.split("사용자:", 1)[1].strip()
+        for line in str(history_text or "").splitlines()
+        if line.strip().startswith("사용자:")
+    )
+    profile_query = "\n".join(part for part in (prior_user_questions, raw_query) if part)
+    if not is_course_recommendation_query(profile_query):
+        return None
+    catalog = load_course_catalog()
+    inferred_completed = infer_completed_courses(profile_query, catalog)
+    extracted = extract_recommendation_profile(
+        profile_query,
+        major=req.major,
+        grade=req.grade,
+        target_credits=req.target_credits,
+        semester=req.semester,
+        interests=req.interests,
+        completed_courses=tuple(req.completed_courses) + inferred_completed,
+    )
+    if extracted.profile is None:
+        return _build_course_clarification_answer(extracted.missing_fields), [], extracted.missing_fields
+    plan = _build_course_plan(extracted.profile)
+    return format_recommendation_answer(plan), _course_plan_sources(plan), ()
+
+
+@app.post("/courses/recommend", response_model=CourseRecommendationResponse)
+async def recommend_course_plan(req: CourseRecommendationRequest) -> CourseRecommendationResponse:
+    profile = CourseRecommendationProfile(
+        major=req.major,
+        grade=req.grade,
+        target_credits=req.target_credits,
+        semester=req.semester,
+        interests=tuple(req.interests),
+        completed_courses=tuple(req.completed_courses),
+    )
+    plan = await run_in_threadpool(_build_course_plan, profile)
+    return _course_plan_response(plan)
 
 
 def _dataset_status_message(reason: str, **kwargs) -> str:
@@ -938,6 +1231,26 @@ def _dataset_status_message(reason: str, **kwargs) -> str:
 class SubmitRequest(BaseModel):
     source_type: str
     data: str
+
+
+class ReviewActionRequest(BaseModel):
+    """승인/반려 처리에 함께 남기는 기록.
+
+    반려 사유(note)는 제출한 학과 관리자에게 그대로 표시되고,
+    actor는 처리 이력에 누가 처리했는지 남기기 위해 게이트웨이가 채워 보낸다.
+    """
+    note: str | None = None
+    actor: str | None = None
+
+
+class UpdateItemRequest(BaseModel):
+    """검수 전 수정 / 승인 후 정정에 쓰는 payload 교체 요청."""
+    data: str
+
+
+class SetDisabledRequest(BaseModel):
+    """승인된 지식의 챗봇 노출 on/off."""
+    disabled: bool
 
 
 def _clean_response_value(value):
@@ -3748,8 +4061,18 @@ async def list_all_items():
 
 
 @app.get("/admin/rag-logs/export")
-async def export_rag_logs(limit: int = 1000):
+async def export_rag_logs(
+    limit: int = 1000,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = None,
+    route: str | None = None,
+    fallback_only: bool = False,
+    search: str | None = None,
+):
     safe_limit = min(max(limit, 1), 10000)
+    # 화면에서 좁혀 본 조건 그대로 내보내야 "지금 보고 있는 것"과 파일이 일치한다.
+    from_dt = _parse_admin_datetime(from_, "from")
+    to_dt = _parse_admin_datetime(to, "to")
     session = SessionLocal()
     output = io.StringIO()
     output.write("\ufeff")
@@ -3791,8 +4114,15 @@ async def export_rag_logs(limit: int = 1000):
 
     try:
         query_logs = (
-            session.query(RagQueryLog)
-            .order_by(RagQueryLog.created_at.desc())
+            _apply_log_filters(
+                session.query(RagQueryLog),
+                from_dt=from_dt,
+                to_dt=to_dt,
+                route=route,
+                fallback_only=fallback_only,
+                search=search,
+            )
+            .order_by(RagQueryLog.created_at.desc(), RagQueryLog.id.desc())
             .limit(safe_limit)
             .all()
         )
@@ -3852,14 +4182,64 @@ async def export_rag_logs(limit: int = 1000):
     )
 
 
+def _parse_admin_datetime(value: str | None, field: str) -> datetime | None:
+    """조회 필터의 날짜 문자열을 파싱하고, 형식 오류를 400으로 변환한다."""
+    try:
+        return parse_admin_datetime(value, field)
+    except AdminFilterError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _apply_log_filters(query, *, from_dt, to_dt, route, fallback_only, search):
+    """로그 조회에 기간·분류·Fallback·검색 조건을 적용한다.
+
+    페이지네이션이 의미를 가지려면 필터가 서버에서 적용되어야 한다.
+    (클라이언트 필터는 이미 잘라온 200건 안에서만 동작해 앞부분만 훑게 된다.)
+    """
+    if from_dt is not None:
+        query = query.filter(RagQueryLog.created_at >= from_dt)
+    if to_dt is not None:
+        query = query.filter(RagQueryLog.created_at <= to_dt)
+    if route:
+        query = query.filter(RagQueryLog.route == route)
+    if fallback_only:
+        query = query.filter(RagQueryLog.fallback_triggered.is_(True))
+    if search:
+        pattern = f"%{search.strip()}%"
+        query = query.filter(
+            or_(RagQueryLog.question.ilike(pattern), RagQueryLog.answer.ilike(pattern))
+        )
+    return query
+
+
 @app.get("/admin/rag/logs")
-async def get_rag_logs(limit: int = 100):
+async def get_rag_logs(
+    limit: int = 100,
+    offset: int = 0,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = None,
+    route: str | None = None,
+    fallback_only: bool = False,
+    search: str | None = None,
+):
     safe_limit = min(max(limit, 1), 1000)
+    safe_offset = max(offset, 0)
+    from_dt = _parse_admin_datetime(from_, "from")
+    to_dt = _parse_admin_datetime(to, "to")
     session = SessionLocal()
     try:
+        query = _apply_log_filters(
+            session.query(RagQueryLog),
+            from_dt=from_dt,
+            to_dt=to_dt,
+            route=route,
+            fallback_only=fallback_only,
+            search=search,
+        )
         logs = (
-            session.query(RagQueryLog)
-            .order_by(RagQueryLog.created_at.desc())
+            query
+            .order_by(RagQueryLog.created_at.desc(), RagQueryLog.id.desc())
+            .offset(safe_offset)
             .limit(safe_limit)
             .all()
         )
@@ -3890,15 +4270,26 @@ async def get_rag_logs(limit: int = 100):
 
 
 @app.get("/admin/feedback")
-async def get_admin_feedback(limit: int = 100, rating: int | None = None):
+async def get_admin_feedback(
+    limit: int = 100,
+    rating: int | None = None,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = None,
+):
     if rating is not None and rating not in (1, -1):
         raise HTTPException(status_code=400, detail="rating must be 1 or -1")
     safe_limit = min(max(limit, 1), 1000)
+    from_dt = _parse_admin_datetime(from_, "from")
+    to_dt = _parse_admin_datetime(to, "to")
     session = SessionLocal()
     try:
         query = session.query(RagFeedback)
         if rating is not None:
             query = query.filter(RagFeedback.rating == rating)
+        if from_dt is not None:
+            query = query.filter(RagFeedback.created_at >= from_dt)
+        if to_dt is not None:
+            query = query.filter(RagFeedback.created_at <= to_dt)
         feedback_items = (
             query.order_by(RagFeedback.created_at.desc(), RagFeedback.id.desc())
             .limit(safe_limit)
@@ -4103,6 +4494,15 @@ async def rag_admin_status():
             _log_event(logging.WARNING, "visitor_stats_query_failed", exc_info=True)
             visitor_stats = {"today": None, "total": None}
 
+        # 자동 수집이 언제 다시 도는지·마지막에 성공했는지를 로그를 뒤지지 않고 확인할 수 있게 한다.
+        try:
+            from src.services.scheduler import get_scheduler_status
+
+            scheduler_status = get_scheduler_status()
+        except Exception:
+            _log_event(logging.WARNING, "scheduler_status_failed", exc_info=True)
+            scheduler_status = {"enabled": False, "jobs": []}
+
         status_dict = {
             "status": "degraded" if has_degraded_dataset else "ok",
             "generated_at": generated_at,
@@ -4113,6 +4513,7 @@ async def rag_admin_status():
             "grounding": grounding,
             "feedback": feedback,
             "notices_ingestion": notices_ingestion,
+            "scheduler": scheduler_status,
         }
         try:
             status_dict["semantic_cache"] = {
@@ -4244,8 +4645,117 @@ def _notice_to_ingest_frame(notice: Notice) -> pd.DataFrame:
     ])
 
 
+def _reload_notices_cache(context: str) -> None:
+    """색인이 바뀐 뒤 인메모리 데이터셋 캐시를 다시 읽는다.
+
+    best-effort — 실패해도 DB/Chroma에는 이미 반영되었으므로 호출자의 작업은 유효하다.
+    """
+    try:
+        with _datasets_lock:
+            if "notices" in _datasets:
+                del _datasets["notices"]
+            _ensure_dataset_locked("notices")
+    except Exception as exc:
+        logging.error(f"❌ [Admin] Failed to reload notices cache ({context}): {exc}")
+
+
+def _index_pending_item(session, item: PendingItem, target_collection: str) -> tuple[Notice | None, List[str]]:
+    """PendingItem을 Notice+Chunk로 만들어 Chroma에 색인한다.
+
+    반환: (생성된 Notice, Chroma에 넣은 chunk_id 목록).
+    Notice가 None이면 색인 대상이 아닌 유형이라 호출자가 수동 승인으로 처리해야 한다.
+    DB commit은 하지 않는다 — 호출자가 색인 성공을 확인한 뒤 한 번에 commit한다(K3).
+    """
+    data = json.loads(item.data)
+    notice = _build_notice_from_pending(item.source_type, data)
+    if notice is None:
+        return None, []
+
+    # 1. Notice 저장 (id 확보) — 색인 부작용 성공 후 commit하기 위해 flush만 먼저
+    session.add(notice)
+    session.flush()  # notice.id 확보, 아직 commit 아님
+    # K7: 수동 공지에 합성 고유 url 부여 (UNIQUE NULL/"" 충돌 방지 + url 필드 일관 채움)
+    notice.detail_url = f"manual://notice/{item.source_type}/{notice.id}"
+    session.flush()
+
+    # 2. ingest 공식 경로로 청크 생성 (크롤 공지와 동일 규칙) — K1/K6
+    chunks_df = build_notice_chunks(_notice_to_ingest_frame(notice))
+    if chunks_df.empty:
+        raise HTTPException(status_code=400, detail="청크를 생성할 수 없습니다(본문이 비어 있음).")
+
+    chunk_ids = chunks_df["chunk_id"].astype(str).tolist()
+    texts = chunks_df["chunk_text"].astype(str).tolist()
+
+    # 3. 색인 부작용을 DB commit 전에 먼저 수행 (실패 시 롤백 가능) — K3
+    embeddings = encode_texts(texts)
+    metadatas = chunks_df.drop(columns=["chunk_text"]).to_dict(orient="records")
+    metadatas = [{k: (v if v is not None else "") for k, v in m.items()} for m in metadatas]
+    upsert_items(
+        name=target_collection,
+        ids=chunk_ids,
+        documents=texts,
+        metadatas=metadatas,
+        embeddings=embeddings,
+    )
+    logging.info(f"✅ [Admin] Upserted {len(chunk_ids)} chunk(s) to ChromaDB")
+
+    # 4. DB Chunk 적재 (동일 chunk_id 사용)
+    for cid, text in zip(chunk_ids, texts):
+        session.add(Chunk(chunk_id=cid, chunk_text=text, notice_id=notice.id))
+
+    return notice, chunk_ids
+
+
+def _unindex_pending_item(session, item: PendingItem, target_collection: str) -> List[str]:
+    """승인 시 만들어진 수동 Notice와 청크를 DB·Chroma에서 제거한다.
+
+    반환: 제거한 chunk_id 목록. DB commit은 호출자가 한다.
+    payload가 이미 수정되었을 수 있으므로 제목 기준 조회에만 의존하지 않도록,
+    호출자는 payload를 바꾸기 **전에** 이 함수를 호출해야 한다.
+    """
+    data = json.loads(item.data)
+    notice_obj = _build_notice_from_pending(item.source_type, data)
+    removed_chunk_ids: List[str] = []
+
+    # 승인 시 생성된 Notice를 title+source 기준으로 찾는다(수동 공지만 대상).
+    if notice_obj is not None and notice_obj.title:
+        matched_notices = (
+            session.query(Notice)
+            .filter(
+                Notice.is_manual == 1,
+                Notice.title == notice_obj.title,
+                Notice.board == notice_obj.board,
+            )
+            .all()
+        )
+        for n in matched_notices:
+            chunks = session.query(Chunk).filter(Chunk.notice_id == n.id).all()
+            removed_chunk_ids.extend([c.chunk_id for c in chunks if c.chunk_id])
+            for c in chunks:
+                session.delete(c)
+            session.delete(n)
+
+    if removed_chunk_ids:
+        try:
+            delete_items(target_collection, removed_chunk_ids)
+        except Exception:
+            logging.error("⚠️ [Admin] Failed to delete chunks from Chroma.", exc_info=True)
+
+    return removed_chunk_ids
+
+
+def _record_review(item: PendingItem, req: ReviewActionRequest | None) -> None:
+    """검수 처리 기록(사유·처리자·시각)을 항목에 남긴다."""
+    apply_review_record(
+        item,
+        note=req.note if req else None,
+        actor=req.actor if req else None,
+        now=kst_now(),
+    )
+
+
 @app.post("/admin/approve/{item_id}")
-async def approve_pending(item_id: int):
+async def approve_pending(item_id: int, req: ReviewActionRequest | None = None):
     session = SessionLocal()
     chroma_committed_ids: List[str] = []
     target_collection = DATASET_ARTIFACTS["notices"].collection
@@ -4259,60 +4769,25 @@ async def approve_pending(item_id: int):
         if item.status in ("approved", "approved_manually"):
             return {"status": item.status, "message": "이미 승인된 항목입니다."}
 
-        data = json.loads(item.data)
-        notice = _build_notice_from_pending(item.source_type, data)
+        notice, chunk_ids = _index_pending_item(session, item, target_collection)
 
         if notice is None:
             item.status = "approved_manually"
+            item.disabled = False
+            _record_review(item, req)
             session.commit()
             return {"status": "approved_manually"}
 
-        # 1. Notice 저장 (id 확보) — 색인 부작용 성공 후 commit하기 위해 flush만 먼저
-        session.add(notice)
-        session.flush()  # notice.id 확보, 아직 commit 아님
-        # K7: 수동 공지에 합성 고유 url 부여 (UNIQUE NULL/"" 충돌 방지 + url 필드 일관 채움)
-        notice.detail_url = f"manual://notice/{item.source_type}/{notice.id}"
-        session.flush()
-
-        # 2. ingest 공식 경로로 청크 생성 (크롤 공지와 동일 규칙) — K1/K6
-        chunks_df = build_notice_chunks(_notice_to_ingest_frame(notice))
-        if chunks_df.empty:
-            raise HTTPException(status_code=400, detail="청크를 생성할 수 없습니다(본문이 비어 있음).")
-
-        chunk_ids = chunks_df["chunk_id"].astype(str).tolist()
-        texts = chunks_df["chunk_text"].astype(str).tolist()
-
-        # 3. 색인 부작용을 DB commit 전에 먼저 수행 (실패 시 롤백 가능) — K3
-        embeddings = encode_texts(texts)
-        metadatas = chunks_df.drop(columns=["chunk_text"]).to_dict(orient="records")
-        metadatas = [{k: (v if v is not None else "") for k, v in m.items()} for m in metadatas]
-        upsert_items(
-            name=target_collection,
-            ids=chunk_ids,
-            documents=texts,
-            metadatas=metadatas,
-            embeddings=embeddings,
-        )
         chroma_committed_ids = chunk_ids
-        logging.info(f"✅ [Admin] Upserted {len(chunk_ids)} chunk(s) to ChromaDB")
 
-        # 4. DB Chunk 적재 (동일 chunk_id 사용)
-        for cid, text in zip(chunk_ids, texts):
-            session.add(Chunk(chunk_id=cid, chunk_text=text, notice_id=notice.id))
-
-        # 5. 모든 색인 성공 → 한 번에 commit (Notice + Chunk + status)
+        # 모든 색인 성공 → 한 번에 commit (Notice + Chunk + status)
         item.status = "approved"
+        item.disabled = False
+        _record_review(item, req)
         session.commit()
         logging.info(f"✅ [Admin] Notice {notice.id} approved & committed.")
 
-        # 6. 캐시 리로드 (best-effort, 실패해도 승인은 유효 — DB/Chroma엔 이미 반영됨)
-        try:
-            with _datasets_lock:
-                if "notices" in _datasets:
-                    del _datasets["notices"]
-                _ensure_dataset_locked("notices")
-        except Exception as e:
-            logging.error(f"❌ [Admin] Failed to reload notices cache: {e}")
+        _reload_notices_cache("approve")
 
         return {"status": "approved", "chunk_ids": chunk_ids}
 
@@ -4339,7 +4814,7 @@ async def approve_pending(item_id: int):
 
 
 @app.post("/admin/reject/{item_id}")
-async def reject_pending(item_id: int):
+async def reject_pending(item_id: int, req: ReviewActionRequest | None = None):
     session = SessionLocal()
     target_collection = DATASET_ARTIFACTS["notices"].collection
     try:
@@ -4347,48 +4822,19 @@ async def reject_pending(item_id: int):
         if not item:
             raise HTTPException(status_code=404, detail="Item not found")
 
-        was_approved = item.status == "approved"
-        removed_chunk_ids: List[str] = []
-
         # K4: 이미 승인·색인된 항목을 반려하면 색인을 되돌린다.
-        if was_approved:
-            data = json.loads(item.data)
-            notice_obj = _build_notice_from_pending(item.source_type, data)
-            # 승인 시 생성된 Notice를 title+source 기준으로 찾는다(수동 공지만 대상).
-            if notice_obj is not None and notice_obj.title:
-                matched_notices = (
-                    session.query(Notice)
-                    .filter(
-                        Notice.is_manual == 1,
-                        Notice.title == notice_obj.title,
-                        Notice.board == notice_obj.board,
-                    )
-                    .all()
-                )
-                for n in matched_notices:
-                    chunks = session.query(Chunk).filter(Chunk.notice_id == n.id).all()
-                    removed_chunk_ids.extend([c.chunk_id for c in chunks if c.chunk_id])
-                    for c in chunks:
-                        session.delete(c)
-                    session.delete(n)
-
-            if removed_chunk_ids:
-                try:
-                    delete_items(target_collection, removed_chunk_ids)
-                except Exception:
-                    logging.error("⚠️ [Admin] Failed to delete chunks from Chroma on reject.", exc_info=True)
+        removed_chunk_ids = (
+            _unindex_pending_item(session, item, target_collection)
+            if item.status == "approved"
+            else []
+        )
 
         item.status = "rejected"
+        _record_review(item, req)
         session.commit()
 
         if removed_chunk_ids:
-            try:
-                with _datasets_lock:
-                    if "notices" in _datasets:
-                        del _datasets["notices"]
-                    _ensure_dataset_locked("notices")
-            except Exception as e:
-                logging.error(f"❌ [Admin] Failed to reload notices cache on reject: {e}")
+            _reload_notices_cache("reject")
 
         return {"status": "rejected"}
     except HTTPException:
@@ -4397,6 +4843,171 @@ async def reject_pending(item_id: int):
     except Exception as e:
         session.rollback()
         logging.error(f"🔥 [Admin] Error in reject_pending: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+def _rollback_update_side_effects(
+    item_id: int,
+    target_collection: str,
+    reindexed_ids: List[str],
+    unindexed: bool,
+) -> None:
+    """수정 실패 시 색인 부작용을 되돌린다.
+
+    DB는 rollback으로 원상복구되지만 Chroma는 트랜잭션 밖이라 자동으로 돌아오지 않는다.
+    옛 색인을 걷어낸 뒤 새 색인에 실패하면 문서가 DB에는 있는데 검색되지 않는
+    조용한 불일치가 남으므로, 원래 내용으로 다시 색인해 되살린다.
+    """
+    if reindexed_ids:
+        try:
+            delete_items(target_collection, reindexed_ids)
+        except Exception:
+            logging.error("⚠️ [Admin] Failed to rollback Chroma upsert after update error.", exc_info=True)
+
+    if not unindexed:
+        return
+
+    # rollback 이후 DB의 payload는 수정 전 원본이므로, 그대로 다시 색인하면 복구된다.
+    recovery = SessionLocal()
+    try:
+        item = recovery.query(PendingItem).filter(PendingItem.id == item_id).first()
+        if item is None:
+            return
+        _index_pending_item(recovery, item, target_collection)
+        recovery.commit()
+        _reload_notices_cache("update_recovery")
+        logging.warning(f"♻️ [Admin] Restored previous index for item {item_id} after failed update.")
+    except Exception:
+        recovery.rollback()
+        # 복구까지 실패하면 수동 개입이 필요하다 — 어떤 항목인지 분명히 남긴다.
+        logging.error(
+            f"🔥 [Admin] Index restore FAILED for item {item_id}; "
+            f"'{target_collection}' 재인덱싱이 필요합니다.",
+            exc_info=True,
+        )
+    finally:
+        recovery.close()
+
+
+@app.patch("/admin/items/{item_id}")
+async def update_pending_item(item_id: int, req: UpdateItemRequest):
+    """검수 전 오타 수정과 승인 후 내용 정정을 같은 경로로 처리한다.
+
+    승인된 항목은 payload만 바꾸면 색인에 옛 내용이 남으므로,
+    기존 색인을 걷어내고 새 내용으로 다시 색인한다.
+    """
+    try:
+        parsed = json.loads(req.data)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"data가 유효한 JSON이 아닙니다: {exc}")
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400, detail="data는 JSON 객체여야 합니다.")
+
+    session = SessionLocal()
+    target_collection = DATASET_ARTIFACTS["notices"].collection
+    reindexed_ids: List[str] = []
+    unindexed = False
+    try:
+        item = session.query(PendingItem).filter(PendingItem.id == item_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        required = _SUBMIT_REQUIRED_FIELDS.get(item.source_type, ())
+        missing = [field for field in required if not str(parsed.get(field, "")).strip()]
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"필수 항목이 비어 있습니다: {', '.join(missing)}",
+            )
+
+        was_indexed = item.status == "approved" and not item.disabled
+        if was_indexed:
+            # payload를 바꾸기 전에 옛 내용 기준으로 색인을 제거해야 대상을 찾을 수 있다.
+            _unindex_pending_item(session, item, target_collection)
+            # DELETE를 먼저 확정한다. flush 없이 새 Notice를 add하면 SQLAlchemy가
+            # INSERT를 DELETE보다 먼저 내보내, 옛 행과 새 행이 잠시 공존하게 된다.
+            session.flush()
+            unindexed = True
+
+        item.data = req.data
+
+        if was_indexed:
+            notice, chunk_ids = _index_pending_item(session, item, target_collection)
+            reindexed_ids = chunk_ids
+            if notice is None:
+                raise HTTPException(status_code=400, detail="수정한 내용으로 색인을 만들 수 없습니다.")
+
+        session.commit()
+        unindexed = False  # commit 성공 — 복구할 것이 없다.
+
+        if was_indexed:
+            _reload_notices_cache("update")
+
+        return {"status": "ok", "reindexed": len(reindexed_ids)}
+    except HTTPException:
+        session.rollback()
+        _rollback_update_side_effects(item_id, target_collection, reindexed_ids, unindexed)
+        raise
+    except Exception as e:
+        session.rollback()
+        _rollback_update_side_effects(item_id, target_collection, reindexed_ids, unindexed)
+        logging.error(f"🔥 [Admin] Error in update_pending_item: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.post("/admin/items/{item_id}/disabled")
+async def set_item_disabled(item_id: int, req: SetDisabledRequest):
+    """승인된 지식을 챗봇 노출에서 내리거나 다시 올린다.
+
+    삭제와 달리 내용은 남겨 두므로, 잘못된 정보를 급히 내렸다가 고쳐서 되살릴 수 있다.
+    노출 중단은 색인 제거로 구현한다 — 색인에 남아 있으면 챗봇이 계속 참조하기 때문.
+    """
+    session = SessionLocal()
+    target_collection = DATASET_ARTIFACTS["notices"].collection
+    reindexed_ids: List[str] = []
+    unindexed = False
+    try:
+        item = session.query(PendingItem).filter(PendingItem.id == item_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        if item.status not in ("approved", "approved_manually"):
+            raise HTTPException(status_code=409, detail="승인된 항목만 노출을 조정할 수 있습니다.")
+
+        currently_disabled = bool(item.disabled)
+        if currently_disabled == req.disabled:
+            return {"status": "ok", "disabled": currently_disabled, "message": "이미 같은 상태입니다."}
+
+        changed_ids: List[str] = []
+        if item.status == "approved":
+            if req.disabled:
+                changed_ids = _unindex_pending_item(session, item, target_collection)
+                unindexed = bool(changed_ids)
+            else:
+                _, chunk_ids = _index_pending_item(session, item, target_collection)
+                reindexed_ids = chunk_ids
+                changed_ids = chunk_ids
+
+        item.disabled = req.disabled
+        session.commit()
+        unindexed = False  # commit 성공 — 복구할 것이 없다.
+
+        if changed_ids:
+            _reload_notices_cache("set_disabled")
+
+        return {"status": "ok", "disabled": req.disabled}
+    except HTTPException:
+        session.rollback()
+        _rollback_update_side_effects(item_id, target_collection, reindexed_ids, unindexed)
+        raise
+    except Exception as e:
+        session.rollback()
+        _rollback_update_side_effects(item_id, target_collection, reindexed_ids, unindexed)
+        logging.error(f"🔥 [Admin] Error in set_item_disabled: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()
@@ -4526,6 +5137,51 @@ async def ask_stream(req: AskRequest, request: Request):
             stage_started_at = time.perf_counter()
             history_text = await run_in_threadpool(get_recent_history_text, session_id)
             _mark_stage(stage_timings, "history_load", stage_started_at)
+
+        course_recommendation = await run_in_threadpool(
+            _chat_course_recommendation,
+            req,
+            raw_query,
+            history_text,
+        )
+        if course_recommendation is not None:
+            answer, recommendation_sources, missing_fields = course_recommendation
+            serialized_sources = [source.model_dump() for source in recommendation_sources]
+            yield "data: " + json.dumps(
+                {
+                    "type": "metadata",
+                    "request_id": request_id,
+                    "sources": serialized_sources,
+                    "citations": "",
+                    "route": ["courses"],
+                    "fallback_triggered": False,
+                },
+                ensure_ascii=False,
+            ) + "\n\n"
+            yield "data: " + json.dumps(
+                {"type": "text", "content": answer},
+                ensure_ascii=False,
+            ) + "\n\n"
+            await run_in_threadpool(append_manual_history, session_id, raw_query, answer)
+            _mark_stage(stage_timings, "total", request_started_at)
+            _log_event(
+                logging.INFO,
+                "course_recommendation_completed",
+                request_id=request_id,
+                source_count=len(recommendation_sources),
+                missing_fields=list(missing_fields),
+            )
+            yield _completion_stream_event(
+                request_id=request_id,
+                grounded=True if recommendation_sources else None,
+                grounding_score=1.0 if recommendation_sources else None,
+                suggested_questions=[],
+                fallback_reason=None,
+                sources=recommendation_sources,
+                resolved_intents=["courses"],
+            )
+            return
+
         if RAG_SEMANTIC_CACHE_ENABLED and not (history_text or "").strip():
             stage_started_at = time.perf_counter()
             hit = await run_in_threadpool(semantic_cache.get, raw_query, semantic_cache_ns)
@@ -5006,6 +5662,37 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
         stage_started_at = time.perf_counter()
         history_text = await run_in_threadpool(get_recent_history_text, session_id)
         _mark_stage(stage_timings, "history_load", stage_started_at)
+
+    course_recommendation = await run_in_threadpool(
+        _chat_course_recommendation,
+        req,
+        raw_query,
+        history_text,
+    )
+    if course_recommendation is not None:
+        answer, recommendation_sources, missing_fields = course_recommendation
+        await run_in_threadpool(append_manual_history, session_id, raw_query, answer)
+        _mark_stage(stage_timings, "total", request_started_at)
+        _log_event(
+            logging.INFO,
+            "course_recommendation_completed",
+            request_id=request_id,
+            source_count=len(recommendation_sources),
+            missing_fields=list(missing_fields),
+        )
+        return AskResponse(
+            request_id=request_id,
+            answer=answer,
+            citations="",
+            route=["courses"],
+            resolved_intents=["courses"],
+            sources=recommendation_sources,
+            grounded=True if recommendation_sources else None,
+            grounding_score=1.0 if recommendation_sources else None,
+            fallback_triggered=False,
+            fallback_reason=None,
+        )
+
     if RAG_SEMANTIC_CACHE_ENABLED and not (history_text or "").strip():
         stage_started_at = time.perf_counter()
         hit = await run_in_threadpool(semantic_cache.get, raw_query, semantic_cache_ns)

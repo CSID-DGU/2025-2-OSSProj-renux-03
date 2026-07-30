@@ -68,6 +68,12 @@ export const toPendingAnswerReview = (item: AdminItemResponse): PendingAnswerRev
     question: display.title,
     answer: display.content,
     status: item.status,
+    sourceType: item.source_type,
+    reviewNote: item.review_note ?? null,
+    reviewedBy: item.reviewed_by ?? null,
+    reviewedAt: item.reviewed_at ?? null,
+    disabled: item.disabled ?? false,
+    raw: parseItemData(item.data),
   }
 }
 
@@ -85,5 +91,84 @@ export const toDepartmentKnowledge = (item: AdminItemResponse): DepartmentKnowle
     content: display.content,
     status,
     createdAt: item.created_at,
+    sourceType: item.source_type,
+    rejectionReason: item.review_note ?? null,
+    raw: parseItemData(item.data),
   }
+}
+
+/**
+ * 승인 전 수정에서 편집 가능한 필드 정의.
+ * 등록 유형마다 payload 스키마가 다르므로(FAQ=question/answer, 행사=title/start_date…)
+ * 폼을 하드코딩하지 않고 이 표를 따라 렌더링한다.
+ */
+export interface EditableField {
+  key: string
+  label: string
+  type: 'text' | 'textarea' | 'date'
+}
+
+export const EDITABLE_FIELDS_BY_TYPE: Record<string, EditableField[]> = {
+  custom_knowledge: [
+    { key: 'question', label: '질문', type: 'text' },
+    { key: 'answer', label: '답변', type: 'textarea' },
+  ],
+  event: [
+    { key: 'title', label: '행사명', type: 'text' },
+    { key: 'start_date', label: '시작일', type: 'date' },
+    { key: 'end_date', label: '종료일', type: 'date' },
+    { key: 'location', label: '장소', type: 'text' },
+    { key: 'description', label: '상세 내용', type: 'textarea' },
+  ],
+  announcement: [
+    { key: 'title', label: '제목', type: 'text' },
+    { key: 'date', label: '게시일', type: 'date' },
+    { key: 'category', label: '카테고리', type: 'text' },
+    { key: 'content', label: '상세 내용', type: 'textarea' },
+  ],
+}
+
+export const getEditableFields = (sourceType: string): EditableField[] =>
+  EDITABLE_FIELDS_BY_TYPE[sourceType] ?? []
+
+/**
+ * 승인 시 챗봇이 받게 될 텍스트를 재구성한다.
+ * RAG 색인은 payload를 그대로 쓰지 않고 유형별로 문장을 합치므로,
+ * 검수자가 "이 답변이 챗봇에서 어떻게 보이는지"를 등록 전에 확인할 수 있게 한다.
+ */
+export const buildChatPreview = (sourceType: string, data: Record<string, unknown>): string => {
+  const text = (key: string) => (typeof data[key] === 'string' ? (data[key] as string).trim() : '')
+
+  if (sourceType === 'custom_knowledge') {
+    const question = text('question')
+    const answer = text('answer')
+    return [question && `Q. ${question}`, answer && `A. ${answer}`].filter(Boolean).join('\n\n')
+  }
+
+  if (sourceType === 'event') {
+    const start = text('start_date')
+    const end = text('end_date')
+    const period = end && end !== start ? `${start} ~ ${end}` : start
+    return [
+      text('title') && `${text('title')} 행사 안내`,
+      period && `일시: ${period}`,
+      text('location') && `장소: ${text('location')}`,
+      text('department') && `주관: ${text('department')}`,
+      text('description'),
+    ].filter(Boolean).join('\n')
+  }
+
+  if (sourceType === 'announcement') {
+    return [
+      text('title'),
+      text('date') && `게시일: ${text('date')}`,
+      text('category') && `분류: ${text('category')}`,
+      text('department') && `학과: ${text('department')}`,
+      text('content'),
+    ].filter(Boolean).join('\n')
+  }
+
+  return Object.values(data)
+    .filter((value): value is string => typeof value === 'string')
+    .join('\n')
 }
