@@ -124,6 +124,12 @@ class PendingItem(Base):
     data = Column(Text)  # JSON payload
     status = Column(String, default="pending")  # pending, approved, rejected
     created_at = Column(DateTime, default=kst_now)
+    # 검수 처리 기록 — 반려 사유를 제출자에게 돌려주고, 누가 언제 처리했는지 남긴다.
+    review_note = Column(Text, nullable=True)
+    reviewed_by = Column(String, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    # 승인 후에도 챗봇 노출을 내릴 수 있도록 하는 플래그(내용은 보존).
+    disabled = Column(Boolean, default=False, nullable=False)
 
 
 # 8. 수집 원본/정규화 메타데이터
@@ -360,6 +366,15 @@ def ensure_runtime_schema() -> None:
         "rag_feedback",
         {
             "major": "VARCHAR",
+        },
+    )
+    _ensure_sqlite_columns(
+        "pending_items",
+        {
+            "review_note": "TEXT",
+            "reviewed_by": "VARCHAR",
+            "reviewed_at": "DATETIME",
+            "disabled": "BOOLEAN DEFAULT 0",
         },
     )
 

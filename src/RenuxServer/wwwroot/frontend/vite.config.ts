@@ -77,8 +77,24 @@ export default defineConfig(({ mode }) => {
           target: DEV_PROXY_TARGET,
           changeOrigin: true,
           secure: false,
+          // 관리자 콘솔은 화면 경로(/admin/review)와 API 경로(/admin/items)가 같은 접두사를 쓴다.
+          // 주소창으로 직접 들어온 화면 요청까지 백엔드로 넘기면 SPA가 뜨지 않으므로,
+          // HTML을 원하는 내비게이션 요청만 index.html로 돌려 라우터가 처리하게 한다.
+          // (운영 환경은 ASP.NET의 MapFallbackToFile이 같은 역할을 한다.)
+          bypass: (req) => {
+            const accept = req.headers.accept ?? ''
+            if (req.method === 'GET' && accept.includes('text/html')) {
+              return '/index.html'
+            }
+            return undefined
+          },
         },
         '/notifications': {
+          target: DEV_PROXY_TARGET,
+          changeOrigin: true,
+          secure: false,
+        },
+        '/home': {
           target: DEV_PROXY_TARGET,
           changeOrigin: true,
           secure: false,

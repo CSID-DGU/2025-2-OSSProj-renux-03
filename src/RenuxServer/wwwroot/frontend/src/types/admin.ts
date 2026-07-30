@@ -17,6 +17,13 @@ export interface AdminItemResponse {
   data: string
   status: AdminItemStatus
   created_at: string
+  /** 반려/승인 처리 시 남긴 메모. 백엔드 보강 이전 데이터에는 없을 수 있다. */
+  review_note?: string | null
+  /** 처리자 표시명. 감사 로그 보강 이전 데이터에는 없을 수 있다. */
+  reviewed_by?: string | null
+  reviewed_at?: string | null
+  /** 승인 항목을 챗봇 노출에서 내렸는지 여부 */
+  disabled?: boolean
 }
 
 export interface PendingAnswerReview {
@@ -27,6 +34,13 @@ export interface PendingAnswerReview {
   question: string
   answer: string
   status: AdminItemStatus
+  sourceType: string
+  reviewNote?: string | null
+  reviewedBy?: string | null
+  reviewedAt?: string | null
+  disabled?: boolean
+  /** 원본 payload — 승인 전 수정에서 필드 단위로 편집할 때 사용 */
+  raw: Record<string, unknown>
 }
 
 export type KnowledgeStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
@@ -37,7 +51,9 @@ export interface DepartmentKnowledge {
   content: string
   status: KnowledgeStatus
   createdAt: string
-  rejectionReason?: string
+  sourceType: string
+  rejectionReason?: string | null
+  raw: Record<string, unknown>
 }
 
 export interface RagChatLog {
@@ -112,6 +128,35 @@ export interface RagDatasetStatus {
   error?: string | null
 }
 
+export interface RagNoticesIngestion {
+  last_collection_at: string | null
+  last_successful_ingestion_at: string | null
+  ingestion_summary: {
+    status: string | null
+    documents_seen: number
+    documents_new: number
+    documents_updated: number
+    documents_deleted: number
+    documents_failed: number
+  }
+  stage_summary: {
+    raw_documents: number
+    normalized_documents: number
+    indexed_documents: number
+  }
+  quality_summary: {
+    parse_failed: number
+    severities: Record<string, number>
+    recent_checks: Array<{
+      document_key: string
+      check_type: string
+      severity: string
+      message: string
+      created_at: string
+    }>
+  }
+}
+
 export interface RagAdminStatus {
   status: 'ok' | 'degraded' | 'error'
   generated_at: string
@@ -132,33 +177,83 @@ export interface RagAdminStatus {
     total: number | null
   }
   feedback?: RagAdminFeedbackSummary
-  notices_ingestion?: {
-    last_collection_at: string | null
-    last_successful_ingestion_at: string | null
-    ingestion_summary: {
-      status: string | null
-      documents_seen: number
-      documents_new: number
-      documents_updated: number
-      documents_deleted: number
-      documents_failed: number
-    }
-    stage_summary: {
-      raw_documents: number
-      normalized_documents: number
-      indexed_documents: number
-    }
-    quality_summary: {
-      parse_failed: number
-      severities: Record<string, number>
-      recent_checks: Array<{
-        document_key: string
-        check_type: string
-        severity: string
-        message: string
-        created_at: string
-      }>
-    }
-  }
+  notices_ingestion?: RagNoticesIngestion
+  scheduler?: RagSchedulerStatus
   error?: string
+}
+
+export interface RagSchedulerJob {
+  id: string
+  name?: string | null
+  next_run_at: string | null
+  trigger?: string | null
+  last_run_at?: string | null
+  last_status?: string | null
+  last_message?: string | null
+}
+
+export interface RagSchedulerStatus {
+  enabled: boolean
+  jobs: RagSchedulerJob[]
+}
+
+export interface RagHealthStatus {
+  status?: string
+  ready?: boolean
+  detail?: string | null
+}
+
+export interface ReindexResult {
+  status: string
+  message?: string
+  details?: Record<string, number>
+}
+
+export interface MajorOption {
+  id: string
+  majorname?: string
+  Majorname?: string
+}
+
+export interface AdminRoleOption {
+  id: string
+  roleName: string
+}
+
+export interface AdminUserAccount {
+  id: string
+  userId: string
+  username: string
+  majorId: string
+  majorName?: string | null
+  roleId: string
+  roleName?: string | null
+  createdTime: string
+  updatedTime: string
+}
+
+export interface ProductKpiRatio {
+  numerator: number
+  denominator: number
+  rate: number | null
+}
+
+export interface ProductKpiReport {
+  from: string
+  to: string
+  helpfulAnswerRate: ProductKpiRatio
+  sevenDayValidReuseRate: ProductKpiRatio
+  excludedEventCount: number
+  caveats: string[]
+}
+
+/** 대시보드 활동 피드 항목 — 여러 소스를 한 타임라인으로 합칠 때의 공통 계약 */
+export interface AdminActivityEntry {
+  id: string
+  kind: 'submitted' | 'approved' | 'rejected' | 'signup'
+  title: string
+  meta: string
+  occurredAt: string
+  status?: AdminItemStatus | string
+  href?: string
 }
