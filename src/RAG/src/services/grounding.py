@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from src.config import OPENAI_CHAT_TIMEOUT_SECONDS, OPENAI_MODEL
+from src.config import OPENAI_CHAT_TIMEOUT_SECONDS, OPENAI_GROUNDING_MODEL
 from src.services.langchain_chat import _append_usage_record, _extract_usage_metadata
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ def _get_grounding_llm() -> Any:
     global _GROUNDING_LLM
     if _GROUNDING_LLM is None:
         _GROUNDING_LLM = ChatOpenAI(
-            model=OPENAI_MODEL,
+            model=OPENAI_GROUNDING_MODEL,
             temperature=0,
             timeout=OPENAI_CHAT_TIMEOUT_SECONDS,
             max_retries=1,
@@ -113,7 +113,7 @@ async def check_answer_grounding(
             usage_collector,
             stage="grounding_check",
             provider="openai",
-            model=OPENAI_MODEL,
+            model=OPENAI_GROUNDING_MODEL,
             usage=_extract_usage_metadata(response),
             latency_ms=(time.perf_counter() - started_at) * 1000,
         )

@@ -14,7 +14,7 @@ from langchain_openai import ChatOpenAI
 
 from src.config import (
     LLM_ROUTER_DESCRIPTIONS,
-    OPENAI_MODEL,
+    OPENAI_ROUTER_MODEL,
     OPENAI_CHAT_TIMEOUT_SECONDS,
     RAG_ROUTER_CACHE_TTL_SECONDS,
 )
@@ -85,7 +85,7 @@ def _get_router_chain():
     global router_chain
     if router_chain is None:
         llm = ChatOpenAI(
-            model=OPENAI_MODEL,
+            model=OPENAI_ROUTER_MODEL,
             temperature=0,
             timeout=OPENAI_CHAT_TIMEOUT_SECONDS,
             max_retries=1,

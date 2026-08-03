@@ -35,10 +35,13 @@
     },
     "candidate_config": {
       "type": "object", "additionalProperties": false,
-      "required": ["llm_provider", "query_analysis_model", "answer_model", "embedding_model", "embedding_revision", "embedding_device", "reranker_enabled", "reranker_model", "reranker_revision", "top_k", "routerless", "scheduler_enabled"],
+      "required": ["llm_provider", "query_analysis_model", "router_model", "evidence_selection_model", "grounding_model", "answer_model", "embedding_model", "embedding_revision", "embedding_device", "reranker_enabled", "reranker_model", "reranker_revision", "top_k", "routerless", "scheduler_enabled"],
       "properties": {
         "llm_provider": {"type": "string", "minLength": 1},
         "query_analysis_model": {"type": "string", "minLength": 1},
+        "router_model": {"type": "string", "minLength": 1},
+        "evidence_selection_model": {"type": "string", "minLength": 1},
+        "grounding_model": {"type": "string", "minLength": 1},
         "answer_model": {"type": "string", "minLength": 1},
         "embedding_model": {"type": "string", "minLength": 1},
         "embedding_revision": {"type": ["string", "null"]},

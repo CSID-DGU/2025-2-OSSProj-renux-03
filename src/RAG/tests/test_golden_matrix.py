@@ -404,6 +404,8 @@ def test_runner_performs_http_call_and_marks_subset_incomplete(tmp_path):
         "answer_contract_version": "ask-response-v4-active-deadline",
         "runtime_config": {
             "llm_provider": "openai", "query_analysis_model": "fixture-query",
+            "router_model": "fixture-router", "evidence_selection_model": "fixture-evidence",
+            "grounding_model": "fixture-grounding",
             "answer_model": "fixture-answer", "embedding_model": "fixture-embedding",
             "embedding_revision": None, "embedding_device": "cpu", "reranker_enabled": False,
             "reranker_model": None, "reranker_revision": None, "top_k": 5,

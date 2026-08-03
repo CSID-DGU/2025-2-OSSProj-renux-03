@@ -4777,13 +4777,10 @@ def _merge_followup_observability_log(
         )
         if query_log is None:
             return
-        try:
-            timings = json.loads(query_log.stage_timings_json or "{}")
-        except (json.JSONDecodeError, TypeError):
-            timings = {}
-        if not isinstance(timings, dict):
-            timings = {}
-        timings["followup_generation_async"] = round(max(0.0, duration_seconds), 6)
+        timings = _with_followup_generation_timing(
+            query_log.stage_timings_json,
+            duration_seconds,
+        )
 
         try:
             existing_usage = json.loads(query_log.llm_usage_json or "[]")
@@ -4807,6 +4804,24 @@ def _merge_followup_observability_log(
         )
     finally:
         session.close()
+
+
+def _with_followup_generation_timing(
+    stage_timings_json: str | None,
+    duration_seconds: float,
+) -> dict[str, float]:
+    """Merge async follow-up latency into the millisecond stage-timing contract."""
+    try:
+        timings = json.loads(stage_timings_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        timings = {}
+    if not isinstance(timings, dict):
+        timings = {}
+    timings["followup_generation_async"] = round(
+        max(0.0, duration_seconds) * 1000,
+        2,
+    )
+    return timings
 
 
 def _save_feedback(feedback: FeedbackRequest) -> None:
@@ -8303,7 +8318,10 @@ def _build_evaluation_fingerprint() -> dict[str, object]:
         "dense_index_ready": dense_index_ready,
         "runtime_config": {
             "llm_provider": rag_config.LLM_PROVIDER,
-            "query_analysis_model": rag_config.OPENAI_MODEL,
+            "query_analysis_model": rag_config.OPENAI_QUERY_ANALYSIS_MODEL,
+            "router_model": rag_config.OPENAI_ROUTER_MODEL,
+            "evidence_selection_model": rag_config.OPENAI_EVIDENCE_MODEL,
+            "grounding_model": rag_config.OPENAI_GROUNDING_MODEL,
             "answer_model": (
                 rag_config.OPENAI_CHAT_MODEL
                 if rag_config.LLM_PROVIDER == "openai"

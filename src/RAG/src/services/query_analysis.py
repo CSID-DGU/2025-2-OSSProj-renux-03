@@ -8,7 +8,11 @@ from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, ValidationError
 
-from src.config import OPENAI_MODEL, QUERY_ANALYSIS_MAX_QUERIES, RAG_MAX_SUBQUERIES
+from src.config import (
+    OPENAI_QUERY_ANALYSIS_MODEL,
+    QUERY_ANALYSIS_MAX_QUERIES,
+    RAG_MAX_SUBQUERIES,
+)
 from src.services.conversation import (
     history_allows_context_rewrite,
     preserve_original_query,
@@ -122,7 +126,7 @@ def _get_analysis_chain():
     global analysis_chain
     if analysis_chain is None:
         llm = ChatOpenAI(
-            model=OPENAI_MODEL,
+            model=OPENAI_QUERY_ANALYSIS_MODEL,
             temperature=0,
             timeout=20,
             max_retries=1,  # 실패 시 raw 질문으로 폴백되므로 TTFB 누적 방지

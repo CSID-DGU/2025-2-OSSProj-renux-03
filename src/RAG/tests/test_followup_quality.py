@@ -144,6 +144,16 @@ def test_answer_paths_do_not_wait_for_followup_generation():
     assert "generate_followup_questions(" in followup_source
 
 
+def test_async_followup_timing_uses_same_millisecond_unit_as_total():
+    timings = rag_service._with_followup_generation_timing(
+        '{"total": 7905.0}',
+        1.4418,
+    )
+
+    assert timings["total"] == 7905.0
+    assert timings["followup_generation_async"] == 1441.8
+
+
 @pytest.mark.asyncio
 async def test_followup_endpoint_generates_only_for_grounded_logged_answer(monkeypatch):
     source = {
