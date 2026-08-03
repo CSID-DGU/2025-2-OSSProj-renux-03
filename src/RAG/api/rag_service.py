@@ -1086,6 +1086,14 @@ SCHOOL_INFO_TERMS = (
     "공지",
     "장학",
     "모집",
+    "공모전",
+    "채용",
+    "교환학생",
+    "프로그램",
+    "행사",
+    "동아리",
+    "인턴",
+    "현장실습",
     "발표",
     "전화번호",
     "연락처",
@@ -2176,6 +2184,58 @@ def _query_for_analysis(raw_query: str) -> str:
     """Return the typo/spacing-normalized question used by query analysis."""
     normalized, _ = normalize_query(raw_query)
     return normalized
+
+
+def _can_skip_query_analysis(
+    raw_query: str,
+    analysis_query: str,
+    history_text: str,
+) -> bool:
+    """Skip the LLM only for an unambiguous first-turn deterministic route.
+
+    Query analysis remains mandatory for follow-ups, typo normalization,
+    relative-time interpretation, rules/schedule cross-routing, and unknown
+    topics.  The safe bypass is deliberately limited to school questions for
+    which keyword routing resolves exactly one static corpus.  Active/recent
+    notices are allowed because their time semantics are enforced later by
+    deterministic deadline or publication-date filters.
+    """
+    if str(history_text or "").strip():
+        return False
+    if analysis_query.strip() != raw_query.strip():
+        return False
+    if not _has_school_info_terms(raw_query):
+        return False
+
+    deterministic_route = _resolve_retrieval_route(
+        raw_query,
+        QueryAnalysisMeta(result=None, used=False, failed=False),
+    )
+    if deterministic_route not in (["notices"], ["staff"], ["courses"]):
+        return False
+    if deterministic_route == ["notices"]:
+        # keyword_route의 미매칭 기본값도 notices이므로, 공지/시설 어휘가
+        # 실제로 존재하는지 별도로 확인해야 한다. 그렇지 않으면
+        # "전공필수" 같은 미등록 교과 어휘가 공지로 고정된다.
+        notice_signals = (
+            "공지", "장학", "모집", "공모전", "발표", "등록금", "입학", "입시",
+            "채용", "신청", "교내", "캠퍼스", "시설", "도서관", "열람실", "와이파이",
+            "분실물", "셔틀", "프린터", "학생증", "기숙사", "생활관", "식권",
+            "편의점", "운영시간", "공부 공간", "공부공간", "학습 공간", "학습공간",
+        )
+        if not any(term in raw_query for term in notice_signals):
+            return False
+
+    relative_terms = (
+        "오늘", "내일", "모레", "이번", "다음", "현재", "지금", "요즘", "최근", "최신",
+    )
+    has_relative_time = any(term in raw_query for term in relative_terms)
+    if has_relative_time and not (
+        _is_active_notice_state_query(raw_query, deterministic_route)
+        or _is_recent_notice_query(raw_query, deterministic_route)
+    ):
+        return False
+    return True
 
 
 def _is_compound_analysis(analysis: QueryAnalysisMeta) -> bool:
@@ -6765,7 +6825,11 @@ async def ask_stream(req: AskRequest, request: Request):
         # 못한다. 사용자에게 보여 주고 로그에 남기는 원문은 그대로 보존한다.
         analysis_query = _query_for_analysis(raw_query)
         analysis_meta = QueryAnalysisMeta(result=None, used=False, failed=False)
-        if USE_QUERY_ANALYSIS:
+        if USE_QUERY_ANALYSIS and not _can_skip_query_analysis(
+            raw_query,
+            analysis_query,
+            history_text,
+        ):
             # 후속 질문("그럼 신청 기간은?")의 대명사/생략을 해소하기 위해
             # 위에서 받아둔 최근 대화 이력을 함께 전달해 독립형 질문으로 재작성하게 한다.
             stage_started_at = time.perf_counter()
@@ -7528,7 +7592,11 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
     # 원문은 응답·로그·후속 검색 후보에 계속 보존된다.
     analysis_query = _query_for_analysis(raw_query)
     analysis_meta = QueryAnalysisMeta(result=None, used=False, failed=False)
-    if USE_QUERY_ANALYSIS:
+    if USE_QUERY_ANALYSIS and not _can_skip_query_analysis(
+        raw_query,
+        analysis_query,
+        history_text,
+    ):
         # 후속 질문의 대명사/생략 해소를 위해 위에서 받아둔 최근 대화 이력을 함께 전달(스트리밍 경로와 동일)
         stage_started_at = time.perf_counter()
         analysis_result = await analyze_query(
