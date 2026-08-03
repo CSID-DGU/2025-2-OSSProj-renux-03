@@ -1857,11 +1857,12 @@ def _first_turn_clarification_fields(
 ) -> list[str]:
     """Return the missing fields that make a first-turn query unsafe to answer.
 
-    The query analyser is allowed to mark a question ambiguous while still
-    producing search queries.  That is useful for retrieval diagnostics, but
-    it must not make the answer endpoint guess the referent.  A small
-    deterministic layer also covers common Korean ellipses that an LLM may
-    classify as a normal schedule/course question (for example ``시험 언제``).
+    LLM ambiguity is advisory: it has frequently marked fully specified
+    policy and procedure questions as needing generic extra conditions.  The
+    answer endpoint only stops before retrieval when the first-turn wording
+    itself contains a known unresolved referent or genuinely missing key.
+    This deterministic layer covers common Korean ellipses (for example
+    ``시험 언제``) without letting a generic model flag suppress retrieval.
     Existing conversation history is deliberately exempt: the analyser has
     already rewritten a follow-up against that context.
     """
@@ -1874,9 +1875,6 @@ def _first_turn_clarification_fields(
 
     compact = re.sub(r"\s+", "", raw_query).lower()
     fields: list[str] = []
-    if analysis.result is not None and analysis.result.needs_clarification:
-        if analysis.result.clarification_reason:
-            fields.append(analysis.result.clarification_reason)
 
     if "시험언제" in compact and not any(term in compact for term in ("중간", "기말", "학기", "모의", "종합")):
         fields.extend(["학기", "시험 종류(중간/기말)"])
@@ -1907,8 +1905,6 @@ def _first_turn_clarification_fields(
     if "그행사" in compact:
         fields.extend(["행사명", "날짜"])
 
-    if not fields and analysis.result is not None and analysis.result.needs_clarification:
-        fields.append("확인하려는 대상이나 조건")
     return _deduplicate_clarification_fields(fields)
 
 

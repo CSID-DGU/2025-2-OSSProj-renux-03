@@ -77,7 +77,11 @@ prompt = PromptTemplate(
    notices, rules, schedule, staff, courses, meals, unknown
 8. time_focus는 반드시 다음 중 하나만 고르세요:
    today, recent, this_week, this_month, none
-9. 모호하지만 검색은 가능하면 needs_clarification=true로 두고도 search_queries는 생성하세요.
+9. needs_clarification=true는 대명사·지시어의 대상이 없거나, 질문의 핵심 식별자가 빠져
+   검색 대상을 정할 수 없는 경우에만 사용하세요. 규정의 기준·가능 여부·절차·시점처럼
+   질문 주제가 명시돼 있고 공식 자료에서 답을 찾을 수 있으면 추가 조건이 있으면 더
+   정확해진다는 이유만으로 true로 두지 마세요. 모호하지만 검색은 가능하면
+   search_queries는 생성하세요.
 10. [이전 대화]는 현재 질문과 실질 어휘가 겹칠 때만 제공됩니다. 후속 질문을 재작성하더라도
    현재 질문 원문을 삭제하거나 다른 문장으로 치환하지 말고, 원문 뒤에 필요한 맥락만 덧붙이세요.
 11. 질문이 **여러 종류의 정보를 동시에 요구하는 복합 질문**이면(예: "졸업하려면 뭘 해야 해?",
