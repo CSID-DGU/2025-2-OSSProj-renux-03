@@ -11,6 +11,7 @@ import pytest
 
 from src.services.langchain_chat import (  # noqa: E402
     build_followup_question_details,
+    source_bounded_followup_fallback,
     validate_followup_questions,
 )
 from src.services.source_contract import normalized_source_contract, source_reference  # noqa: E402
@@ -256,6 +257,59 @@ def test_followup_details_bind_each_question_only_to_supporting_sources():
         "question": "장학 신청 서류는 무엇인가요?",
         "source_refs": [source_reference(SOURCES[0])],
     }]
+
+
+def test_followup_details_preserve_the_answer_transport_lineage():
+    original = {
+        "source": "schedule",
+        "title": "2026학년도 2학기 학부 수강신청",
+        "snippet": "학부 수강신청은 8월 3일부터 8월 7일까지 진행됩니다.",
+        "chunk_id": "schedule-2026-2-registration",
+        "metadata": {
+            "campus_scope": "shared",
+            "schedule_start": "2026-08-03",
+            "schedule_end": "2026-08-07",
+        },
+    }
+    transported_ref = source_reference(original)
+    reduced_log_source = {
+        **original,
+        "metadata": {},
+        "source_ref": transported_ref,
+    }
+
+    details = build_followup_question_details(
+        ["학부 수강신청 기간도 확인할까요?"],
+        [reduced_log_source],
+    )
+
+    assert transported_ref != source_reference(reduced_log_source)
+    assert details == [{
+        "question": "학부 수강신청 기간도 확인할까요?",
+        "source_refs": [transported_ref],
+    }]
+
+
+def test_source_bounded_fallback_uses_exact_title_without_inventing_claims():
+    sources = [{
+        "source": "schedule",
+        "title": "2026학년도 2학기 개강",
+        "snippet": "2026학년도 2학기 개강일은 2026년 9월 1일입니다.",
+        "metadata": {"campus_scope": "shared"},
+    }]
+
+    questions = source_bounded_followup_fallback(
+        question="2026학년도 2학기 개강일이 언제야?",
+        answer="2026학년도 2학기 개강일은 9월 1일입니다.",
+        source_context=sources,
+        campus_scope="seoul_bmc",
+        supported_domains=["schedule"],
+    )
+
+    assert questions == ["2026학년도 2학기 개강도 자세히 확인할까요?"]
+    assert build_followup_question_details(questions, sources)[0]["source_refs"] == [
+        source_reference(sources[0])
+    ]
 
 
 def test_source_reference_is_deterministic_and_rejects_tampered_transport():

@@ -288,6 +288,10 @@ class RagRetrievalLog(Base):
     recency_score = Column(Float, nullable=True)
     final_score = Column(Float, nullable=True)
     sort_date = Column(String, nullable=True)
+    # Async follow-up generation must transport the exact source identity that
+    # the completed answer exposed. Recomputing it from this reduced log row
+    # loses campus/effective-date metadata and produces a different lineage.
+    source_ref = Column(String, nullable=True, index=True)
     snippet = Column(Text)
     created_at = Column(DateTime, default=kst_now, index=True)
 
@@ -379,6 +383,7 @@ def ensure_runtime_schema() -> None:
         "rag_retrieval_logs",
         {
             "sort_date": "VARCHAR",
+            "source_ref": "VARCHAR",
         },
     )
     _ensure_sqlite_columns(

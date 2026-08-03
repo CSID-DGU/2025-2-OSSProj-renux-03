@@ -384,6 +384,9 @@ def test_runner_maps_only_real_transport_fields(golden_cases):
     assert result["sources"][0]["snippet_hash"] == hashlib.sha256("실제 HTTP 출처".encode()).hexdigest()
     assert result["actual_app_intents"] == ["schedule", "notices"]
     assert result["followups"] == [{"question": "다음 일정도 확인할까요?", "source_refs": [source_ref]}]
+    assert result["followup_http_status"] is None
+    assert result["followup_latency_ms"] is None
+    assert result["workflow_latency_ms"] == 10
     assert "abstained" not in result and "clarification_requested" not in result and "made_definitive_claim" not in result
 
 
@@ -435,12 +438,19 @@ def test_runner_performs_http_call_and_marks_subset_incomplete(tmp_path):
         def do_POST(self):  # noqa: N802
             length = int(self.headers.get("Content-Length", "0"))
             request = json.loads(self.rfile.read(length))
-            received_requests.append(request)
-            response = {
-                "request_id": "http-real-id", "answer": f"응답: {request['question']}", "citations": "",
-                "route": ["schedule"], "sources": [], "suggested_questions": [],
-                "fallback_triggered": True, "fallback_reason": "fixture", "grounded": None, "grounding_score": None,
-            }
+            received_requests.append((self.path, request))
+            if self.path == "/followups":
+                response = {
+                    "request_id": "http-real-id",
+                    "questions": ["다음 일정도 확인할까요?"],
+                    "question_details": [{"question": "다음 일정도 확인할까요?", "source_refs": []}],
+                }
+            else:
+                response = {
+                    "request_id": "http-real-id", "answer": f"응답: {request['question']}", "citations": "",
+                    "route": ["schedule"], "sources": [], "suggested_questions": [],
+                    "fallback_triggered": True, "fallback_reason": "fixture", "grounded": True, "grounding_score": 1.0,
+                }
             body = json.dumps(response, ensure_ascii=False).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -468,7 +478,17 @@ def test_runner_performs_http_call_and_marks_subset_incomplete(tmp_path):
     assert manifest["candidate_fingerprint_end_sha256"] == manifest["candidate_fingerprint_sha256"]
     assert manifest["selected_case_ids"] == ["AC-001"]
     assert manifest["as_of"] == "2026-07-30"
-    assert received_requests[0]["asOf"] == "2026-07-30"
+    assert len(received_requests) == 2
+    ask_path, ask_request = received_requests[0]
+    assert ask_path == "/ask"
+    assert ask_request["question"] == load_matrix(MATRIX)[0].question
+    assert ask_request["sessionId"].startswith("golden-")
+    assert ask_request["asOf"] == "2026-07-30"
+    assert received_requests[1] == ("/followups", {"requestId": "http-real-id"})
+    assert result["followups"] == [{"question": "다음 일정도 확인할까요?", "source_refs": []}]
+    assert result["followup_http_status"] == 200
+    assert result["followup_latency_ms"] is not None
+    assert result["workflow_latency_ms"] >= result["latency_ms"]
 
 
 def test_missing_real_replay_is_explicit_hold(tmp_path, capsys):

@@ -526,6 +526,43 @@ def validate_followup_questions(
     return suggestions
 
 
+def source_bounded_followup_fallback(
+    *,
+    question: str,
+    answer: str,
+    source_context: list[dict[str, Any]] | None,
+    campus_scope: str,
+    supported_domains: list[str] | None,
+) -> list[str]:
+    """Build one conservative next step from an exact transported title.
+
+    The model may legitimately return no candidate, especially when a direct
+    schedule/meal answer has only one short source row. The product and golden
+    contract still need a clickable question whose terms are retrievable from
+    that same source. Reusing the official title adds no new factual claim and
+    then passes through the same deterministic validator as model output.
+    """
+    for source in source_context or []:
+        if not isinstance(source, dict):
+            continue
+        title = re.sub(r"\s+", " ", str(source.get("title") or "")).strip(" []")
+        if not title:
+            continue
+        title = title[:80].rstrip()
+        candidates = validate_followup_questions(
+            [f"{title}도 자세히 확인할까요?"],
+            question=question,
+            answer=answer,
+            source_context=source_context,
+            campus_scope=campus_scope,
+            supported_domains=supported_domains,
+            count=1,
+        )
+        if candidates:
+            return candidates
+    return []
+
+
 def build_followup_question_details(
     questions: list[str],
     source_context: list[dict[str, Any]] | None,
@@ -565,7 +602,13 @@ def build_followup_question_details(
             if (overlap >= 2 and ratio >= 0.4) or (
                 distinctive_overlap and len(candidate_tokens) <= 4 and ratio >= 0.25
             ):
-                matches.append((ratio, overlap, source_reference(source)))
+                transported_ref = str(source.get("source_ref") or "").strip()
+                reference = (
+                    transported_ref
+                    if re.fullmatch(r"sha256:[0-9a-f]{64}", transported_ref)
+                    else source_reference(source)
+                )
+                matches.append((ratio, overlap, reference))
         if not matches:
             continue
         matches.sort(key=lambda item: (-item[0], -item[1], item[2]))
@@ -622,7 +665,13 @@ async def generate_followup_questions(
             fallback = _fallback_provider(primary)
             if fallback is None:
                 logger.warning("Follow-up question generation failed with provider '%s': %s", primary, exc)
-                return []
+                return source_bounded_followup_fallback(
+                    question=question,
+                    answer=answer,
+                    source_context=source_context,
+                    campus_scope=campus_scope,
+                    supported_domains=supported_domains,
+                )
             logger.warning(
                 "Follow-up provider '%s' failed (%s); falling back to '%s'.",
                 primary,
@@ -643,9 +692,15 @@ async def generate_followup_questions(
         parsed = json.loads(cleaned)
         if not isinstance(parsed, list):
             logger.debug("Follow-up response was not a JSON array: %s", cleaned)
-            return []
+            return source_bounded_followup_fallback(
+                question=question,
+                answer=answer,
+                source_context=source_context,
+                campus_scope=campus_scope,
+                supported_domains=supported_domains,
+            )
 
-        return validate_followup_questions(
+        validated = validate_followup_questions(
             parsed,
             question=question,
             answer=answer,
@@ -654,9 +709,24 @@ async def generate_followup_questions(
             supported_domains=supported_domains,
             count=count,
         )
+        if validated:
+            return validated
+        return source_bounded_followup_fallback(
+            question=question,
+            answer=answer,
+            source_context=source_context,
+            campus_scope=campus_scope,
+            supported_domains=supported_domains,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to generate follow-up questions: %s", exc)
-        return []
+        return source_bounded_followup_fallback(
+            question=question,
+            answer=answer,
+            source_context=source_context,
+            campus_scope=campus_scope,
+            supported_domains=supported_domains,
+        )
 
 
 async def generate_langchain_answer_stream(

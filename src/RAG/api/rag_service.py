@@ -4572,6 +4572,7 @@ def _save_rag_evaluation_log(
     sources: List[SourceChunk],
     stage_timings: dict[str, float] | None = None,
     llm_usage: list[dict] | None = None,
+    deterministically_grounded: bool = False,
 ) -> None:
     session = SessionLocal()
     try:
@@ -4598,6 +4599,9 @@ def _save_rag_evaluation_log(
             matched_queries_json=matched_queries_json,
             top_hybrid_score=top_hybrid_score,
             source_count=len(sources),
+            grounding_checked=deterministically_grounded,
+            grounding_grounded=True if deterministically_grounded else None,
+            grounding_score=1.0 if deterministically_grounded else None,
             stage_timings_json=_json_or_none(stage_timings),
             llm_usage_json=_json_or_none(llm_usage),
             estimated_llm_cost_usd=_sum_estimated_llm_cost(llm_usage),
@@ -4621,6 +4625,10 @@ def _save_rag_evaluation_log(
                     recency_score=source.recency_score,
                     final_score=source.final_score,
                     sort_date=source.sort_date or source.published_at,
+                    source_ref=(
+                        source.source_ref
+                        or source_reference(source.model_dump())
+                    ),
                     snippet=source.snippet[:2000],
                 )
             )
@@ -4728,7 +4736,9 @@ def _load_followup_generation_context(request_id: str) -> FollowupGenerationCont
                 "recency_score": retrieval.recency_score,
                 "final_score": retrieval.final_score,
             }
-            source["source_ref"] = source_reference(source)
+            source["source_ref"] = (
+                retrieval.source_ref or source_reference(source)
+            )
             source_context.append(source)
 
         eligible = bool(
@@ -6699,6 +6709,7 @@ async def ask_stream(req: AskRequest, request: Request):
                 direct_route[0], None, None, None, False, None,
                 False, False, json.dumps([raw_query], ensure_ascii=False), 1.0,
                 direct_sources, stage_timings, llm_usage,
+                deterministically_grounded=True,
             )
             await run_in_threadpool(append_manual_history, session_id, raw_query, direct_answer)
             _log_event(
@@ -7044,6 +7055,7 @@ async def ask_stream(req: AskRequest, request: Request):
                     analysis_meta.used, analysis_meta.failed, None, top_hybrid_score,
                     direct_sources,
                     stage_timings, llm_usage,
+                    deterministically_grounded=True,
                 )
                 await run_in_threadpool(append_manual_history, session_id, raw_query, direct_answer)
                 _log_event(
@@ -7458,6 +7470,7 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
             direct_route[0], None, None, None, False, None,
             False, False, json.dumps([raw_query], ensure_ascii=False), 1.0,
             direct_sources, stage_timings, llm_usage,
+            deterministically_grounded=True,
         )
         await run_in_threadpool(append_manual_history, session_id, raw_query, direct_answer)
         _log_event(
@@ -7840,6 +7853,7 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
                 json.dumps(matched_queries, ensure_ascii=False), top_hybrid_score,
                 direct_sources,
                 stage_timings, llm_usage,
+                deterministically_grounded=True,
             )
             await run_in_threadpool(append_manual_history, session_id, raw_query, direct_answer)
             _log_event(
@@ -7858,6 +7872,8 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
                 resolved_intents=route,
                 suggested_questions=direct_suggestions,
                 suggested_question_details=direct_suggestion_details,
+                grounded=True,
+                grounding_score=1.0,
                 fallback_triggered=False,
                 fallback_reason=None,
             )

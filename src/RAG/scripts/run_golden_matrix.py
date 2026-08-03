@@ -30,7 +30,7 @@ from golden_matrix import TAXONOMY_VERSION, file_sha256, load_matrix, load_taxon
 from src.services.source_contract import normalized_source_contract
 
 
-RUNNER_VERSION = "real-http-v4-as-of"
+RUNNER_VERSION = "real-http-v5-async-followups"
 DEFAULT_GOLDEN_AS_OF = "2026-07-30"
 
 
@@ -112,7 +112,17 @@ def _normalize_source(source: dict[str, Any]) -> dict[str, Any]:
     return normalized_source_contract(source)
 
 
-def _result_from_response(case, status: int, response: dict, latency_ms: int) -> dict[str, Any]:
+def _result_from_response(
+    case,
+    status: int,
+    response: dict,
+    latency_ms: int,
+    *,
+    followup_status: int | None = None,
+    followup_latency_ms: int | None = None,
+    workflow_latency_ms: int | None = None,
+) -> dict[str, Any]:
+    workflow_latency_ms = latency_ms if workflow_latency_ms is None else workflow_latency_ms
     if status < 200 or status >= 300:
         return {
             "schema_version": 2,
@@ -122,6 +132,9 @@ def _result_from_response(case, status: int, response: dict, latency_ms: int) ->
             "response_received": False,
             "http_status": status,
             "latency_ms": latency_ms,
+            "followup_http_status": followup_status,
+            "followup_latency_ms": followup_latency_ms,
+            "workflow_latency_ms": workflow_latency_ms,
             "request_id": None,
             "actual_app_intents": [],
             "answer": "",
@@ -161,6 +174,9 @@ def _result_from_response(case, status: int, response: dict, latency_ms: int) ->
         "response_received": True,
         "http_status": status,
         "latency_ms": latency_ms,
+        "followup_http_status": followup_status,
+        "followup_latency_ms": followup_latency_ms,
+        "workflow_latency_ms": workflow_latency_ms,
         "request_id": str(response.get("request_id") or "") or None,
         "actual_app_intents": [
             str(item)
@@ -181,6 +197,7 @@ def _result_from_response(case, status: int, response: dict, latency_ms: int) ->
 def _run_case(
     case,
     ask_url: str,
+    followup_url: str,
     timeout: float,
     headers: dict[str, str],
     as_of: str,
@@ -197,7 +214,47 @@ def _run_case(
             timeout,
             headers,
         )
-        return _result_from_response(case, status, response, round((time.perf_counter() - started) * 1000))
+        ask_latency_ms = round((time.perf_counter() - started) * 1000)
+        followup_status: int | None = None
+        followup_latency_ms: int | None = None
+        request_id = str(response.get("request_id") or "").strip()
+        # Mirror the production client contract: a grounded completed answer
+        # starts the independent follow-up request after /ask has returned.
+        if 200 <= status < 300 and request_id and response.get("grounded") is True:
+            followup_started = time.perf_counter()
+            followup_status, followup_response = _request_json(
+                followup_url,
+                {"requestId": request_id},
+                timeout,
+                headers,
+            )
+            followup_latency_ms = round((time.perf_counter() - followup_started) * 1000)
+            if 200 <= followup_status < 300:
+                response = {
+                    **response,
+                    "suggested_questions": followup_response.get("questions", []),
+                    "suggested_question_details": followup_response.get("question_details", []),
+                }
+            else:
+                response = {
+                    **response,
+                    "error": f"follow-up endpoint returned HTTP {followup_status}: "
+                    f"{json.dumps(followup_response, ensure_ascii=False)[:1000]}",
+                }
+        workflow_latency_ms = round((time.perf_counter() - started) * 1000)
+        result = _result_from_response(
+            case,
+            status,
+            response,
+            ask_latency_ms,
+            followup_status=followup_status,
+            followup_latency_ms=followup_latency_ms,
+            workflow_latency_ms=workflow_latency_ms,
+        )
+        if followup_status is not None and not 200 <= followup_status < 300:
+            result["status"] = "http_error"
+            result["error"] = response["error"]
+        return result
     except (OSError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
         return _result_from_response(
             case,
@@ -245,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     base_url = args.base_url.rstrip("/")
     ask_url = f"{base_url}/ask"
+    followup_url = f"{base_url}/followups"
     run_id = str(uuid.uuid4())
     started_at = _utc_now()
     try:
@@ -272,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
                 _run_case,
                 case,
                 ask_url,
+                followup_url,
                 args.timeout,
                 headers,
                 args.as_of,

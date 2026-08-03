@@ -41,13 +41,19 @@ def _direct_fixture() -> DirectAnswer:
 
 
 def _patch_direct_path(monkeypatch):
+    saved_logs = []
     monkeypatch.setattr(rag_service, "RAG_ALLOW_AS_OF_OVERRIDE", True)
     monkeypatch.setattr(rag_service, "USE_QUERY_ANALYSIS", False)
     monkeypatch.setattr(rag_service, "RAG_SEMANTIC_CACHE_ENABLED", False)
     monkeypatch.setattr(rag_service, "_chat_course_recommendation", lambda *_args: None)
     monkeypatch.setattr(rag_service, "_try_direct_answer", lambda *_args: _direct_fixture())
-    monkeypatch.setattr(rag_service, "_save_rag_evaluation_log", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        rag_service,
+        "_save_rag_evaluation_log",
+        lambda *_args, **kwargs: saved_logs.append(kwargs),
+    )
     monkeypatch.setattr(rag_service, "append_manual_history", lambda *_args: None)
+    return saved_logs
 
 
 def test_old_year_kpi_ignores_years_explicitly_requested_by_user():
@@ -65,7 +71,7 @@ def test_old_year_kpi_ignores_years_explicitly_requested_by_user():
 
 @pytest.mark.asyncio
 async def test_nonstream_direct_answer_uses_the_normal_source_contract(monkeypatch):
-    _patch_direct_path(monkeypatch)
+    saved_logs = _patch_direct_path(monkeypatch)
     request = SimpleNamespace(state=SimpleNamespace(request_id="direct-nonstream"))
     response = await rag_service.ask(
         rag_service.AskRequest(question="수강신청 언제야?", asOf="2026-07-30"),
@@ -80,11 +86,12 @@ async def test_nonstream_direct_answer_uses_the_normal_source_contract(monkeypat
     assert response.sources[0].metadata["schedule_id"] == "47"
     assert response.suggested_questions == []
     assert response.suggested_question_details == []
+    assert saved_logs == [{"deterministically_grounded": True}]
 
 
 @pytest.mark.asyncio
 async def test_stream_direct_answer_finishes_with_valid_completion_and_done(monkeypatch):
-    _patch_direct_path(monkeypatch)
+    saved_logs = _patch_direct_path(monkeypatch)
     request = SimpleNamespace(state=SimpleNamespace(request_id="direct-stream"))
     response = await rag_service.ask_stream(
         rag_service.AskRequest(question="수강신청 언제야?", asOf="2026-07-30"),
@@ -114,3 +121,4 @@ async def test_stream_direct_answer_finishes_with_valid_completion_and_done(monk
     assert completion["resolved_intents"] == ["schedule"]
     assert completion["suggested_questions"] == []
     assert completion["suggested_question_details"] == []
+    assert saved_logs == [{"deterministically_grounded": True}]
