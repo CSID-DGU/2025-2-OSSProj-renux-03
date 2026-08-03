@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -140,6 +141,68 @@ def test_load_strict_mode_rejects_unmanifested(tmp_path):
         (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
         with pytest.raises(ValueError):
             load_lexical("intg")
+
+
+def test_rebuild_does_not_expose_new_artifact_with_old_manifest(tmp_path, monkeypatch):
+    """동시 로드는 pkl/매니페스트 교체가 모두 끝난 뒤의 세대만 읽는다."""
+    with patch("src.search.hybrid.VECTORIZER_DIR", tmp_path), \
+         patch("src.search.hybrid.TFIDF_VERIFY_INTEGRITY", True):
+        train_bm25("intg", ["이전 문서"], chunk_ids=["old"])
+        original_write = hybrid._write_manifest_unlocked
+        manifest_write_entered = threading.Event()
+        allow_manifest_write = threading.Event()
+
+        def delayed_manifest_write(manifest):
+            manifest_write_entered.set()
+            assert allow_manifest_write.wait(timeout=5)
+            original_write(manifest)
+
+        monkeypatch.setattr(hybrid, "_write_manifest_unlocked", delayed_manifest_write)
+        writer = threading.Thread(
+            target=train_bm25,
+            args=("intg", ["새 문서"]),
+            kwargs={"chunk_ids": ["new"]},
+        )
+        writer.start()
+        assert manifest_write_entered.wait(timeout=5)
+
+        loaded: list[list[str] | None] = []
+
+        def load_during_publish():
+            _, _, chunk_ids = load_lexical_with_ids("intg")
+            loaded.append(chunk_ids)
+
+        reader = threading.Thread(target=load_during_publish)
+        reader.start()
+        reader.join(timeout=0.1)
+        assert reader.is_alive(), "reader must wait while artifact generation is being published"
+
+        allow_manifest_write.set()
+        writer.join(timeout=5)
+        reader.join(timeout=5)
+        assert not writer.is_alive()
+        assert not reader.is_alive()
+        assert loaded == [["new"]]
+
+
+def test_failed_rebuild_keeps_last_verified_artifact(tmp_path, monkeypatch):
+    """직렬화 실패는 기존 정상 파일을 건드리지 않고 임시 파일도 정리한다."""
+    with patch("src.search.hybrid.VECTORIZER_DIR", tmp_path), \
+         patch("src.search.hybrid.TFIDF_VERIFY_INTEGRITY", True):
+        train_bm25("intg", ["정상 문서"], chunk_ids=["stable"])
+        original_digest = hybrid._sha256_file(tmp_path / "intg_bm25.pkl")
+
+        def fail_dump(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(hybrid.joblib, "dump", fail_dump)
+        with pytest.raises(OSError, match="disk full"):
+            train_bm25("intg", ["미완성 문서"], chunk_ids=["broken"])
+
+        assert hybrid._sha256_file(tmp_path / "intg_bm25.pkl") == original_digest
+        assert not list(tmp_path.glob(".intg_bm25.pkl.*.tmp"))
+        _, _, chunk_ids = load_lexical_with_ids("intg")
+        assert chunk_ids == ["stable"]
 
 
 def test_bm25_normalizes_for_document_length(tmp_path):

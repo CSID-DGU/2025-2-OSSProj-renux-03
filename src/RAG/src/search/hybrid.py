@@ -4,7 +4,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
+import tempfile
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -37,6 +41,8 @@ logger = logging.getLogger(__name__)
 # 희소 검색 pkl 무결성 매니페스트: {파일명: sha256}. 학습 시 갱신하고 로드 전 대조한다.
 # 경로는 호출 시점에 VECTORIZER_DIR에서 파생한다(테스트의 VECTORIZER_DIR 패치가 함께 적용되도록).
 _MANIFEST_NAME = "manifest.json"
+_MANIFEST_LOCK_NAME = "manifest.lock"
+_LOCAL_ARTIFACT_LOCK = threading.RLock()
 _KIWI = None
 _KIWI_UNAVAILABLE = False
 _TOKEN_PATTERN = re.compile(r"[가-힣A-Za-z0-9]+")
@@ -81,6 +87,31 @@ def _vectorizer_path(identifier: str) -> Path:
 
 def _manifest_path() -> Path:
     return VECTORIZER_DIR / _MANIFEST_NAME
+
+
+@contextmanager
+def _artifact_lock(*, exclusive: bool):
+    """희소 아티팩트와 매니페스트를 하나의 스냅샷처럼 읽고 쓴다.
+
+    스케줄러가 인덱스를 교체하는 동안 다른 스레드/프로세스가 새 pkl과 이전
+    매니페스트를 섞어 읽지 않게 한다. ``fcntl``이 없는 플랫폼에서는 최소한
+    프로세스 내부 잠금은 유지한다.
+    """
+    VECTORIZER_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = VECTORIZER_DIR / _MANIFEST_LOCK_NAME
+    with _LOCAL_ARTIFACT_LOCK:
+        with open(lock_path, "a+b") as lock_file:
+            try:
+                import fcntl
+            except ImportError:  # pragma: no cover - Linux/macOS 배포 경로에는 존재
+                yield
+                return
+            operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+            fcntl.flock(lock_file.fileno(), operation)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _load_kiwi():
@@ -273,18 +304,34 @@ def _read_manifest() -> Dict[str, str]:
         return {}
 
 
-def _update_manifest(filename: str, digest: str) -> None:
-    """학습 직후 매니페스트에 {파일명: sha256}을 기록한다."""
+def _write_manifest_unlocked(manifest: Dict[str, str]) -> None:
     manifest_path = _manifest_path()
-    manifest = _read_manifest()
-    manifest[filename] = digest
-    tmp_path = manifest_path.with_suffix(".json.tmp")
-    with open(tmp_path, "w", encoding="utf-8") as fh:
-        json.dump(manifest, fh, ensure_ascii=False, indent=2, sort_keys=True)
-    tmp_path.replace(manifest_path)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{manifest_path.name}.",
+        suffix=".tmp",
+        dir=manifest_path.parent,
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, ensure_ascii=False, indent=2, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp_path.replace(manifest_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
-def _verify_artifact_integrity(path: Path) -> None:
+def _update_manifest(filename: str, digest: str) -> None:
+    """매니페스트 단독 갱신 호출도 프로세스 간 lost update 없이 처리한다."""
+    with _artifact_lock(exclusive=True):
+        manifest = _read_manifest()
+        manifest[filename] = digest
+        _write_manifest_unlocked(manifest)
+
+
+def _verify_artifact_integrity_unlocked(path: Path) -> None:
     """joblib.load 이전에 매니페스트 해시와 대조한다(불일치 시 fail-closed).
 
     pkl/joblib 아티팩트는 역직렬화 중 임의 코드를 실행할 수 있으므로, 신뢰된
@@ -310,6 +357,11 @@ def _verify_artifact_integrity(path: Path) -> None:
             f"희소 검색 아티팩트 '{path.name}' 무결성 검증 실패: "
             f"매니페스트 해시와 불일치(변조/손상 가능). 로드를 거부합니다."
         )
+
+
+def _verify_artifact_integrity(path: Path) -> None:
+    with _artifact_lock(exclusive=False):
+        _verify_artifact_integrity_unlocked(path)
 
 
 def train_bm25(
@@ -347,39 +399,59 @@ def train_bm25(
     # engine이 계산하므로 0열 행렬이면 충분하고, 문서 본문을 중복 저장하지 않는다.
     matrix = np.empty((len(texts), 0), dtype=np.float32)
     path = _bm25_path(identifier)
-    joblib.dump(
-        {
-            "vectorizer": vectorizer,
-            "matrix": matrix,
-            "chunk_ids": ids,
-            "metadata": {
-                "dataset": identifier,
-                "document_count": len(texts),
-                "created_at": datetime.now(timezone(timedelta(hours=9))).isoformat(),
-                "sklearn_version": sklearn.__version__,
-                "retriever_type": "bm25",
-                "bm25_k1": vectorizer.k1,
-                "bm25_b": vectorizer.b,
-                "tokenizer": tokenizer_name,
-                "tokenizer_backend": (
-                    "kiwi"
-                    if tokenizer_name == "korean" and _load_kiwi() is not None
-                    else "light_korean" if tokenizer_name == "korean"
-                    else tokenizer_name
-                ),
-            },
-        },
-        path,
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
     )
-    # 방금 쓴 아티팩트의 해시를 매니페스트에 기록 → 이후 로드 시 무결성 검증의 신뢰 기준이 된다.
-    _update_manifest(path.name, _sha256_file(path))
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        joblib.dump(
+            {
+                "vectorizer": vectorizer,
+                "matrix": matrix,
+                "chunk_ids": ids,
+                "metadata": {
+                    "dataset": identifier,
+                    "document_count": len(texts),
+                    "created_at": datetime.now(timezone(timedelta(hours=9))).isoformat(),
+                    "sklearn_version": sklearn.__version__,
+                    "retriever_type": "bm25",
+                    "bm25_k1": vectorizer.k1,
+                    "bm25_b": vectorizer.b,
+                    "tokenizer": tokenizer_name,
+                    "tokenizer_backend": (
+                        "kiwi"
+                        if tokenizer_name == "korean" and _load_kiwi() is not None
+                        else "light_korean" if tokenizer_name == "korean"
+                        else tokenizer_name
+                    ),
+                },
+            },
+            tmp_path,
+        )
+        digest = _sha256_file(tmp_path)
+        # pkl 교체와 매니페스트 교체를 같은 배타 잠금 안에서 수행한다. 독자는
+        # 공유 잠금을 잡으므로 두 세대가 섞인 중간 상태를 관찰하지 않는다.
+        with _artifact_lock(exclusive=True):
+            manifest = _read_manifest()
+            tmp_path.replace(path)
+            manifest[path.name] = digest
+            _write_manifest_unlocked(manifest)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
     return vectorizer, matrix
 
 
 def _load_lexical_artifact(identifier: str) -> dict:
     path = lexical_artifact_path(identifier)
-    _verify_artifact_integrity(path)  # joblib.load(임의 코드 실행 가능) 이전에 fail-closed 검증
-    artifact = joblib.load(path)
+    # 검증부터 역직렬화 완료까지 공유 잠금을 유지해 검증 후 파일 교체(TOCTOU)도 막는다.
+    with _artifact_lock(exclusive=False):
+        _verify_artifact_integrity_unlocked(path)
+        artifact = joblib.load(path)
     if isinstance(artifact, dict) and "vectorizer" in artifact and "matrix" in artifact:
         metadata = artifact.get("metadata")
         if isinstance(metadata, dict):
