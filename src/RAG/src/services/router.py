@@ -76,14 +76,23 @@ prompt = PromptTemplate(
 
 # 라우팅을 수행할 LLM 체인을 구성합니다.
 # 파싱은 별도로 수행해 실패 시 LLM 원본 출력을 로깅할 수 있게 한다(디버깅 용이).
-llm = ChatOpenAI(
-    model=OPENAI_MODEL,
-    temperature=0,
-    timeout=OPENAI_CHAT_TIMEOUT_SECONDS,
-    max_retries=1,
-    model_kwargs={"response_format": {"type": "json_object"}},
-)
-router_chain = prompt | llm
+# 키가 없는 테스트 수집과 sparse-only 프로세스가 import 단계에서 죽지 않도록
+# 실제 라우팅 요청 시점까지 OpenAI 클라이언트 생성을 미룬다.
+router_chain = None
+
+
+def _get_router_chain():
+    global router_chain
+    if router_chain is None:
+        llm = ChatOpenAI(
+            model=OPENAI_MODEL,
+            temperature=0,
+            timeout=OPENAI_CHAT_TIMEOUT_SECONDS,
+            max_retries=1,
+            model_kwargs={"response_format": {"type": "json_object"}},
+        )
+        router_chain = prompt | llm
+    return router_chain
 _route_cache: dict[str, tuple[float, List[str]]] = {}
 
 
@@ -150,7 +159,7 @@ async def route_query(query: str) -> List[str]:
     
     raw_text = None
     try:
-        raw_message = await router_chain.ainvoke({
+        raw_message = await _get_router_chain().ainvoke({
             "query": query,
             "destinations": formatted_destinations,
         })

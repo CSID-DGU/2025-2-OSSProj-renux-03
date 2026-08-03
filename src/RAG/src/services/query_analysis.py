@@ -112,14 +112,24 @@ JSON 형식:
     },
 )
 
-llm = ChatOpenAI(
-    model=OPENAI_MODEL,
-    temperature=0,
-    timeout=20,
-    max_retries=1,  # 질의분석은 실패해도 raw 질문으로 폴백되므로 재시도 1회로 TTFB 누적 방지
-    model_kwargs={"response_format": {"type": "json_object"}},
-)
-analysis_chain = prompt | llm | parser
+# API 키가 없는 테스트·readiness 프로세스도 이 모듈을 import할 수 있어야 한다.
+# 체인은 실제 질의분석이 처음 요청될 때만 만든다. 공개 변수는 기존 테스트의
+# monkeypatch 지점을 보존하기 위해 유지한다.
+analysis_chain = None
+
+
+def _get_analysis_chain():
+    global analysis_chain
+    if analysis_chain is None:
+        llm = ChatOpenAI(
+            model=OPENAI_MODEL,
+            temperature=0,
+            timeout=20,
+            max_retries=1,  # 실패 시 raw 질문으로 폴백되므로 TTFB 누적 방지
+            model_kwargs={"response_format": {"type": "json_object"}},
+        )
+        analysis_chain = prompt | llm | parser
+    return analysis_chain
 
 
 def enforce_explicit_year_boundary(
@@ -229,7 +239,7 @@ async def analyze_query(
             if history_allows_context_rewrite(query, history_text)
             else ""
         )
-        result = await analysis_chain.ainvoke({
+        result = await _get_analysis_chain().ainvoke({
             "query": query,
             "history": safe_history.strip() or "(없음)",
             "temporal_context": temporal.prompt_text,

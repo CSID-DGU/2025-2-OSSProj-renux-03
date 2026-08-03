@@ -18,13 +18,24 @@ logger = logging.getLogger(__name__)
 _MAX_CONTEXT_CHARS = 4000
 _MAX_ANSWER_CHARS = 2000
 
-_GROUNDING_LLM = ChatOpenAI(
-    model=OPENAI_MODEL,
-    temperature=0,
-    timeout=OPENAI_CHAT_TIMEOUT_SECONDS,
-    max_retries=1,
-    model_kwargs={"response_format": {"type": "json_object"}},
-)
+# Keep imports side-effect free.  Test collection, readiness probes, and
+# sparse-only deployments must not require OpenAI credentials merely because
+# ``rag_service`` imports the grounding helper.  The public module variable is
+# retained for tests/embedders that inject a compatible client.
+_GROUNDING_LLM: Any | None = None
+
+
+def _get_grounding_llm() -> Any:
+    global _GROUNDING_LLM
+    if _GROUNDING_LLM is None:
+        _GROUNDING_LLM = ChatOpenAI(
+            model=OPENAI_MODEL,
+            temperature=0,
+            timeout=OPENAI_CHAT_TIMEOUT_SECONDS,
+            max_retries=1,
+            model_kwargs={"response_format": {"type": "json_object"}},
+        )
+    return _GROUNDING_LLM
 
 
 @dataclass
@@ -97,7 +108,7 @@ async def check_answer_grounding(
             ),
         ]
         started_at = time.perf_counter()
-        response = await _GROUNDING_LLM.ainvoke(messages)
+        response = await _get_grounding_llm().ainvoke(messages)
         _append_usage_record(
             usage_collector,
             stage="grounding_check",
