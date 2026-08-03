@@ -913,6 +913,11 @@ def _resolve_retrieval_route(raw_query: str, analysis: QueryAnalysisMeta) -> lis
         route.append("notices")
     if _should_append_notices_for_schedule_query(raw_query, route):
         route.append("notices")
+    # "이번 주 마감 추천채용"처럼 공지 자체의 접수 마감을 묻는 질문은
+    # apply_deadline 범위 조회가 정답이다. "이번 주" 때문에 추가된 schedule이
+    # 날짜가 겹치는 학사일정으로 근거 후보를 독점하지 못하게 한다.
+    if _is_notice_deadline_range_query(raw_query):
+        return ["notices"]
     return route or ["notices"]
 
 
@@ -1011,6 +1016,16 @@ _ACTIVE_NOTICE_SUBJECT_RE = re.compile(
     r"(?:공모전?|장학(?:금)?|모집|채용|프로그램|행사|동아리|"
     r"신청|접수|선발|지원\s*(?:사업|프로그램)?)"
 )
+_NOTICE_DEADLINE_SUBJECT_RE = re.compile(
+    r"(?:공모전?|장학(?:금)?|모집|추천\s*채용|채용|해외\s*파견|교환학생|"
+    r"프로그램|행사|동아리|인턴(?:십)?|현장실습)"
+)
+
+
+def _is_notice_deadline_range_query(query: str) -> bool:
+    """Whether a deadline range belongs to an opportunity notice, not the academic calendar."""
+    normalized = re.sub(r"\s+", " ", str(query or "")).strip()
+    return "마감" in normalized and bool(_NOTICE_DEADLINE_SUBJECT_RE.search(normalized))
 EVIDENCE_FALLBACK_STOP_TERMS = {
     "알려줘", "보여줘", "어떻게", "어떤", "언제", "무엇", "뭐야", "해주세요", "싶은데", "해야해",
     "대한", "관련", "정보", "문의", "학교", "동국대", "동국대학교",

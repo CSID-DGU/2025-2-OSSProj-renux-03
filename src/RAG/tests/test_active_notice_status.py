@@ -16,6 +16,7 @@ from api import rag_service  # noqa: E402
 from src.search import hybrid  # noqa: E402
 from src.services.answer import extract_title  # noqa: E402
 from src.services.langchain_chat import _get_system_prompt  # noqa: E402
+from src.services.query_analysis import QueryAnalysisResult  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -246,6 +247,40 @@ def test_deadline_range_ranking_supports_bm25_artifacts(monkeypatch, tmp_path):
 
     assert hits.iloc[0]["chunk_id"] == "career"
     assert hits.iloc[0]["sparse_score"] > hits.iloc[1]["sparse_score"]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "이번 주 마감하는 교내 추천채용 공고를 알려줘",
+        "이번 달 마감인 해외파견 프로그램만 찾아줘",
+        "8월에 마감하는 공모전 알려줘",
+    ],
+)
+def test_opportunity_deadline_range_uses_notice_deadline_index_only(question):
+    analysis = rag_service.QueryAnalysisMeta(
+        result=QueryAnalysisResult(
+            normalized_question=question,
+            intent="notices",
+        ),
+        used=True,
+    )
+
+    assert rag_service._resolve_retrieval_route(question, analysis) == ["notices"]
+
+
+def test_academic_registration_deadline_keeps_schedule_route():
+    question = "이번 주 수강신청 마감이 언제야?"
+    analysis = rag_service.QueryAnalysisMeta(
+        result=QueryAnalysisResult(
+            normalized_question=question,
+            intent="schedule",
+        ),
+        used=True,
+    )
+
+    route = rag_service._resolve_retrieval_route(question, analysis)
+    assert route[0] == "schedule"
 
 
 def test_citation_title_keeps_nested_brackets():
