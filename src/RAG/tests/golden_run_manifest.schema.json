@@ -3,14 +3,15 @@
   "$id": "https://dongttok.local/schemas/golden-run-manifest-v2.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "runner_version", "run_id", "run_started_at", "run_completed_at", "endpoint", "endpoint_ready_status", "endpoint_ready_payload_hash", "header_names", "matrix_sha256", "taxonomy_version", "taxonomy_sha256", "results_sha256", "result_count", "expected_result_count", "selected_case_ids", "complete", "release_eligible", "failed_case_ids", "git", "candidate_fingerprint", "candidate_fingerprint_sha256", "candidate_fingerprint_end_sha256", "candidate_fingerprint_stable", "candidate_config", "data_manifest_hash", "data_files"],
+  "required": ["schema_version", "runner_version", "run_id", "run_started_at", "run_completed_at", "endpoint", "as_of", "endpoint_ready_status", "endpoint_ready_payload_hash", "header_names", "matrix_sha256", "taxonomy_version", "taxonomy_sha256", "results_sha256", "result_count", "expected_result_count", "selected_case_ids", "complete", "release_eligible", "failed_case_ids", "git", "candidate_fingerprint", "candidate_fingerprint_sha256", "candidate_fingerprint_end_sha256", "candidate_fingerprint_stable", "candidate_config", "data_manifest_hash", "data_files"],
   "properties": {
     "schema_version": {"const": 2},
-    "runner_version": {"const": "real-http-v3-stable-attestation"},
+    "runner_version": {"const": "real-http-v5-async-followups"},
     "run_id": {"type": "string", "format": "uuid"},
     "run_started_at": {"type": "string", "format": "date-time"},
     "run_completed_at": {"type": "string", "format": "date-time"},
     "endpoint": {"type": "string", "format": "uri"},
+    "as_of": {"type": "string", "format": "date"},
     "endpoint_ready_status": {"type": "integer", "minimum": 0, "maximum": 599},
     "endpoint_ready_payload_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "header_names": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
@@ -63,7 +64,7 @@
         "grounding_failure_policy": {"type": "string", "minLength": 1},
         "stream_buffer_until_grounded": {"type": "boolean"},
         "as_of_override_enabled": {"type": "boolean"},
-        "routerless": {"const": true},
+        "routerless": {"type": "boolean"},
         "scheduler_enabled": {"type": "boolean"}
       }
     },

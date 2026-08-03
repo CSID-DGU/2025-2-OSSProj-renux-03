@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator, FormatChecker
 
 
 RAG_ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,7 @@ from verify_golden_replay import main as replay_main  # noqa: E402
 MATRIX = RAG_ROOT / "tests" / "golden_matrix.csv"
 TAXONOMY = RAG_ROOT / "tests" / "golden_taxonomy.v1.json"
 RESULT_SCHEMA = RAG_ROOT / "tests" / "golden_result.schema.json"
+RUN_MANIFEST_SCHEMA = RAG_ROOT / "tests" / "golden_run_manifest.schema.json"
 RUN_AT = datetime(2026, 7, 20, tzinfo=timezone.utc)
 
 
@@ -417,7 +419,19 @@ def test_runner_performs_http_call_and_marks_subset_incomplete(tmp_path):
         "dense_index_ready": True,
         "artifact_manifest_sha256": artifact_hash,
         "artifacts": artifacts,
-        "datasets": [],
+            "datasets": [
+                {
+                    "key": key,
+                    "collection": f"fixture-{key}",
+                    "chroma_count": 1,
+                    "cached_chunk_count": 1,
+                    "dense_index_ready": True,
+                    "retrieval_mode": "hybrid",
+                    "chunk_artifact": f"{key}.parquet",
+                    "vectorizer_artifact": f"{key}_bm25.pkl",
+                }
+                for key in ("courses", "meals", "notices", "rules", "schedule", "staff")
+            ],
     }
     fingerprint["fingerprint_sha256"] = hashlib.sha256(
         json.dumps(fingerprint, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
@@ -472,6 +486,14 @@ def test_runner_performs_http_call_and_marks_subset_incomplete(tmp_path):
     assert exit_code == 3
     result = json.loads((output / "results.jsonl").read_text(encoding="utf-8"))
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    manifest_schema = json.loads(RUN_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+    manifest_errors = list(
+        Draft202012Validator(
+            manifest_schema,
+            format_checker=FormatChecker(),
+        ).iter_errors(manifest)
+    )
+    assert manifest_errors == []
     assert result["request_id"] == "http-real-id"
     assert manifest["complete"] is False
     assert manifest["candidate_fingerprint_stable"] is True
