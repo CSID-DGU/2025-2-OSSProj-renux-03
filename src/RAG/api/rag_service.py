@@ -32,7 +32,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, or_
 from starlette.concurrency import run_in_threadpool
 from sklearn import __version__ as sklearn_version
-from sklearn.metrics.pairwise import cosine_similarity
 
 from src import config as rag_config
 from src.config import (
@@ -98,6 +97,7 @@ from src.search.hybrid import (
     lexical_artifact_path,
     load_lexical_with_ids,
     read_lexical_metadata,
+    score_lexical_query,
 )
 from src.services import semantic_cache
 from src.services.answer import format_citations
@@ -2745,9 +2745,8 @@ def _deadline_filter_rank_notices(
             scored_ids.append(chunk_id)
 
         if matrix_positions:
-            query_vector = vectorizer.transform([query])
-            subset_matrix = matrix[matrix_positions]
-            sparse_scores = cosine_similarity(query_vector, subset_matrix).ravel()
+            all_sparse_scores = score_lexical_query(vectorizer, matrix, query)
+            sparse_scores = all_sparse_scores[matrix_positions]
             sparse_by_id = {chunk_id: float(score) for chunk_id, score in zip(scored_ids, sparse_scores)}
             eligible["sparse_score"] = eligible["chunk_id"].map(sparse_by_id).fillna(0.0)
 

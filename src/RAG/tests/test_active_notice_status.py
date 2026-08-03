@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from api import rag_service  # noqa: E402
+from src.search import hybrid  # noqa: E402
 from src.services.answer import extract_title  # noqa: E402
 from src.services.langchain_chat import _get_system_prompt  # noqa: E402
 
@@ -191,6 +192,60 @@ def test_active_notice_retrieval_filters_before_top_k_truncation():
         "future-title-parsed",
         "apply_deadline",
     ] == "2026-08-06"
+
+
+def test_deadline_range_ranking_supports_bm25_artifacts(monkeypatch, tmp_path):
+    chunks = pd.DataFrame([
+        {
+            "chunk_id": "career",
+            "title": "교내 추천채용 공고",
+            "chunk_text": "[교내 추천채용 공고]\n\n이번 주 지원 마감",
+            "apply_deadline": "2026-08-02",
+            "published_at": "2026-07-28",
+            "source": "notices",
+        },
+        {
+            "chunk_id": "international",
+            "title": "해외파견 프로그램 모집",
+            "chunk_text": "[해외파견 프로그램 모집]\n\n이번 달 지원 마감",
+            "apply_deadline": "2026-08-20",
+            "published_at": "2026-07-27",
+            "source": "notices",
+        },
+        {
+            "chunk_id": "scholarship",
+            "title": "교내 장학금 신청",
+            "chunk_text": "[교내 장학금 신청]\n\n장학생 지원 마감",
+            "apply_deadline": "2026-08-25",
+            "published_at": "2026-07-26",
+            "source": "notices",
+        },
+    ])
+    monkeypatch.setattr(hybrid, "VECTORIZER_DIR", tmp_path)
+    monkeypatch.setattr(hybrid, "TFIDF_TOKENIZER", "default")
+    index, matrix = hybrid.train_bm25(
+        "notices",
+        chunks["chunk_text"].tolist(),
+        chunk_ids=chunks["chunk_id"].tolist(),
+    )
+
+    hits = rag_service._deadline_filter_rank_notices(
+        chunks_df=chunks,
+        vectorizer=index,
+        matrix=matrix,
+        tfidf_chunk_ids=chunks["chunk_id"].tolist(),
+        query="이번 주 마감하는 교내 추천채용 공고",
+        date_filter=rag_service.QueryDateFilter(
+            start=date(2026, 8, 1),
+            end=date(2026, 8, 31),
+            label="this_month",
+            kind="deadline",
+        ),
+        top_k=10,
+    )
+
+    assert hits.iloc[0]["chunk_id"] == "career"
+    assert hits.iloc[0]["sparse_score"] > hits.iloc[1]["sparse_score"]
 
 
 def test_citation_title_keeps_nested_brackets():

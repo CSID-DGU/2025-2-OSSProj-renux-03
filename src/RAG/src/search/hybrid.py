@@ -413,6 +413,31 @@ def load_lexical_with_ids(identifier: str) -> Tuple[Any, np.ndarray, Optional[Li
     return data["vectorizer"], data["matrix"], data.get("chunk_ids")
 
 
+def score_lexical_query(vectorizer: Any, matrix: np.ndarray, query: str) -> np.ndarray:
+    """Return normalized per-row scores for BM25 or legacy TF-IDF."""
+    if isinstance(vectorizer, BM25LexicalIndex):
+        raw_scores = np.asarray(vectorizer.score(query), dtype=np.float64)
+        positive_max = float(np.max(raw_scores)) if raw_scores.size else 0.0
+        scores = (
+            np.clip(raw_scores / positive_max, 0.0, 1.0)
+            if positive_max > 0
+            else np.zeros_like(raw_scores)
+        )
+    else:
+        query_vector = vectorizer.transform([query])
+        scores = np.asarray(
+            cosine_similarity(query_vector, matrix).ravel(),
+            dtype=np.float64,
+        )
+
+    matrix_rows = int(getattr(matrix, "shape", (0,))[0])
+    if scores.shape[0] != matrix_rows:
+        raise ValueError(
+            f"lexical score rows ({scores.shape[0]}) do not match matrix rows ({matrix_rows})"
+        )
+    return scores
+
+
 def read_lexical_metadata(identifier: str) -> Dict:
     """희소 검색 아티팩트 메타데이터를 읽는다."""
     data = _load_lexical_artifact(identifier)
@@ -541,17 +566,7 @@ def hybrid_search(
 
     sparse_scores: Dict[str, float] = {}
     if row_ids is not None:
-        if isinstance(tfidf_vectorizer, BM25LexicalIndex):
-            raw_sparse_scores = tfidf_vectorizer.score(query)
-            positive_max = float(np.max(raw_sparse_scores)) if raw_sparse_scores.size else 0.0
-            sparse_sims = (
-                np.clip(raw_sparse_scores / positive_max, 0.0, 1.0)
-                if positive_max > 0
-                else np.zeros_like(raw_sparse_scores)
-            )
-        else:
-            query_vec = tfidf_vectorizer.transform([query])
-            sparse_sims = cosine_similarity(query_vec, tfidf_matrix).ravel()
+        sparse_sims = score_lexical_query(tfidf_vectorizer, tfidf_matrix, query)
         sparse_indices = np.argsort(sparse_sims)[::-1][:limit]
         for idx in sparse_indices:
             if sparse_sims[idx] > 0:
@@ -755,6 +770,7 @@ __all__ = [
     "train_bm25",
     "load_lexical",
     "load_lexical_with_ids",
+    "score_lexical_query",
     "read_lexical_metadata",
     "lexical_artifact_path",
     "train_tfidf",
