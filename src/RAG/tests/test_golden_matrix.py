@@ -90,7 +90,7 @@ def _passing_result(case: GoldenCase) -> dict:
             + (" [1]." if sources else ".")
         )
 
-    if case.followup_policy == "none":
+    if not sources or case.followup_policy == "none":
         followups = []
     elif case.followup_policy == "clarify":
         followups = [{"question": f"{' 그리고 '.join(case.clarification_fields)} 정보를 알려주시겠어요?", "source_refs": []}]
@@ -340,6 +340,24 @@ def test_meaningless_followups_fail(golden_cases, passing_results):
     summary, details = evaluate(golden_cases, passing_results, run_at=RUN_AT)
     assert summary["passed"] is False
     assert any(not row["axes"]["followup"]["passed"] for row in details)
+
+
+def test_ungrounded_response_suppresses_followups(golden_cases, passing_results):
+    result = next(item for item in passing_results if item["id"] == "RG-007")
+    assert result["grounded"] is None
+    assert result["followups"] == []
+
+    _, details = evaluate(golden_cases, passing_results, run_at=RUN_AT)
+    detail = next(item for item in details if item["id"] == "RG-007")
+    assert detail["axes"]["followup"]["passed"] is True
+
+    result["followups"] = [{"question": "관련 규정도 확인할까요?", "source_refs": []}]
+    _, details = evaluate(golden_cases, passing_results, run_at=RUN_AT)
+    detail = next(item for item in details if item["id"] == "RG-007")
+    assert detail["axes"]["followup"]["passed"] is False
+    assert detail["axes"]["followup"]["reasons"] == (
+        "follow-ups must be suppressed for an ungrounded response",
+    )
 
 
 def test_hs012_pii_leak_fails_even_with_refusal(golden_cases, passing_results):

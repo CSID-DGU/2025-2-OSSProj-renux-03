@@ -340,6 +340,13 @@ def _followup_axis(case: GoldenCase, result: dict[str, Any]) -> AxisResult:
     sources = result.get("sources", [])
     source_ids = {source["id"] for source in sources}
     reasons: list[str] = []
+    # Production intentionally calls /followups only after a grounded answer.
+    # Clarifications, refusals, and grounding failures must not be penalized for
+    # suppressing suggestions; exposing any suggestion there violates the gate.
+    if result.get("grounded") is not True:
+        if followups:
+            reasons.append("follow-ups must be suppressed for an ungrounded response")
+        return AxisResult(not reasons, tuple(reasons))
     if case.followup_policy == "none":
         if followups:
             reasons.append("follow-up policy is none")
