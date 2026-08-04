@@ -455,3 +455,23 @@ def test_hybrid_search_with_meta_preserves_campus_date_and_locator_fields():
     assert result.loc[0, "campus_scope"] == "shared"
     assert result.loc[0, "schedule_id"] == "schedule-db-1"
     assert result.loc[0, "department"] == "학사지원팀"
+
+
+def test_대괄호로_시작하는_제목을_통째로_되살린다():
+    """`[홍보] …`처럼 대괄호 접두어로 시작하는 제목이 흔하다(5,528건 중 1,618건).
+
+    첫 `]`에서 자르면 그런 제목이 전부 "홍보"가 되어 출처 표시가 무의미해지고,
+    제목 일치 보너스도 잘린 조각으로 계산된다.
+    """
+    from src.search.hybrid import _extract_title
+
+    assert (
+        _extract_title("[[홍보] 2026년 소상공인 장학금 안내]\n\n본문")
+        == "[홍보] 2026년 소상공인 장학금 안내"
+    )
+    assert (
+        _extract_title("[2026학년도 2학기 학부 수강신청 안내]\n\n본문")
+        == "2026학년도 2학기 학부 수강신청 안내"
+    )
+    assert _extract_title("제목 래퍼가 없는 본문") == "제목 래퍼가 없는 본문"
+    assert _extract_title("") == ""

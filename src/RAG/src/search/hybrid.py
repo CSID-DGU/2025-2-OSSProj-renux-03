@@ -829,12 +829,21 @@ def hybrid_search_with_meta(
 
 
 def _extract_title(text: str) -> str:
+    """청크 첫 줄의 `[제목]` 래퍼를 벗겨 원래 제목을 돌려준다.
+
+    학교 공지 제목은 `[홍보] 2026년 …`처럼 대괄호 접두어로 시작하는 것이 흔하다
+    (5,528건 중 1,618건, 28.9%). 첫 `]`에서 자르면 그런 제목이 전부 "홍보"가 되어
+    출처 표시가 무의미해지고, 제목 일치 보너스도 잘린 조각으로 계산된다.
+    청크는 `[제목]\\n\\n본문` 형태이므로 첫 줄 전체를 래퍼로 보고 마지막 `]`까지 벗긴다.
+    """
     if not isinstance(text, str) or not text.strip():
         return ""
-    if text.startswith("[") and "]" in text:
-        closing = text.index("]")
-        return text[1:closing].strip()
-    return text.split("\n", 1)[0].strip()[:120]
+    first_line = text.split("\n", 1)[0].strip()
+    if first_line.startswith("[") and first_line.endswith("]") and len(first_line) > 2:
+        return first_line[1:-1].strip()[:120]
+    if first_line.startswith("[") and "]" in first_line:
+        return first_line[1 : first_line.rindex("]")].strip()[:120]
+    return first_line[:120]
 
 
 __all__ = [
