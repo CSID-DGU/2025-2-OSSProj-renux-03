@@ -164,6 +164,7 @@ from src.utils.query_years import extract_explicit_years
 from src.utils.audience import query_audience
 from src.utils.date_parser import QueryDateFilter, extract_date_filter_from_query
 from src.utils.query_expansion import expand_query
+from src.utils.department_match import resolve_departments
 from src.utils.dept_college import college_grad_queries, college_of, college_scope_queries, personalized_grad_queries, user_scope_label
 from src.utils.preprocess import make_doc_id
 from src.vectorstore.chroma_client import count_items, upsert_items, delete_items
@@ -885,6 +886,60 @@ FALLBACK_REASON_DATASET_UNAVAILABLE = "dataset_unavailable"
 FALLBACK_REASON_SCORE_BELOW_THRESHOLD = "score_below_threshold"
 # 학과 필터를 적용하지 않는 sentinel 값들(백엔드는 보통 null을 보내지만 방어적으로 처리).
 _NO_MAJOR_SENTINELS = {"Default", "Unknown"}
+
+# 평가 하네스가 만드는 request_id 접두사. 이 요청들은 제품 품질 지표에서 빼야 한다.
+_SYNTHETIC_REQUEST_PREFIXES = ("eval_", "golden-")
+
+
+def _real_traffic_conditions() -> list:
+    """사람이 실제로 보낸 질의만 남기는 조건.
+
+    로그에는 두 종류의 합성 트래픽이 섞인다.
+
+    1. 골든 매트릭스 러너(`eval_*`·`golden-*` request_id)
+    2. 과거·미래 시점을 강제한 요청(`as_of`가 기록 시각의 날짜와 다름)
+
+    2026-08-04 로그 808건 중 실제 트래픽은 **0건**이었는데, 이를 걸러내지 않으면
+    "폴백률 3.5%"처럼 평가 하네스의 성적을 제품 품질로 오독하게 된다.
+    2번은 특히 위험하다 — 2030년 시점 질의는 "진행 중인 공모전 없음"이 정답이라
+    의도된 폴백이 품질 저하로 집계된다.
+    """
+    from_harness = or_(
+        *[
+            RagQueryLog.request_id.startswith(prefix)
+            for prefix in _SYNTHETIC_REQUEST_PREFIXES
+        ]
+    )
+    return [
+        or_(RagQueryLog.request_id.is_(None), ~from_harness),
+        or_(
+            RagQueryLog.as_of.is_(None),
+            RagQueryLog.as_of == "",
+            RagQueryLog.as_of == func.strftime("%Y-%m-%d", RagQueryLog.created_at),
+        ),
+    ]
+
+
+def _real_traffic_query(session):
+    """실제 트래픽만 담은 RagQueryLog 질의."""
+    return session.query(RagQueryLog).filter(*_real_traffic_conditions())
+
+
+def _requested_major_filter(query: str) -> Dict | None:
+    """질문이 학과를 명시하면 그 학과로 교과목 검색 범위를 좁히는 필터를 만든다.
+
+    학과는 유사도 신호가 아니라 범위 제약이다. 실측에서 `컴퓨터AI학부 교과과정`이
+    경영정보학과를, `컴퓨터 AI학부 전공과목`이 정보통신공학전공을 돌려줬다 —
+    학과명이 본문 텍스트로만 취급돼 다른 학과의 강한 어휘에 밀린 결과다.
+
+    이 필터는 courses에만 적용된다(다른 데이터셋에서는 major 키가 제거된다).
+    """
+    majors = resolve_departments(query)
+    if not majors:
+        return None
+    if len(majors) == 1:
+        return {"major": {"$eq": majors[0]}}
+    return {"major": {"$in": list(majors)}}
 
 
 def _routerless_retrieval_route() -> list[str]:
@@ -5858,18 +5913,26 @@ async def rag_admin_status():
             "rejected": session.query(PendingItem).filter(PendingItem.status == "rejected").count(),
         }
 
-        latest_query = session.query(RagQueryLog).order_by(RagQueryLog.created_at.desc()).first()
+        # 품질 지표는 실제 트래픽만 센다. 평가 하네스와 시점 이동 요청을 섞으면
+        # 의도된 폴백(2030년 시점 → "진행 중인 공모전 없음")이 품질 저하로 잡힌다.
+        real_traffic = _real_traffic_conditions()
+        latest_query = (
+            session.query(RagQueryLog)
+            .filter(*real_traffic)
+            .order_by(RagQueryLog.created_at.desc())
+            .first()
+        )
         fallback_reason_counts = {
             (reason or "unknown"): count
             for reason, count in (
                 session.query(RagQueryLog.fallback_reason, func.count(RagQueryLog.id))
-                .filter(RagQueryLog.fallback_triggered.is_(True))
+                .filter(RagQueryLog.fallback_triggered.is_(True), *real_traffic)
                 .group_by(RagQueryLog.fallback_reason)
                 .all()
             )
         }
-        total_query_count = session.query(RagQueryLog).count()
-        fallback_count = session.query(RagQueryLog).filter(
+        total_query_count = _real_traffic_query(session).count()
+        fallback_count = _real_traffic_query(session).filter(
             RagQueryLog.fallback_triggered.is_(True)
         ).count()
         recent_logs = (
@@ -5879,9 +5942,13 @@ async def rag_admin_status():
                 RagQueryLog.as_of,
                 RagQueryLog.created_at,
             )
+            .filter(*real_traffic)
             .order_by(RagQueryLog.id.desc())
             .limit(1000)
             .all()
+        )
+        synthetic_query_count = (
+            session.query(RagQueryLog).count() - total_query_count
         )
         unexpected_historical_year_count = 0
         for question, answer, as_of_value, created_at in recent_logs:
@@ -5912,6 +5979,10 @@ async def rag_admin_status():
                 else unexpected_historical_year_count / len(recent_logs)
             ),
             "recent_sample_size": len(recent_logs),
+            # 위 수치는 전부 실제 트래픽 기준이다. 평가 실행 규모를 함께 노출해
+            # 표본이 작을 때 그 사실이 드러나게 한다.
+            "traffic_scope": "real",
+            "synthetic_query_count": synthetic_query_count,
         }
         grounding = {
             "checked": 0,
@@ -5919,12 +5990,17 @@ async def rag_admin_status():
             "ungrounded_rate": None,
         }
         try:
-            grounding_checked = session.query(RagQueryLog).filter(RagQueryLog.grounding_checked.is_(True)).count()
-            grounding_ungrounded = session.query(RagQueryLog).filter(RagQueryLog.grounding_grounded.is_(False)).count()
+            grounding_checked = _real_traffic_query(session).filter(
+                RagQueryLog.grounding_checked.is_(True)
+            ).count()
+            grounding_ungrounded = _real_traffic_query(session).filter(
+                RagQueryLog.grounding_grounded.is_(False)
+            ).count()
             grounding = {
                 "checked": grounding_checked,
                 "ungrounded": grounding_ungrounded,
                 "ungrounded_rate": None if grounding_checked == 0 else grounding_ungrounded / grounding_checked,
+                "traffic_scope": "real",
             }
         except Exception:
             _log_event(logging.WARNING, "rag_grounding_status_failed", exc_info=True)
@@ -5959,13 +6035,18 @@ async def rag_admin_status():
         notices_ingestion = _build_notices_ingestion_status(session)
         try:
             today_str = kst_now().strftime('%Y-%m-%d')
+            # 방문자 수도 평가 러너의 일회성 세션을 빼야 실제 이용자를 센다.
             today_visitors = (
                 session.query(func.count(func.distinct(RagQueryLog.session_id)))
-                .filter(func.strftime('%Y-%m-%d', RagQueryLog.created_at) == today_str)
+                .filter(
+                    func.strftime('%Y-%m-%d', RagQueryLog.created_at) == today_str,
+                    *_real_traffic_conditions(),
+                )
                 .scalar()
             ) or 0
             total_visitors = (
                 session.query(func.count(func.distinct(RagQueryLog.session_id)))
+                .filter(*_real_traffic_conditions())
                 .scalar()
             ) or 0
             visitor_stats = {"today": today_visitors, "total": total_visitors}
@@ -6124,11 +6205,51 @@ def _notice_to_ingest_frame(notice: Notice) -> pd.DataFrame:
     ])
 
 
+_lexical_rebuild_lock = threading.Lock()
+_lexical_rebuild_pending = threading.Event()
+
+
+def _rebuild_notices_lexical_artifacts(context: str) -> None:
+    """승인된 공지가 어휘 검색에도 걸리도록 parquet/BM25를 다시 만든다.
+
+    승인 경로는 Chroma에만 증분 upsert하므로, 이 재생성이 없으면 새 공지는 정기
+    갱신(기본 6시간)까지 **dense 전용**으로 남는다. RRF는 dense·sparse 순위를 합치므로
+    어휘 색인에 없는 문서는 절반의 점수만 받는다 — FAQ처럼 사용자가 제목과 거의 같은
+    말로 묻는 문서에서 가장 강해야 할 신호가 빠지는 셈이다.
+
+    학생회가 올린 행사 공지가 몇 시간 동안 키워드로 안 잡히는 것을 막는 것이 목적이다.
+    """
+    from src.pipelines.ingest import (
+        build_notice_index_frame_from_db,
+        persist_dataset_artifacts_only,
+    )
+
+    _lexical_rebuild_pending.set()
+    # 연속 승인 시 재생성이 겹치지 않게 한 번에 하나만 돌리고, 대기 중 들어온 요청은
+    # 마지막 한 번으로 합쳐진다(플래그를 진입 시점에 내린다).
+    with _lexical_rebuild_lock:
+        if not _lexical_rebuild_pending.is_set():
+            return
+        _lexical_rebuild_pending.clear()
+        frame = build_notice_index_frame_from_db()
+        persist_dataset_artifacts_only("notices", frame)
+        _log_event(
+            logging.INFO,
+            "notices_lexical_artifacts_rebuilt",
+            context=context,
+            chunk_count=len(frame),
+        )
+
+
 def _reload_notices_cache(context: str) -> None:
-    """색인이 바뀐 뒤 인메모리 데이터셋 캐시를 다시 읽는다.
+    """색인이 바뀐 뒤 어휘 아티팩트를 재생성하고 인메모리 캐시를 다시 읽는다.
 
     best-effort — 실패해도 DB/Chroma에는 이미 반영되었으므로 호출자의 작업은 유효하다.
     """
+    try:
+        _rebuild_notices_lexical_artifacts(context)
+    except Exception as exc:  # noqa: BLE001
+        logging.error(f"❌ [Admin] Failed to rebuild notices lexical artifacts ({context}): {exc}")
     try:
         with _datasets_lock:
             if "notices" in _datasets:
@@ -6944,8 +7065,19 @@ async def ask_stream(req: AskRequest, request: Request):
         _mark_stage(stage_timings, "query_expansion", stage_started_at)
 
         final_where_filter = {}
+        # 질문이 학과를 명시했다면 본인 전공보다 그쪽이 우선이다 — 통계학과 학생이
+        # "컴퓨터·AI학부 교과과정"을 물으면 컴퓨터·AI학부를 찾아야 한다.
+        requested_major_filter = _requested_major_filter(raw_query)
+        if requested_major_filter is not None:
+            final_where_filter.update(requested_major_filter)
+            _log_event(
+                logging.INFO,
+                "course_scope_from_query",
+                request_id=request_id,
+                filter=requested_major_filter,
+            )
         # 백엔드는 학과 미지정 시 null을 보낸다("Unknown"/"Default"는 보내지 않지만 방어적으로 함께 제외).
-        if user_major and user_major not in _NO_MAJOR_SENTINELS:
+        elif user_major and user_major not in _NO_MAJOR_SENTINELS:
             college = None
             if RAG_COLLEGE_SCOPE_ENABLED:
                 try:
@@ -7743,8 +7875,18 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
     _log_event(logging.INFO, "ask_session", request_id=request_id, session_id=session_id)
 
     final_where_filter: Dict = {}
+    # 질문이 학과를 명시했다면 본인 전공보다 그쪽이 우선이다(스트리밍 경로와 동일 규칙).
+    requested_major_filter = _requested_major_filter(raw_query)
+    if requested_major_filter is not None:
+        final_where_filter.update(requested_major_filter)
+        _log_event(
+            logging.INFO,
+            "course_scope_from_query",
+            request_id=request_id,
+            filter=requested_major_filter,
+        )
     # 백엔드는 학과 미지정 시 null을 보낸다("Unknown"/"Default"는 보내지 않지만 방어적으로 함께 제외).
-    if user_major and user_major not in _NO_MAJOR_SENTINELS:
+    elif user_major and user_major not in _NO_MAJOR_SENTINELS:
         college = None
         if RAG_COLLEGE_SCOPE_ENABLED:
             try:
