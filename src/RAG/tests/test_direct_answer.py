@@ -447,3 +447,30 @@ def test_이후_운영일_정보가_없으면_휴무만_알린다():
 def test_해당_날짜_데이터가_없으면_None을_돌려_기존_폴백에_맡긴다():
     result = answer_meal("오늘 학식 뭐 나와?", [], TODAY, split_meal_corners)
     assert result is None
+
+
+def test_수강신청_정정은_수강신청이_아니라_정정_일정이다():
+    """'수강신청 정정'은 정정 기간을 묻는 말이다.
+
+    로그의 `이번 학기 수강정정 기간을 날짜별로 알려줘`가 근거검증에 실패했다.
+    `수강\\s*정정`만으로는 "수강신청 정정"처럼 사이에 '신청'이 낀 표현을 놓치고,
+    아래 수강신청 규칙에 먼저 걸려 8월 수강신청 날짜를 답한다.
+    """
+    rows = [
+        ScheduleRow("2026학년도 2학기 학부 수강 신청", date(2026, 8, 3), date(2026, 8, 7)),
+        ScheduleRow("수강신청 확인 및 정정", date(2026, 9, 1), date(2026, 9, 7)),
+    ]
+    for 질문 in ("수강정정 기간", "수강신청 정정 언제야", "이번 학기 수강 신청 정정 기간"):
+        answer = answer_schedule_when(질문, rows, date(2026, 8, 4))
+        assert answer is not None, 질문
+        assert "9월 1일" in answer.answer, 질문
+        assert "8월 3일" not in answer.answer, 질문
+
+
+def test_정정을_묻지_않으면_수강신청_일정을_그대로_답한다():
+    rows = [
+        ScheduleRow("2026학년도 2학기 학부 수강 신청", date(2026, 8, 3), date(2026, 8, 7)),
+        ScheduleRow("수강신청 확인 및 정정", date(2026, 9, 1), date(2026, 9, 7)),
+    ]
+    answer = answer_schedule_when("수강신청 언제야?", rows, date(2026, 8, 4))
+    assert answer is not None and "8월 3일" in answer.answer
