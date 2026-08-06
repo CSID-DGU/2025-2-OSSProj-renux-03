@@ -164,6 +164,7 @@ from src.utils.query_years import extract_explicit_years
 from src.utils.audience import query_audience
 from src.utils.date_parser import QueryDateFilter, extract_date_filter_from_query
 from src.utils.query_expansion import expand_query
+from src.services.staff_contact import contact_intent_in, contact_sort_key, office_intent_in
 from src.utils.department_match import resolve_departments
 from src.utils.dept_college import college_grad_queries, college_of, college_scope_queries, personalized_grad_queries, user_scope_label
 from src.utils.preprocess import make_doc_id
@@ -1884,6 +1885,31 @@ def resolve_out_of_scope_message(query: str) -> str | None:
         if pattern.search(query):
             return message
     return None
+
+
+_OUT_OF_DOMAIN_REPLY = (
+    "학교 자료에서 다루는 내용이 아니라 답변드리기 어려워요.\n\n"
+    "학사일정·공지사항·학칙·교과목·교직원 연락처·학식은 찾아드릴 수 있어요. "
+    "무엇을 도와드릴까요?"
+)
+
+
+def out_of_domain_reply(query: str) -> str:
+    """학교 자료로 답할 수 없는 질문에 돌려줄 결정적 안내.
+
+    예전에는 질의분석 intent가 `unknown`이면 검색 없이 곧바로 LLM 생성으로 넘겼다.
+    그 결과 학교와 무관한 질문에 모델이 자기 지식으로 답했다 — 실측 사례:
+
+        Q 샤갈
+        A 샤갈은 유명한 프랑스의 화가이자 판화가로, 그의 작품은 주로 꿈과 …
+
+    출처 0건으로 생성된 답변이고, 하필 `len(sources) > 0`일 때만 근거검증이 돌기
+    때문에 검증도 건너뛴다. 가장 위험한 답변이 무검증으로 나가는 셈이다.
+
+    인사·감사·정체성 같은 대화성 발화는 `detect_smalltalk`이 앞에서 결정적으로
+    처리하므로, 여기까지 온 것은 답할 근거가 없는 질문이다. 모델에게 맡기지 않는다.
+    """
+    return resolve_out_of_scope_message(query) or _OUT_OF_DOMAIN_REPLY
 
 
 def _build_retrieval_fallback_answer(
@@ -3738,13 +3764,35 @@ def _build_balanced_shortlist(
             ranked = ranked.loc[~retired_mask].copy()
             if ranked.empty:
                 continue
+        if dataset == "staff" and contact_intent_in(query):
+            # 명부는 사람 단위라 학과사무실이라는 행이 따로 없다. 실측에서
+            # "컴퓨터공학과 학과사무실 전화번호"의 1위가 대학원학과주임교수였고,
+            # "호텔관광외식경영학부 사무실 연락처"의 1위는 전화번호가 없는 조교수였다.
+            # 번호 없는 행을 먼저 내리고, 사무실을 물었으면 행정직을 교원보다 올린다.
+            office_intent = office_intent_in(query)
+            contact_ranks = [
+                contact_sort_key(
+                    str(row.get("staff_position", "")),
+                    str(row.get("staff_phone", "")),
+                    office_intent=office_intent,
+                )
+                for _, row in ranked.iterrows()
+            ]
+            ranked["_contact_phone_rank"] = [rank[0] for rank in contact_ranks]
+            ranked["_contact_role_rank"] = [rank[1] for rank in contact_ranks]
+        else:
+            ranked["_contact_phone_rank"] = 0
+            ranked["_contact_role_rank"] = 0
         ranked["_numeric_final"] = pd.to_numeric(
             ranked["final_score"],
             errors="coerce",
         ).fillna(-1.0)
+        # 연락처 순위는 관련도보다 앞선다 — 번호를 물었는데 번호가 없는 행은
+        # 아무리 관련도가 높아도 답이 될 수 없다. staff 외 데이터셋에서는 두 값이
+        # 모두 0이라 정렬 결과가 바뀌지 않는다.
         ranked.sort_values(
-            ["_numeric_final", "_numeric_hybrid"],
-            ascending=[False, False],
+            ["_contact_phone_rank", "_contact_role_rank", "_numeric_final", "_numeric_hybrid"],
+            ascending=[True, True, False, False],
             kind="stable",
             inplace=True,
         )
@@ -4364,11 +4412,23 @@ async def _select_answer_evidence(
 
 
 def _multiple_evidence_response_instructions(group_count: int) -> str | None:
+    """근거 그룹이 여럿일 때 섹션을 분리해 유지하게 하는 지시.
+
+    그룹을 섞지 않는 것이 목적이다 — 서로 다른 자료의 사실을 한 문단에 합치면
+    어떤 문서가 무엇을 뒷받침하는지 사라지고, 충돌도 묻힌다.
+
+    다만 섹션 제목까지 기계적으로 붙일 이유는 없다. 예전에는 '## 확인된 정보 1'을
+    강제해서, 사용자가 보기에 내부 처리 단계가 그대로 노출됐다. 경계는 그대로 두고
+    제목만 그 섹션이 무엇에 대한 것인지로 바꾼다.
+    """
     if group_count <= 1:
         return None
     return (
         f"검색된 근거가 {group_count}개의 독립적인 그룹으로 구분되었습니다. "
-        f"정확히 {group_count}개 섹션을 '## 확인된 정보 1'부터 순서대로 작성하세요. "
+        f"정확히 {group_count}개 섹션으로 나누어 작성하세요. "
+        "각 섹션의 제목은 '## ' 뒤에 그 섹션이 다루는 대상을 그대로 쓰세요"
+        "(예: '## 통계학과 종강총회'). "
+        "'확인된 정보 1', '근거 그룹 2'처럼 번호나 내부 처리 용어를 제목에 쓰지 마세요. "
         "모든 섹션은 동등한 위상이며 순위나 선호를 부여하지 마세요. "
         "각 섹션에서는 같은 번호의 [근거 그룹]에 속한 문서만 사용하고, 핵심 사실마다 [문서N] 출처를 표시하세요. "
         "그룹 간 내용이 충돌하면 그 사실을 숨기지 말고 객관적으로 밝혀 주세요."
@@ -7002,24 +7062,22 @@ async def ask_stream(req: AskRequest, request: Request):
             and analysis_meta.result.intent == "unknown"
             and not _has_school_info_terms(raw_query)
         ):
-            current_date = _get_current_kst_string(temporal_context)
-            context_text = "일반 대화입니다. 학교 자료 검색이 필요한 질문이 아니면 자연스럽고 짧게 답하세요."
-            
+            # 근거가 하나도 없는 상태로 생성하지 않는다. 예전에는 여기서 LLM에게
+            # "자연스럽고 짧게 답하세요"라고만 일러 보내서, 학교와 무관한 질문에
+            # 모델이 자기 지식으로 답했다("샤갈은 프랑스의 화가이자 …").
+            domain_reply = out_of_domain_reply(raw_query)
+
             # 메타데이터 전송 (소스 없음)
             yield f"data: {json.dumps({'type': 'metadata', 'request_id': request_id, 'sources': [], 'citations': '', 'route': ['unknown'], 'fallback_triggered': False}, ensure_ascii=False)}\n\n"
-            
-            full_answer = []
-            stage_started_at = time.perf_counter()
-            async for chunk in generate_langchain_answer_stream(
-                question=raw_query,
-                context=context_text,
-                session_id=session_id,
-                current_date=current_date,
-                usage_collector=llm_usage,
-            ):
-                full_answer.append(chunk)
-                yield f"data: {json.dumps({'type': 'text', 'content': chunk}, ensure_ascii=False)}\n\n"
-            _mark_stage(stage_timings, "generation_stream", stage_started_at)
+
+            full_answer = [domain_reply]
+            yield f"data: {json.dumps({'type': 'text', 'content': domain_reply}, ensure_ascii=False)}\n\n"
+            _log_event(
+                logging.INFO,
+                "out_of_domain_answered",
+                request_id=request_id,
+                question=raw_query[:80],
+            )
             _mark_stage(stage_timings, "total", request_started_at)
             
             # 로깅은 스트림 종료 후 수행 (별도 태스크로 처리하거나 여기서 대략 수행)
@@ -7790,21 +7848,14 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
         and analysis_meta.result.intent == "unknown"
         and not _has_school_info_terms(raw_query)
     ):
-        current_date = _get_current_kst_string(temporal_context)
-        context_text = "일반 대화입니다. 학교 자료 검색이 필요한 질문이 아니면 자연스럽고 짧게 답하세요."
-        try:
-            stage_started_at = time.perf_counter()
-            answer = await generate_langchain_answer(
-                question=raw_query,
-                context=context_text,
-                session_id=session_id,
-                current_date=current_date,
-                usage_collector=llm_usage,
-            )
-            _mark_stage(stage_timings, "generation", stage_started_at)
-        except Exception:
-            _log_event(logging.ERROR, "llm_generation_failed", exc_info=True, request_id=request_id)
-            answer = "저는 동똑이에요. 지금 응답이 잠깐 매끄럽지 않았지만, 계속 편하게 물어보셔도 됩니다."
+        # 스트리밍 경로와 같은 규칙 — 근거 없이 생성하지 않는다.
+        answer = out_of_domain_reply(raw_query)
+        _log_event(
+            logging.INFO,
+            "out_of_domain_answered",
+            request_id=request_id,
+            question=raw_query[:80],
+        )
         _mark_stage(stage_timings, "total", request_started_at)
 
         await run_in_threadpool(

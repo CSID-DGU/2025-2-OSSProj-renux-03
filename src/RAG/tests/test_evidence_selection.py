@@ -539,8 +539,13 @@ def test_distinct_evidence_groups_are_equal_sections_capped_at_five():
     assert len(groups) == 5
     assert selected["evidence_group"].tolist() == [1, 2, 3, 4, 5]
     assert instructions is not None
-    assert "## 확인된 정보 1" in instructions
+    # 지시의 목적은 그룹을 섞지 않는 것이다 — 섹션 수와 동등 위상이 보장의 핵심이고,
+    # 섹션 제목은 대상 이름으로 쓴다. '확인된 정보 N' 같은 내부 처리 용어가 사용자에게
+    # 그대로 노출되면 안 된다.
+    assert f"정확히 {len(groups)}개 섹션" in instructions
     assert "동등한 위상" in instructions
+    assert "확인된 정보 1', '근거 그룹 2'처럼" in instructions  # 금지 지시로만 등장
+    assert "## 확인된 정보 1" not in instructions
 
 
 def test_selector_failure_uses_safe_single_group_fallback(monkeypatch):
