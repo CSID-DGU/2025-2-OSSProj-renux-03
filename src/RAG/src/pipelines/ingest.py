@@ -1303,6 +1303,11 @@ def build_staff_chunks(df: pd.DataFrame) -> pd.DataFrame:
             "staff_id": row.get("db_id"),
             "url": "",
             "published_at": "",
+            # 연락처 질의 순위에 쓰려면 본문에 녹아든 값이 아니라 별도 필드가 필요하다.
+            # "사무실 번호"를 물었는데 번호가 없는 교수 행이 1순위로 나오던 문제를 여기서 막는다.
+            "staff_position": str(row.get("직위", "") or "").strip(),
+            "staff_role": str(row.get("담당업무", "") or "").strip(),
+            "staff_phone": phone_number,
         })
         
     enrich_documents_with_campus_scope(docs)
@@ -1315,10 +1320,18 @@ def build_staff_chunks(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(chunks)
 
 
-def ingest_staff() -> Tuple[pd.DataFrame, object, object]:
+def ingest_staff(*, refresh_from_csv: bool = False) -> Tuple[pd.DataFrame, object, object]:
+    """교직원 명부를 적재한다.
+
+    `refresh_from_csv=False`(기본)면 DB에 이미 행이 있을 때 CSV를 다시 읽지 않는다.
+    courses·schedule과 달리 이 함수에는 예외 인자가 없어서, 적재 로직을 고쳐도
+    CSV를 다시 읽힐 방법이 없었다 — 컬럼 매핑 버그가 오래 남은 이유다.
+    """
     session = SessionLocal()
     try:
-        if session.query(Staff.id).first() is not None and session.query(Chunk.id).filter(Chunk.staff_id.isnot(None)).first() is not None:
+        if refresh_from_csv:
+            pass
+        elif session.query(Staff.id).first() is not None and session.query(Chunk.id).filter(Chunk.staff_id.isnot(None)).first() is not None:
             existing = reindex_from_db("staff").get("staff")
             if existing is not None:
                 return existing
@@ -1342,21 +1355,39 @@ def ingest_staff() -> Tuple[pd.DataFrame, object, object]:
         for _, row in df.iterrows():
             raw_json = json.dumps(row.to_dict(), ensure_ascii=False)
             dept = row.get("조직(트리)", "")
-            
-            # 이름 필드 추정 (첫 번째 데이터 컬럼 사용)
-            # 실제 컬럼명은 Data_0, Data_1...
-            name_val = ""
-            for col in df.columns:
-                if col.startswith("Data_"):
-                    val = row.get(col, "").strip()
-                    if val:
-                        name_val = val
-                        break
-            
+
+            # 명명 컬럼(성명·직위·담당업무·전화번호)을 그대로 옮긴다. 예전에는 `Data_`로
+            # 시작하는 컬럼에서 이름을 찾았는데 이 CSV의 컬럼은 한글이라 한 건도 걸리지
+            # 않았고, 직위·전화번호는 대입조차 없었다. 그 결과 4,303행 전부에서
+            # name/position/phone이 비어 raw_data JSON 말고는 쓸 수 있는 값이 없었다.
+            # 연락처 질의에서 "번호가 있는 행"이나 "행정 직위"로 추릴 수 없던 원인이다.
+            def _named(*candidates: str) -> str:
+                for column in candidates:
+                    if column not in df.columns:
+                        continue
+                    value = str(row.get(column, "")).strip()
+                    if value and value.lower() != "nan":
+                        return value
+                return ""
+
+            name_val = _named("성명", "이름", "name")
+            if not name_val:
+                # 구버전 CSV(Data_0, Data_1 …) 호환.
+                for col in df.columns:
+                    if col.startswith("Data_"):
+                        value = str(row.get(col, "")).strip()
+                        if value and value.lower() != "nan":
+                            name_val = value
+                            break
+
             obj = Staff(
                 department=dept,
                 name=name_val,
-                raw_data=raw_json
+                position=_named("직위", "position"),
+                role=_named("담당업무", "role"),
+                phone=_named("전화번호", "phone"),
+                email=_named("이메일", "email"),
+                raw_data=raw_json,
             )
             staff_objs.append(obj)
             

@@ -823,6 +823,7 @@ def hybrid_search_with_meta(
         "board_code", "article_id", "schedule_id", "staff_id", "course_id", "rule_id",
         "canonical_key", "is_latest",
         "title_norm", "audience", "retrieval_context",
+        "staff_position", "staff_role", "staff_phone",  # 연락처 질의 순위 판단에 사용
     ]
     existing = [col for col in desired if col in out.columns]
     return out[existing]
