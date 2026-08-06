@@ -51,7 +51,12 @@ def _record_run(job_id: str, status: str, message: str | None = None) -> None:
     }
 
 
-def _start_ingestion_run(dataset: str) -> int:
+def _start_ingestion_run(dataset: str) -> int | None:
+    """실행 기록을 열고 id를 돌려준다. 기록에 실패하면 None.
+
+    기록은 관측 수단이므로 갱신 작업 자체를 막아서는 안 된다. 테이블이 아직 없거나
+    DB가 잠긴 상황에서 예외가 새어 나가면, 공지·학식 수집이 기록 때문에 중단된다.
+    """
     session = SessionLocal()
     try:
         run = IngestionRun(dataset=dataset, status="running")
@@ -59,18 +64,25 @@ def _start_ingestion_run(dataset: str) -> int:
         session.commit()
         session.refresh(run)
         return int(run.id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[scheduler] 실행 기록 시작 실패(%s): %s", dataset, exc)
+        session.rollback()
+        return None
     finally:
         session.close()
 
 
 def _finish_ingestion_run(
-    run_id: int,
+    run_id: int | None,
     *,
     status: str,
     seen: int = 0,
     failed: int = 0,
     error: str | None = None,
 ) -> None:
+    """실행 기록을 닫는다. 시작 기록이 없었으면(None) 조용히 넘어간다."""
+    if run_id is None:
+        return
     session = SessionLocal()
     try:
         run = session.query(IngestionRun).filter(IngestionRun.id == run_id).first()
@@ -82,6 +94,9 @@ def _finish_ingestion_run(
         run.documents_failed = failed
         run.error_summary = error
         session.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[scheduler] 실행 기록 종료 실패(run_id=%s): %s", run_id, exc)
+        session.rollback()
     finally:
         session.close()
 

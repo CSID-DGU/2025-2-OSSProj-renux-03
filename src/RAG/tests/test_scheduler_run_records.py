@@ -55,3 +55,21 @@ def test_메모리_기록만으로는_충분하지_않다():
     assert scheduler._LAST_RUNS["검증용"]["last_status"] == "ok"
     # 프로세스 안에서만 유효한 저장소임을 드러낸다.
     assert isinstance(scheduler._LAST_RUNS, dict)
+
+
+def test_기록_테이블이_없어도_갱신을_막지_않는다(monkeypatch):
+    """CI의 새 체크아웃처럼 테이블이 아직 없을 때 실행 기록이 예외를 던지면
+    공지·학식 수집이 기록 때문에 중단된다. 관측 수단이 본 작업을 막아서는 안 된다."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    import src.services.scheduler as scheduler
+
+    빈_엔진 = create_engine("sqlite:///:memory:")  # ingestion_runs 테이블 없음
+    monkeypatch.setattr(scheduler, "SessionLocal", sessionmaker(bind=빈_엔진))
+
+    run_id = scheduler._start_ingestion_run("meals")
+    assert run_id is None  # 예외가 아니라 None
+
+    # 시작 기록이 없으면 종료도 조용히 넘어간다.
+    scheduler._finish_ingestion_run(run_id, status="success", seen=3)
