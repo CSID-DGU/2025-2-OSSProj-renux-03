@@ -201,6 +201,26 @@ def refresh_notices_job() -> None:
         )
     except Exception as exc:  # noqa: BLE001 — 한 번의 실패가 스케줄러를 죽이지 않도록
         logger.error("[scheduler] 공지 갱신 실패: %s", exc, exc_info=True)
+        # ── 공지사항 수집 완료 시 자동 FAQ 초안 생성 (별도 스레드에서 비동기 실행) ──
+        import asyncio
+        import threading
+
+        async def _async_faq() -> None:
+            from src.services.auto_faq import generate_faq_drafts
+            try:
+                res = await generate_faq_drafts()
+                logger.info(
+                    "[auto_faq] 수집 후 자동 생성 완료 → 신규 %d건 · 건너뜀 %d건",
+                    res["created"], res["skipped_existing"],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("[auto_faq] 자동 FAQ 생성 실패: %s", exc, exc_info=True)
+
+        def _faq_worker():
+            asyncio.run(_async_faq())
+
+        t = threading.Thread(target=_faq_worker, daemon=True, name="auto_faq")
+        t.start()
         _record_run("refresh_notices", "failed", str(exc))
 
 
@@ -266,6 +286,7 @@ def refresh_meals_job() -> None:
         RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS,
         RAG_SCHEDULER_REQUEST_RETRIES,
     )
+    run_id = _start_ingestion_run("meals")
     try:
         df = crawl_meals(
             days_ahead=13,
@@ -275,14 +296,21 @@ def refresh_meals_job() -> None:
         if df.empty:
             logger.warning("[scheduler] 학식 수집 0건 — 기존 인덱스 보존(갱신 건너뜀)")
             _record_run("refresh_meals", "skipped", "수집 0건 — 기존 인덱스 보존")
+            _finish_ingestion_run(
+                run_id,
+                status="partial",
+                error="수집 0건 — 기존 인덱스 보존",
+            )
             return
         chunks_df, _, _ = ingest_meals(df)
         _refresh_runtime_dataset_state("meals")
         logger.info("[scheduler] 학식 갱신 완료: %s행 → %s chunks", len(df), len(chunks_df))
         _record_run("refresh_meals", "ok", f"{len(df)}행 → {len(chunks_df)} chunks")
+        _finish_ingestion_run(run_id, status="success", seen=len(chunks_df))
     except Exception as exc:  # noqa: BLE001
         logger.error("[scheduler] 학식 갱신 실패: %s", exc, exc_info=True)
         _record_run("refresh_meals", "failed", str(exc))
+        _finish_ingestion_run(run_id, status="failed", error=str(exc))
 
 
 def _merge_schedule_snapshots(existing: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame:
@@ -381,15 +409,21 @@ def refresh_courses_job() -> None:
 
     start = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
     logger.info("[scheduler] 교과과정 갱신 시작 (%s)", start)
+    # `_record_run`은 메모리 딕셔너리라 재시작하면 사라진다. 이 잡이 실패해도 흔적이
+    # 남지 않아, 색인이 45개 학과에 멈춰 있는 동안 아무도 알아채지 못했다(수집 CSV에는
+    # 71개 학과가 있었다). rules·schedule처럼 ingestion_runs에도 남긴다.
+    run_id = _start_ingestion_run("courses")
     try:
         crawl_courses()
         chunks_df, _, _ = ingest_courses(refresh_from_csv=True)
         _refresh_runtime_dataset_state("courses")
         logger.info("[scheduler] 교과과정 갱신 완료: %s chunks", len(chunks_df))
         _record_run("refresh_courses", "ok", f"{len(chunks_df)} chunks")
+        _finish_ingestion_run(run_id, status="success", seen=len(chunks_df))
     except Exception as exc:  # noqa: BLE001
         logger.error("[scheduler] 교과과정 갱신 실패: %s", exc, exc_info=True)
         _record_run("refresh_courses", "failed", str(exc))
+        _finish_ingestion_run(run_id, status="failed", error=str(exc))
 
 
 def start_scheduler():
