@@ -164,7 +164,12 @@ from src.utils.query_years import extract_explicit_years
 from src.utils.audience import query_audience
 from src.utils.date_parser import QueryDateFilter, extract_date_filter_from_query
 from src.utils.query_expansion import expand_query
-from src.services.staff_contact import contact_intent_in, contact_sort_key, office_intent_in
+from src.services.staff_contact import (
+    contact_intent_in,
+    contact_sort_key,
+    describe_contact_fallback,
+    office_intent_in,
+)
 from src.utils.department_match import resolve_departments
 from src.utils.dept_college import college_grad_queries, college_of, college_scope_queries, personalized_grad_queries, user_scope_label
 from src.utils.preprocess import make_doc_id
@@ -4435,6 +4440,40 @@ def _multiple_evidence_response_instructions(group_count: int) -> str | None:
     )
 
 
+def _staff_contact_response_instruction(
+    question: str,
+    selected: pd.DataFrame,
+) -> str | None:
+    """사무실 연락처를 물었는데 교원 번호만 있을 때 그 사실을 밝히게 한다.
+
+    학과 192개 중 43개(22%)는 명부에 행정직 행이 아예 없다(통계학과 포함).
+    순위를 고쳐도 줄 수 있는 것이 교원 번호뿐이라, 그대로 제시하면 학생은
+    학과사무실인 줄 알고 교수에게 전화한다.
+    """
+    if selected.empty or not office_intent_in(question):
+        return None
+    if "dataset" not in selected.columns or "staff_position" not in selected.columns:
+        return None
+
+    staff_rows = selected[selected["dataset"].astype(str) == "staff"]
+    if staff_rows.empty:
+        return None
+
+    departments = [
+        value
+        for value in staff_rows.get("topics", pd.Series(dtype=str)).astype(str).str.strip()
+        if value and value.lower() != "nan"
+    ]
+    notice = describe_contact_fallback(
+        departments[0] if departments else "",
+        staff_rows["staff_position"].astype(str).tolist(),
+        office_intent=True,
+    )
+    if notice is None:
+        return None
+    return f"{notice} 이 사실을 답변 첫 문장에 그대로 밝힌 뒤 연락처를 안내하세요."
+
+
 def _active_notice_response_instruction(
     question: str,
     selected: pd.DataFrame,
@@ -7413,6 +7452,7 @@ async def ask_stream(req: AskRequest, request: Request):
                     merged,
                     temporal_context.as_of,
                 ),
+                _staff_contact_response_instruction(raw_query, merged),
             )
             if instruction
         ) or None
@@ -8252,6 +8292,7 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
                 merged,
                 temporal_context.as_of,
             ),
+            _staff_contact_response_instruction(raw_query, merged),
         )
         if instruction
     ) or None

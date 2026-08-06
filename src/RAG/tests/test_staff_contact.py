@@ -84,3 +84,43 @@ def test_행정직이_있으면_안내를_붙이지_않는다():
 
 def test_사무실_질의가_아니면_안내가_없다():
     assert describe_contact_fallback("통계학과", ["교수"], office_intent=False) is None
+
+
+def test_안내가_생성_지시로_전달된다(monkeypatch):
+    """행정직이 없는 학과에서는 무엇을 주는지 답변 첫 문장에 밝히게 한다."""
+    import pandas as pd
+
+    import api.rag_service as rag_service
+
+    selected = pd.DataFrame(
+        [
+            {"dataset": "staff", "topics": "통계학과", "staff_position": "학과장(B)"},
+            {"dataset": "staff", "topics": "통계학과", "staff_position": "교수"},
+        ]
+    )
+    지시 = rag_service._staff_contact_response_instruction("통계학과 사무실 전화번호", selected)
+    assert 지시 is not None
+    assert "확인되지 않습니다" in 지시
+    assert "첫 문장" in 지시
+
+
+def test_행정직이_있으면_지시를_붙이지_않는다():
+    import pandas as pd
+
+    import api.rag_service as rag_service
+
+    selected = pd.DataFrame(
+        [{"dataset": "staff", "topics": "컴퓨터공학과", "staff_position": "조교"}]
+    )
+    assert rag_service._staff_contact_response_instruction("컴퓨터공학과 사무실 번호", selected) is None
+
+
+def test_사무실_질의가_아니면_지시가_없다():
+    import pandas as pd
+
+    import api.rag_service as rag_service
+
+    selected = pd.DataFrame(
+        [{"dataset": "staff", "topics": "통계학과", "staff_position": "교수"}]
+    )
+    assert rag_service._staff_contact_response_instruction("통계학과 교수님 누구야", selected) is None
