@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -83,3 +83,28 @@ def test_평가_러너이면서_시점도_이동한_요청도_한_번만_제외�
     _기록(세션, request_id="eval_x", as_of="2030-01-01")
     _기록(세션, request_id="req-사람", as_of=None)
     assert _real_traffic_query(세션).count() == 1
+
+
+def test_최근_기간만_세는_조건이_추가된다(세션):
+    """누적 집계는 기능이 없던 시절 데이터에 지배된다.
+
+    근거검증 미실시율을 월별로 보면 2026-05 100% / 06 67% / 07 29% / 08 28%인데
+    누적은 57%로 나온다. 그 값을 현재 품질로 읽으면 개선이 통째로 묻힌다.
+    """
+    from api.rag_service import RAG_METRICS_WINDOW_DAYS, _real_traffic_query
+
+    최근 = datetime.now() - timedelta(days=1)
+    오래됨 = datetime.now() - timedelta(days=RAG_METRICS_WINDOW_DAYS + 5)
+    _기록(세션, request_id="req-최근", created=최근.isoformat(sep=" ", timespec="seconds"))
+    _기록(세션, request_id="req-오래됨", created=오래됨.isoformat(sep=" ", timespec="seconds"))
+
+    assert _real_traffic_query(세션).count() == 2  # 누적은 둘 다
+    창 = _real_traffic_query(세션, window=True).all()
+    assert [r.request_id for r in 창] == ["req-최근"]
+
+
+def test_기간을_환경변수로_바꿀_수_있다():
+    from api.rag_service import RAG_METRICS_WINDOW_DAYS, _metrics_window_start
+
+    시작 = _metrics_window_start(datetime(2026, 8, 6))
+    assert (datetime(2026, 8, 6) - 시작).days == RAG_METRICS_WINDOW_DAYS

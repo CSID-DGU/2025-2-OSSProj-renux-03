@@ -927,9 +927,33 @@ def _real_traffic_conditions() -> list:
     ]
 
 
-def _real_traffic_query(session):
-    """실제 트래픽만 담은 RagQueryLog 질의."""
-    return session.query(RagQueryLog).filter(*_real_traffic_conditions())
+# 품질 지표를 볼 기본 기간. 누적으로 보면 개선이 옛 데이터에 묻힌다.
+RAG_METRICS_WINDOW_DAYS = int(os.getenv("RAG_METRICS_WINDOW_DAYS", "30"))
+
+
+def _metrics_window_start(as_of: datetime | None = None) -> datetime:
+    """지표 집계의 시작 시각(기본 최근 30일)."""
+    anchor = as_of or kst_now()
+    return anchor - timedelta(days=RAG_METRICS_WINDOW_DAYS)
+
+
+def _recent_traffic_conditions(as_of: datetime | None = None) -> list:
+    """최근 기간의 실제 트래픽 조건.
+
+    누적 집계는 기능이 없던 시절 데이터에 지배된다. 근거검증 미실시율을 월별로
+    보면 2026-05 100% / 06 67% / 07 29% / 08 28%인데, 누적은 57%로 나온다.
+    그 57%를 현재 품질로 읽으면 개선이 통째로 묻힌다 — 이 세션에서 실제로 두 번
+    오독했다.
+    """
+    return _real_traffic_conditions() + [
+        RagQueryLog.created_at >= _metrics_window_start(as_of)
+    ]
+
+
+def _real_traffic_query(session, *, window: bool = False):
+    """실제 트래픽만 담은 RagQueryLog 질의. window=True면 최근 기간으로 제한한다."""
+    conditions = _recent_traffic_conditions() if window else _real_traffic_conditions()
+    return session.query(RagQueryLog).filter(*conditions)
 
 
 def _requested_major_filter(query: str) -> Dict | None:
@@ -6053,12 +6077,14 @@ async def rag_admin_status():
             "rejected": session.query(PendingItem).filter(PendingItem.status == "rejected").count(),
         }
 
-        # 품질 지표는 실제 트래픽만 센다. 평가 하네스와 시점 이동 요청을 섞으면
-        # 의도된 폴백(2030년 시점 → "진행 중인 공모전 없음")이 품질 저하로 잡힌다.
-        real_traffic = _real_traffic_conditions()
+        # 품질 지표는 실제 트래픽만, 그리고 최근 기간만 센다. 평가 하네스와 시점 이동
+        # 요청을 섞으면 의도된 폴백(2030년 시점 → "진행 중인 공모전 없음")이 품질 저하로
+        # 잡히고, 누적으로 집계하면 기능이 없던 시절 데이터가 최근 개선을 덮는다.
+        recent_traffic = _recent_traffic_conditions()
+        # 마지막 질의 시각은 "언제까지 트래픽이 있었나"를 보는 값이라 기간 제한을 두지 않는다.
         latest_query = (
             session.query(RagQueryLog)
-            .filter(*real_traffic)
+            .filter(*_real_traffic_conditions())
             .order_by(RagQueryLog.created_at.desc())
             .first()
         )
@@ -6066,13 +6092,13 @@ async def rag_admin_status():
             (reason or "unknown"): count
             for reason, count in (
                 session.query(RagQueryLog.fallback_reason, func.count(RagQueryLog.id))
-                .filter(RagQueryLog.fallback_triggered.is_(True), *real_traffic)
+                .filter(RagQueryLog.fallback_triggered.is_(True), *recent_traffic)
                 .group_by(RagQueryLog.fallback_reason)
                 .all()
             )
         }
-        total_query_count = _real_traffic_query(session).count()
-        fallback_count = _real_traffic_query(session).filter(
+        total_query_count = _real_traffic_query(session, window=True).count()
+        fallback_count = _real_traffic_query(session, window=True).filter(
             RagQueryLog.fallback_triggered.is_(True)
         ).count()
         recent_logs = (
@@ -6082,13 +6108,17 @@ async def rag_admin_status():
                 RagQueryLog.as_of,
                 RagQueryLog.created_at,
             )
-            .filter(*real_traffic)
+            .filter(*recent_traffic)
             .order_by(RagQueryLog.id.desc())
             .limit(1000)
             .all()
         )
+        # 같은 기간의 합성 트래픽 규모. 표본이 작을 때 그 사실이 드러나야 한다.
         synthetic_query_count = (
-            session.query(RagQueryLog).count() - total_query_count
+            session.query(RagQueryLog)
+            .filter(RagQueryLog.created_at >= _metrics_window_start())
+            .count()
+            - total_query_count
         )
         unexpected_historical_year_count = 0
         for question, answer, as_of_value, created_at in recent_logs:
@@ -6122,6 +6152,7 @@ async def rag_admin_status():
             # 위 수치는 전부 실제 트래픽 기준이다. 평가 실행 규모를 함께 노출해
             # 표본이 작을 때 그 사실이 드러나게 한다.
             "traffic_scope": "real",
+            "window_days": RAG_METRICS_WINDOW_DAYS,
             "synthetic_query_count": synthetic_query_count,
         }
         grounding = {
@@ -6130,10 +6161,10 @@ async def rag_admin_status():
             "ungrounded_rate": None,
         }
         try:
-            grounding_checked = _real_traffic_query(session).filter(
+            grounding_checked = _real_traffic_query(session, window=True).filter(
                 RagQueryLog.grounding_checked.is_(True)
             ).count()
-            grounding_ungrounded = _real_traffic_query(session).filter(
+            grounding_ungrounded = _real_traffic_query(session, window=True).filter(
                 RagQueryLog.grounding_grounded.is_(False)
             ).count()
             grounding = {
@@ -6141,6 +6172,7 @@ async def rag_admin_status():
                 "ungrounded": grounding_ungrounded,
                 "ungrounded_rate": None if grounding_checked == 0 else grounding_ungrounded / grounding_checked,
                 "traffic_scope": "real",
+                "window_days": RAG_METRICS_WINDOW_DAYS,
             }
         except Exception:
             _log_event(logging.WARNING, "rag_grounding_status_failed", exc_info=True)
