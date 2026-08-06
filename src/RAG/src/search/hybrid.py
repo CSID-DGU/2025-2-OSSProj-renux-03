@@ -824,6 +824,7 @@ def hybrid_search_with_meta(
         "canonical_key", "is_latest",
         "title_norm", "audience", "retrieval_context",
         "staff_position", "staff_role", "staff_phone",  # 연락처 질의 순위 판단에 사용
+        "has_substantive_body",  # 제목만 있는 공지를 근거 자리에서 뒤로 미는 데 사용
     ]
     existing = [col for col in desired if col in out.columns]
     return out[existing]

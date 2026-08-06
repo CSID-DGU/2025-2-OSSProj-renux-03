@@ -3810,6 +3810,19 @@ def _build_balanced_shortlist(
         else:
             ranked["_contact_phone_rank"] = 0
             ranked["_contact_role_rank"] = 0
+        # 제목만 있고 본문·첨부가 없는 공지는 답을 뒷받침하지 못하면서 근거 자리를
+        # 차지한다(공지의 25.6%가 본문 0자, 914건은 첨부도 없음). 제외가 아니라 강등이다 —
+        # 그 문서가 유일한 후보면 "그런 공지가 있었다"는 사실이라도 남겨야 한다.
+        if "has_substantive_body" in ranked.columns:
+            ranked["_thin_document_rank"] = (
+                ranked["has_substantive_body"]
+                .astype(str)
+                .str.strip()
+                .isin({"0", "false", "no"})
+                .astype(int)
+            )
+        else:
+            ranked["_thin_document_rank"] = 0
         ranked["_numeric_final"] = pd.to_numeric(
             ranked["final_score"],
             errors="coerce",
@@ -3818,8 +3831,14 @@ def _build_balanced_shortlist(
         # 아무리 관련도가 높아도 답이 될 수 없다. staff 외 데이터셋에서는 두 값이
         # 모두 0이라 정렬 결과가 바뀌지 않는다.
         ranked.sort_values(
-            ["_contact_phone_rank", "_contact_role_rank", "_numeric_final", "_numeric_hybrid"],
-            ascending=[True, True, False, False],
+            [
+                "_contact_phone_rank",
+                "_contact_role_rank",
+                "_thin_document_rank",
+                "_numeric_final",
+                "_numeric_hybrid",
+            ],
+            ascending=[True, True, True, False, False],
             kind="stable",
             inplace=True,
         )

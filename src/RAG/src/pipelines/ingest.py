@@ -449,6 +449,12 @@ def build_notice_chunks(df: pd.DataFrame) -> pd.DataFrame:
             text_content = ""
         text_content = text_content.strip()
 
+        # 본문이 비어 제목·링크만으로 채워진 문서인지 여기서 기록해 둔다. 공지 5,528건 중
+        # 1,445건(25.6%)이 본문 0자이고 914건은 첨부조차 없다. 이런 문서는 답변을
+        # 뒷받침하지 못하면서 근거 자리(데이터셋당 3개)를 차지한다 — "2023년 통계데이터
+        # 활용대회"가 근거 그룹 하나를 통째로 쓰고 "본문이 비어 있어 확인이 필요하다"고만
+        # 답한 사례가 그것이다.
+        has_body = bool(text_content and text_content.strip())
         if not text_content:
             fallback_parts = []
             if title:
@@ -509,6 +515,8 @@ def build_notice_chunks(df: pd.DataFrame) -> pd.DataFrame:
                 "apply_deadline": apply_deadline,
                 "url": url,
                 "attachments": attachments_str,
+                # 첨부가 있으면 링크로 안내할 수 있으므로 근거로서 값이 남는다.
+                "has_substantive_body": "1" if (has_body or attachments_str not in ("[]", "")) else "0",
                 "source": "notices",
                 "source_type": row.get("source_type", "html_notice"),
                 "notice_id": row.get("db_id"),
@@ -670,6 +678,12 @@ def build_notice_index_frame_from_session(session: Session) -> pd.DataFrame:
                 ),
                 "url": notice.detail_url,
                 "attachments": notice.attachments,
+                # 본문·첨부가 모두 없으면 근거로 쓸 수 없다(공지의 25.6%가 본문 0자).
+                "has_substantive_body": (
+                    "1"
+                    if ((notice.content or "").strip() or (notice.attachments or "[]") not in ("[]", ""))
+                    else "0"
+                ),
                 "source": "notices",
                 "source_type": (
                     source_document.source_type if source_document is not None else "html_notice"
@@ -709,6 +723,8 @@ def build_notice_index_frame_from_session(session: Session) -> pd.DataFrame:
                 "apply_deadline": None,
                 "url": "",
                 "attachments": "[]",
+                # 승인된 지식은 답 본문 자체이므로 항상 근거로 쓸 수 있다.
+                "has_substantive_body": "1",
                 "source": "custom_knowledge",
                 "notice_id": None,
                 "category": ck.category,
