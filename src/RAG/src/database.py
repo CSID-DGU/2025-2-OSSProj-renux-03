@@ -12,8 +12,16 @@ def kst_now():
 
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 
-# 데이터베이스 파일 경로 설정 (RAG 폴더 최상위에 'rag_database.db' 파일로 저장됨)
-DATABASE_FILE = Path(__file__).resolve().parents[1] / "rag_database.db"
+# 데이터베이스 파일 경로 (기본: RAG 폴더 최상위의 'rag_database.db').
+#
+# RAG_DATABASE_FILE로 바꿀 수 있다. 경로가 고정돼 있으면 개발자는 항상 자기 로컬 DB로만
+# 테스트하게 되고, 새 체크아웃처럼 테이블이 없는 상태를 재현할 방법이 없다. 실제로
+# 스케줄러 실행 기록을 추가했을 때 로컬 596건이 전부 통과하고 CI에서만 깨졌다 —
+# 로컬에는 ingestion_runs 테이블이 있었기 때문이다.
+DATABASE_FILE = Path(
+    os.getenv("RAG_DATABASE_FILE")
+    or Path(__file__).resolve().parents[1] / "rag_database.db"
+)
 DATABASE_URL = f"sqlite:///{DATABASE_FILE}"
 
 # SQLAlchemy 엔진 생성
