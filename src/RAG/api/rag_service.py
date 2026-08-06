@@ -156,6 +156,7 @@ from src.services.direct_answer import (
     parse_flexible_date,
 )
 from src.services.temporal_context import TemporalContext, build_temporal_context
+from src.services.temporal_label import describe_document_time
 from src.services.retrieval_context import enrich_retrieval_fields
 from src.utils.admin_filters import AdminFilterError, apply_review_record, parse_admin_datetime
 from src.utils.briefing import format_schedule_period, is_closed_row, split_meal_corners
@@ -3207,7 +3208,12 @@ def _build_context_text(context_parts: List[str], limit: int, prefix: str = "") 
     return (prefix + sep.join(included))[:limit]
 
 
-def _build_document_context_part(row: pd.Series, citation_number: int) -> str:
+def _build_document_context_part(
+    row: pd.Series,
+    citation_number: int,
+    *,
+    as_of: date | None = None,
+) -> str:
     source = _clean_response_str(row.get("source")) or _clean_response_str(row.get("dataset")) or "알 수 없음"
     part = f"문서 {citation_number} [출처: {source}]:\n"
     title = _clean_response_str(row.get("title"))
@@ -3227,6 +3233,17 @@ def _build_document_context_part(row: pd.Series, citation_number: int) -> str:
         part += f"접수 상태: 마감 전 또는 마감 당일{suffix}\n"
     elif deadline_status == "unknown":
         part += "접수 상태: 마감일 확인 필요\n"
+    # 시점 판정은 코드가 계산해 실어 보낸다. 모델에게 날짜를 빼게 하면 조용히 틀린다
+    # ("2025년 12월 12일에 예정된 종강총회" — 8개월 지난 행사).
+    if as_of is not None:
+        time_note = describe_document_time(
+            as_of=as_of,
+            schedule_start=row.get("schedule_start"),
+            schedule_end=row.get("schedule_end"),
+            published_at=published_at,
+        )
+        if time_note:
+            part += f"시점: {time_note}\n"
     if url:
         part += f"URL: {url}\n"
     campus_scope = _clean_response_str(row.get("campus_scope"))
@@ -3251,13 +3268,18 @@ def _build_document_context_part(row: pd.Series, citation_number: int) -> str:
     return part
 
 
-def _build_selected_evidence_context(selected: pd.DataFrame, prefix: str = "") -> str:
+def _build_selected_evidence_context(
+    selected: pd.DataFrame,
+    prefix: str = "",
+    *,
+    as_of: date | None = None,
+) -> str:
     if selected.empty:
         return prefix[:MAX_CONTEXT_LENGTH]
     group_count = int(pd.to_numeric(selected["evidence_group"], errors="coerce").max())
     if group_count <= 1:
         parts = [
-            _build_document_context_part(row, int(row.get("citation_number") or index))
+            _build_document_context_part(row, int(row.get("citation_number") or index), as_of=as_of)
             for index, (_, row) in enumerate(selected.iterrows(), start=1)
         ]
         if "selector_fallback" in selected.columns and selected["selector_fallback"].astype(bool).any():
@@ -3272,7 +3294,7 @@ def _build_selected_evidence_context(selected: pd.DataFrame, prefix: str = "") -
     for group_number in range(1, group_count + 1):
         group_frame = selected[selected["evidence_group"] == group_number]
         parts = [
-            _build_document_context_part(row, int(row.get("citation_number") or index))
+            _build_document_context_part(row, int(row.get("citation_number") or index), as_of=as_of)
             for index, (_, row) in enumerate(group_frame.iterrows(), start=1)
         ]
         blocks.append(
@@ -7441,7 +7463,11 @@ async def ask_stream(req: AskRequest, request: Request):
         # 4. 컨텍스트 구성 및 스트리밍 시작
         stage_started_at = time.perf_counter()
         group_count = int(pd.to_numeric(merged["evidence_group"], errors="coerce").max())
-        context_text = _build_selected_evidence_context(merged, prefix=_user_profile_prefix(req.major))
+        context_text = _build_selected_evidence_context(
+        merged,
+        prefix=_user_profile_prefix(req.major),
+        as_of=temporal_context.as_of,
+    )
         response_instructions = "\n".join(
             instruction
             for instruction in (
@@ -8281,7 +8307,11 @@ async def ask(req: AskRequest, request: Request) -> AskResponse:
 
     stage_started_at = time.perf_counter()
     group_count = int(pd.to_numeric(merged["evidence_group"], errors="coerce").max())
-    context_text = _build_selected_evidence_context(merged, prefix=_user_profile_prefix(req.major))
+    context_text = _build_selected_evidence_context(
+        merged,
+        prefix=_user_profile_prefix(req.major),
+        as_of=temporal_context.as_of,
+    )
     response_instructions = "\n".join(
         instruction
         for instruction in (
