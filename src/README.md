@@ -70,6 +70,38 @@ REDIS_URL=redis://localhost:6379/0
 > 호스트에 Ollama가 실행 중이어야 합니다(`ollama pull <모델명>`). 한쪽 프로바이더가
 > 실패하면 자동으로 반대 프로바이더로 폴백합니다(`LLM_FALLBACK_ENABLED=1`, 기본 활성).
 
+## 맞춤 수업 추천
+
+채팅에서 학과, 학년, 목표 학점, 관심 분야를 바탕으로 교과목 조합을 추천한다. 정보가 부족하면
+챗봇이 필요한 항목을 먼저 묻고, 다음 메시지의 답을 같은 대화에서 이어서 사용한다. 이미 이수한
+과목명이나 학수번호를 함께 보내면 추천에서 제외한다.
+
+구조화된 추천만 필요할 때는 `POST /courses/recommend`를 사용할 수 있다.
+
+```json
+{
+  "major": "통계학과",
+  "grade": 3,
+  "targetCredits": 18,
+  "semester": 1,
+  "interests": ["AI", "데이터 분석"],
+  "completedCourses": ["데이터분석"]
+}
+```
+
+교과과정과 검색 인덱스를 수동으로 다시 수집하려면 RAG 디렉토리에서
+`python scripts/update_courses.py`를 실행한다. 자동 갱신은
+`RAG_COURSES_REFRESH_CRON`으로 설정하며 기본값은 매주 일요일 03:00이다. 추천은
+공식 교과과정표 기반 후보이므로 실제 개설 여부, 시간, 정원은 nDRIMS에서 최종 확인해야 한다.
+
+수집 기준은 동국대학교 본부가 공개한 최신 연도 단과대학별 교육과정 PDF 15개다. 학과마다
+메뉴 경로와 HTML 표가 다른 문제를 피하기 위해 이 PDF를 과목명·학수번호·학점·학년·학기의
+기준 자료로 사용하고, 학과 홈페이지는 교과목 설명을 보강하는 보조 자료로 사용한다.
+수집 결과는 `data/dongguk_courses_all.csv`, 학과별 추천 준비 상태와 필드 커버리지는
+`data/dongguk_courses_collection_diagnosis.csv`에서 확인할 수 있다. 동일 학과에서 하나의
+학수번호가 서로 다른 과목명에 쓰인 공식 자료 충돌은 삭제하지 않고
+`course_code_conflict=true`로 표시한다.
+
 `docker compose up --build` 명령어로 docker compose를 빌드 및 실행한다.
 
 `localhost:8080`으로 접속해본다.

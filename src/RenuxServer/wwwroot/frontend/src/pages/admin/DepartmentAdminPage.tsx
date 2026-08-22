@@ -1,557 +1,555 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { apiFetch } from '../../api/client'
-import { toDepartmentKnowledge } from '../../admin/adminData'
-import type { AdminItemResponse, DepartmentKnowledge } from '../../types/admin'
+import { cancelItem, fetchAllItems, submitItem } from '../../admin/adminApi'
+import { buildChatPreview, toDepartmentKnowledge } from '../../admin/adminData'
+import {
+  formatDateTime,
+  formatFullDateTime,
+  getApiErrorMessage,
+  getSourceTypeLabel,
+} from '../../admin/format'
+import Modal from '../../components/admin/Modal'
+import { useAdminConsole } from '../../components/admin/adminConsoleContext'
+import {
+  EmptyState,
+  ErrorNote,
+  FilterBar,
+  FilterChip,
+  LoadingNote,
+  MetricCard,
+  PageHeader,
+  Panel,
+  StatusPill,
+} from '../../components/admin/ui'
+import type { DepartmentKnowledge, KnowledgeStatus } from '../../types/admin'
 
-interface UserInfoResponse {
-  name?: string;
-  Name?: string;
-  majorName?: string;
-  MajorName?: string;
+type ContentType = 'knowledge' | 'event' | 'announcement'
+type StatusFilter = 'all' | KnowledgeStatus
+
+const SOURCE_TYPE_BY_CONTENT: Record<ContentType, string> = {
+  knowledge: 'custom_knowledge',
+  event: 'event',
+  announcement: 'announcement',
 }
 
-interface KnowledgePayload {
-  question: string;
-  answer: string;
-  category: string;
-  requester?: string;
-}
+const STATUS_FILTERS: Array<{ key: StatusFilter; label: string }> = [
+  { key: 'all', label: '전체' },
+  { key: 'PENDING', label: '대기' },
+  { key: 'APPROVED', label: '승인' },
+  { key: 'REJECTED', label: '반려' },
+]
 
-interface EventPayload {
-  title: string;
-  start_date: string;
-  end_date: string;
-  location: string;
-  department: string;
-  description: string;
-  requester?: string;
-}
+const statusLabel = (status: KnowledgeStatus) => (
+  status === 'APPROVED' ? '승인됨' : status === 'REJECTED' ? '반려됨' : '검수 대기'
+)
 
-interface AnnouncementPayload {
-  title: string;
-  content: string;
-  date: string;
-  category: string;
-  department: string;
-  requester?: string;
+const statusTone = (status: KnowledgeStatus) => (
+  status === 'APPROVED' ? 'success' : status === 'REJECTED' ? 'danger' : 'pending'
+)
+
+const emptyForm = {
+  title: '',
+  content: '',
+  startDate: '',
+  endDate: '',
+  location: '',
+  category: '',
 }
 
 const DepartmentAdminPage = () => {
-  const navigate = useNavigate()
-  const [knowledgeList, setKnowledgeList] = useState<DepartmentKnowledge[]>([])
-  const [isLoading, setIsLoading] = useState(false)
+  const { showToast, notifyDataChanged, dataVersion, userName, majorName } = useAdminConsole()
+
+  const [items, setItems] = useState<DepartmentKnowledge[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [isCreating, setIsCreating] = useState(false)
+  const [mode, setMode] = useState<'view' | 'create'>('view')
 
-  // Form State
-  const [contentType, setContentType] = useState<'knowledge' | 'event' | 'announcement'>('knowledge')
-  const [newTitle, setNewTitle] = useState('')
-  const [newContent, setNewContent] = useState('')
-  // Additional fields for Event/Announcement
-  const [startDate, setStartDate] = useState('')
-  const [endDate, setEndDate] = useState('')
-  const [location, setLocation] = useState('')
-  const [category, setCategory] = useState('')
-  const [userDepartment, setUserDepartment] = useState('')
-  const [userName, setUserName] = useState('')
-  // alert() 대신 사용하는 인라인 알림 (성공/오류)
-  const [notice, setNotice] = useState<string | null>(null)
-  const [errorNotice, setErrorNotice] = useState<string | null>(null)
+  const [contentType, setContentType] = useState<ContentType>('knowledge')
+  const [form, setForm] = useState(emptyForm)
+  const [formError, setFormError] = useState<string | null>(null)
+  const [showPreview, setShowPreview] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
 
-  // 성공 알림 자동 소거: 3초 후 사라지도록
-  useEffect(() => {
-    if (!notice) return
-    const timer = setTimeout(() => setNotice(null), 3000)
-    return () => clearTimeout(timer)
-  }, [notice])
+  const [cancelTarget, setCancelTarget] = useState<DepartmentKnowledge | null>(null)
+  const [busy, setBusy] = useState(false)
 
-  // 선택 항목 변경 시 이전 알림 소거
-  useEffect(() => {
-    setNotice(null)
-    setErrorNotice(null)
-  }, [selectedId])
-
-  // Fetch user info to get department
-  useEffect(() => {
-    const fetchUserInfo = async () => {
-      try {
-        const userInfo = await apiFetch<UserInfoResponse>('/auth/name');
-        if (userInfo) {
-            // Handle both camelCase and PascalCase
-            const major = userInfo.majorName || userInfo.MajorName;
-            const name = userInfo.name || userInfo.Name;
-            
-            if (major) setUserDepartment(major);
-            if (name) setUserName(name);
-        }
-      } catch (e) {
-        console.error("Failed to fetch user info", e);
-        setUserName(`Error: ${e instanceof Error ? e.message : 'Unknown'}`);
-      }
-    };
-    fetchUserInfo();
-  }, []);
-
-  // Fetch items on load
-  // 새로고침 버튼에서도 재사용할 수 있도록 useEffect 밖으로 분리
-  const fetchItems = useCallback(async () => {
-      setIsLoading(true);
-      try {
-        // Use the new endpoint that returns all items sorted by date
-        const itemsData = await apiFetch<AdminItemResponse[]>('/admin/items');
-        
-        if (Array.isArray(itemsData)) {
-          const mappedList: DepartmentKnowledge[] = itemsData.map(toDepartmentKnowledge);
-          setKnowledgeList(mappedList);
-        }
-      } catch (e) {
-        console.error("Failed to load items", e);
-      } finally {
-        setIsLoading(false);
-      }
-  }, []);
+  const loadItems = useCallback(async () => {
+    setLoading(true)
+    setLoadError(null)
+    try {
+      const data = await fetchAllItems()
+      const mapped = (Array.isArray(data) ? data : [])
+        .map(toDepartmentKnowledge)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      setItems(mapped)
+    } catch (error) {
+      setItems([])
+      setLoadError(getApiErrorMessage(error, '등록 내역을 불러오지 못했습니다.'))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
-    fetchItems();
-  }, [fetchItems]);
+    void loadItems()
+  }, [loadItems, dataVersion])
 
-  const selectedItem = useMemo(
-    () => knowledgeList.find((item) => item.id === selectedId) ?? null,
-    [knowledgeList, selectedId],
+  const filtered = useMemo(
+    () => (statusFilter === 'all' ? items : items.filter((item) => item.status === statusFilter)),
+    [items, statusFilter],
   )
 
-  const handleNavigateHome = () => navigate('/')
+  useEffect(() => {
+    if (mode === 'create') return
+    setSelectedId((previous) => (
+      previous && filtered.some((item) => item.id === previous) ? previous : filtered[0]?.id ?? null
+    ))
+  }, [filtered, mode])
 
-  const handleCreateClick = () => {
-    setSelectedId(null)
-    setIsCreating(true)
-    setContentType('knowledge')
-    setNewTitle('')
-    setNewContent('')
-    setStartDate('')
-    setEndDate('')
-    setLocation('')
-    setCategory('')
-  }
+  const selected = useMemo(
+    () => filtered.find((item) => item.id === selectedId) ?? null,
+    [filtered, selectedId],
+  )
 
-  const handleItemClick = (id: string) => {
-    setIsCreating(false)
-    setSelectedId(id)
-  }
+  const counts = useMemo(() => ({
+    total: items.length,
+    pending: items.filter((item) => item.status === 'PENDING').length,
+    approved: items.filter((item) => item.status === 'APPROVED').length,
+    rejected: items.filter((item) => item.status === 'REJECTED').length,
+  }), [items])
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setNotice(null)
-    setErrorNotice(null)
-    if (!newTitle.trim() || !newContent.trim()) {
-      setErrorNotice('제목과 내용을 입력해주세요.')
+  const startCreate = (seed?: DepartmentKnowledge) => {
+    setMode('create')
+    setFormError(null)
+    setShowPreview(false)
+
+    if (!seed) {
+      setContentType('knowledge')
+      setForm(emptyForm)
       return
     }
 
-    const deptToUse = userDepartment || '학과정보';
+    // 반려 항목의 "수정 후 재제출" — 처음부터 다시 쓰지 않도록 원본 payload를 폼에 채운다.
+    const raw = seed.raw
+    const text = (key: string) => (typeof raw[key] === 'string' ? (raw[key] as string) : '')
+    if (seed.sourceType === 'event') {
+      setContentType('event')
+      setForm({
+        title: text('title'),
+        content: text('description'),
+        startDate: text('start_date'),
+        endDate: text('end_date'),
+        location: text('location'),
+        category: '',
+      })
+    } else if (seed.sourceType === 'announcement') {
+      setContentType('announcement')
+      setForm({
+        title: text('title'),
+        content: text('content'),
+        startDate: text('date'),
+        endDate: '',
+        location: '',
+        category: text('category'),
+      })
+    } else {
+      setContentType('knowledge')
+      setForm({
+        title: text('question'),
+        content: text('answer'),
+        startDate: '',
+        endDate: '',
+        location: '',
+        category: '',
+      })
+    }
+  }
 
-    let payloadData: KnowledgePayload | EventPayload | AnnouncementPayload;
-    let sourceType = '';
+  const buildPayload = (): Record<string, unknown> | null => {
+    const department = majorName || '학과정보'
+    if (!form.title.trim() || !form.content.trim()) {
+      setFormError('제목과 내용을 입력해주세요.')
+      return null
+    }
 
     if (contentType === 'knowledge') {
-      payloadData = {
-        question: newTitle,
-        answer: newContent,
-        category: deptToUse,
-        requester: userName
+      return {
+        question: form.title.trim(),
+        answer: form.content.trim(),
+        category: department,
+        requester: userName,
       }
-      sourceType = 'custom_knowledge'
-    } else if (contentType === 'event') {
-      if (!startDate) {
-        setErrorNotice('시작일을 입력해주세요.')
-        return
-      }
-      payloadData = {
-        title: newTitle,
-        start_date: startDate,
-        end_date: endDate || startDate,
-        location: location,
-        department: deptToUse,
-        description: newContent,
-        requester: userName
-      }
-      sourceType = 'event'
-    } else {
-      // contentType === 'announcement'
-      if (!startDate) {
-        setErrorNotice('게시일을 입력해주세요.')
-        return
-      }
-      payloadData = {
-        title: newTitle,
-        content: newContent,
-        date: startDate,
-        category: category || '일반',
-        department: deptToUse,
-        requester: userName
-      }
-      sourceType = 'announcement'
     }
 
-    const submitRequestPayload = {
-      source_type: sourceType,
-      data: JSON.stringify(payloadData)
+    if (contentType === 'event') {
+      if (!form.startDate) {
+        setFormError('시작일을 입력해주세요.')
+        return null
+      }
+      return {
+        title: form.title.trim(),
+        start_date: form.startDate,
+        end_date: form.endDate || form.startDate,
+        location: form.location.trim(),
+        department,
+        description: form.content.trim(),
+        requester: userName,
+      }
     }
 
+    if (!form.startDate) {
+      setFormError('게시일을 입력해주세요.')
+      return null
+    }
+    return {
+      title: form.title.trim(),
+      content: form.content.trim(),
+      date: form.startDate,
+      category: form.category.trim() || '일반',
+      department,
+      requester: userName,
+    }
+  }
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setFormError(null)
+    const payload = buildPayload()
+    if (!payload) return
+
+    setSubmitting(true)
     try {
-      setIsLoading(true)
-      const submitResponse = await apiFetch<{ status: string, id: number }>('/admin/submit', { 
-        method: 'POST', 
-        json: submitRequestPayload 
-      })
-      
-      if (submitResponse.status === 'ok' && submitResponse.id) {
-        // 낙관적 타이틀 불일치 방지: 제출 직후 서버에서 최신 목록을 가져온다
-        await fetchItems()
-        setNotice('성공적으로 제출되었습니다. 검수 승인 후 챗봇에 반영됩니다.')
-      } else {
-        setErrorNotice('제출에 실패했습니다. 응답 형식이 올바르지 않습니다.');
-      }
-
-      setIsCreating(false)
-      setNewTitle('')
-      setNewContent('')
-      
-    } catch (e) {
-      console.error('Failed to submit', e)
-      setErrorNotice('제출에 실패했습니다. 다시 시도해주세요.')
+      await submitItem(SOURCE_TYPE_BY_CONTENT[contentType], payload)
+      showToast('제출했습니다. 검수 승인 후 챗봇에 반영됩니다.', 'success')
+      setMode('view')
+      setForm(emptyForm)
+      notifyDataChanged()
+      await loadItems()
+    } catch (error) {
+      setFormError(getApiErrorMessage(error, '제출에 실패했습니다. 다시 시도해주세요.'))
     } finally {
-      setIsLoading(false)
+      setSubmitting(false)
     }
   }
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('요청을 취소하시겠습니까? (반려 처리됩니다)')) return
-    setNotice(null)
-    setErrorNotice(null)
-
+  const applyCancel = async () => {
+    if (!cancelTarget) return
+    setBusy(true)
     try {
-      setIsLoading(true)
-      
-      if (!id.startsWith('k-')) {
-         // 학과 관리자는 본인 학과 PENDING 요청을 /admin/cancel로 취소(reject는 대학 수준 전용)
-         await apiFetch(`/admin/cancel/${id}`, { method: 'POST' })
-      }
-
-      // Update status instead of removing
-      setKnowledgeList((prev) => prev.map((item) => 
-        item.id === id ? { ...item, status: 'REJECTED' } : item
-      ))
-      
-      setNotice('요청이 취소되었습니다.')
-    } catch (e) {
-      console.error('Failed to cancel request', e)
-      setErrorNotice('요청 취소에 실패했습니다. 다시 시도해주세요.')
+      await cancelItem(cancelTarget.id)
+      setItems((previous) => previous.map((item) => (
+        item.id === cancelTarget.id ? { ...item, status: 'REJECTED' as KnowledgeStatus } : item
+      )))
+      showToast('요청을 취소했습니다.', 'success')
+      setCancelTarget(null)
+      notifyDataChanged()
+    } catch (error) {
+      showToast(getApiErrorMessage(error, '요청 취소에 실패했습니다.'), 'error')
     } finally {
-      setIsLoading(false)
+      setBusy(false)
     }
   }
 
-  const getStatusLabel = (status: string) => {
-    switch (status) {
-      case 'APPROVED': return '승인됨'
-      case 'REJECTED': return '반려됨'
-      case 'PENDING': return '검수 대기'
-      default: return status
+  const previewPayload = useMemo(() => {
+    const department = majorName || '학과정보'
+    if (contentType === 'knowledge') {
+      return { question: form.title, answer: form.content, category: department }
     }
-  }
-
-  const getStatusClass = (status: string) => {
-    switch (status) {
-      case 'APPROVED': return 'success'
-      case 'REJECTED': return 'danger'
-      case 'PENDING': return 'pending'
-      default: return 'secondary'
+    if (contentType === 'event') {
+      return {
+        title: form.title,
+        start_date: form.startDate,
+        end_date: form.endDate || form.startDate,
+        location: form.location,
+        department,
+        description: form.content,
+      }
     }
-  }
+    return {
+      title: form.title,
+      content: form.content,
+      date: form.startDate,
+      category: form.category || '일반',
+      department,
+    }
+  }, [contentType, form, majorName])
 
   return (
-    <div className="admin-page-wrapper">
-      <div className="admin-shell compact-mode">
-        <header className="admin-header glass-panel compact">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-            <div>
-              <p className="admin-eyebrow">DEPARTMENT COUNCIL</p>
-              <h1 className="admin-title compact">학과 정보 관리소</h1>
-              <p className="admin-subtitle compact" style={{ fontSize: '0.8rem', opacity: 0.8 }}>
-                접속: {userName || userDepartment || '로딩 중...'}
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button className="ghost-btn" type="button" onClick={() => fetchItems()} disabled={isLoading}>
-                {isLoading ? '새로고침 중...' : '새로고침'}
-              </button>
-              <button className="hero-btn hero-btn--primary" type="button" onClick={handleNavigateHome}>
-                메인페이지로 이동
-              </button>
-            </div>
-          </div>
-        </header>
-
-      <section className="admin-metrics compact">
-        <div className="admin-metrics" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
-          <article className="admin-card admin-card--accent admin-card--compact">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-              <div>
-                <p className="admin-card__label">등록된 정보</p>
-                <strong className="admin-card__value">{knowledgeList.length}</strong>
-              </div>
-              <span className="admin-card__icon" aria-hidden="true">📝</span>
-            </div>
-          </article>
-          <article className="admin-card admin-card--compact admin-card--muted">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-              <div>
-                <p className="admin-card__label">승인된 정보</p>
-                <strong className="admin-card__value">{knowledgeList.filter(k => k.status === 'APPROVED').length}</strong>
-              </div>
-              <span className="admin-card__icon admin-card__icon--green" aria-hidden="true">✅</span>
-            </div>
-          </article>
-          <article className="admin-card admin-card--compact" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <button type="button" className="hero-btn hero-btn--primary" onClick={handleCreateClick} disabled={isLoading}>
-              + 새 정보 등록하기
+    <>
+      <PageHeader
+        title="학과 콘솔"
+        description={`${majorName || '학과'} 정보를 등록하고 처리 상태를 확인합니다.`}
+        actions={
+          <>
+            <button type="button" className="ac-btn" onClick={() => { void loadItems() }} disabled={loading}>
+              {loading ? '새로고침 중...' : '새로고침'}
             </button>
-          </article>
-        </div>
-      </section>
+            <button type="button" className="ac-btn ac-btn--primary" onClick={() => startCreate()}>
+              + 새 정보 등록
+            </button>
+          </>
+        }
+      />
 
-        <div className="admin-dashboard-grid">
-          {/* Left Panel: Knowledge List */}
-          <section className="admin-panel glass-panel full-height" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '500px' }}>
-            <header className="admin-panel__header" style={{ flexShrink: 0, marginBottom: '16px' }}>
-              <div>
-                <h2 className="admin-panel__title">등록 내역</h2>
-                <p className="admin-panel__subtitle">등록된 정보 목록</p>
-              </div>
-            </header>
-            
-            <div className="admin-panel-content-scroll" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
-              {isLoading ? (
-                <p className="admin-status">정보를 불러오는 중...</p>
-              ) : (
-                <ul className="admin-review-list admin-review-list-scroll">
-                  {knowledgeList.map((item) => (
-                    <li
-                      key={item.id}
-                      className={`admin-review-card ${selectedId === item.id ? 'admin-review-card--active' : ''}`}
-                    >
-                      <button type="button" onClick={() => handleItemClick(item.id)}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', marginBottom: '4px' }}>
-                          <span className={`status-pill status-pill--${getStatusClass(item.status)}`}>
-                            {getStatusLabel(item.status)}
-                          </span>
-                          <span className="admin-review-card__meta">
-                            {new Date(item.createdAt).toLocaleDateString()}
-                          </span>
-                        </div>
-                        <strong className="admin-review-card__title">{item.title}</strong>
-                      </button>
-                    </li>
-                  ))}
-                  {knowledgeList.length === 0 && (
-                    <li className="admin-table__empty">등록된 정보가 없습니다.</li>
+      <div className="ac-metrics">
+        <MetricCard label="등록한 정보" value={counts.total} />
+        <MetricCard label="검수 대기" value={counts.pending} tone={counts.pending > 0 ? 'pending' : undefined} />
+        <MetricCard label="승인됨" value={counts.approved} tone="success" />
+        <MetricCard label="반려됨" value={counts.rejected} tone={counts.rejected > 0 ? 'warning' : undefined} />
+      </div>
+
+      <Panel padded={false}>
+        <FilterBar>
+          {STATUS_FILTERS.map((filter) => {
+            const count = filter.key === 'all'
+              ? counts.total
+              : filter.key === 'PENDING' ? counts.pending
+                : filter.key === 'APPROVED' ? counts.approved : counts.rejected
+            return (
+              <FilterChip
+                key={filter.key}
+                active={statusFilter === filter.key}
+                onClick={() => { setStatusFilter(filter.key); setMode('view') }}
+              >
+                {filter.label} {count}
+              </FilterChip>
+            )
+          })}
+        </FilterBar>
+
+        {loadError && <ErrorNote>{loadError}</ErrorNote>}
+
+        <div className="ac-split">
+          <div className="ac-list">
+            {loading ? (
+              <LoadingNote />
+            ) : filtered.length === 0 ? (
+              <EmptyState>등록된 정보가 없습니다.</EmptyState>
+            ) : (
+              filtered.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`ac-list-item ${mode === 'view' && selectedId === item.id ? 'ac-list-item--active' : ''}`}
+                  onClick={() => { setSelectedId(item.id); setMode('view') }}
+                  aria-pressed={mode === 'view' && selectedId === item.id}
+                >
+                  <span className="ac-list-item__body">
+                    <span className="ac-list-item__title">{item.title}</span>
+                    <span className="ac-list-item__meta">
+                      {getSourceTypeLabel(item.sourceType)} · {formatDateTime(item.createdAt)}
+                    </span>
+                  </span>
+                  <StatusPill tone={statusTone(item.status)}>{statusLabel(item.status)}</StatusPill>
+                </button>
+              ))
+            )}
+          </div>
+
+          <div className="ac-detail">
+            {mode === 'create' ? (
+              <form onSubmit={handleSubmit}>
+                <p className="ac-detail__eyebrow">새 정보 등록</p>
+                <h2 className="ac-detail__title">정보 입력</h2>
+
+                <div className="ac-field">
+                  <label className="ac-label" htmlFor="dept-content-type">등록 유형</label>
+                  <select
+                    id="dept-content-type"
+                    className="ac-select"
+                    value={contentType}
+                    onChange={(event) => setContentType(event.target.value as ContentType)}
+                    disabled={submitting}
+                  >
+                    <option value="knowledge">❓ 자주 묻는 질문 (FAQ)</option>
+                    <option value="event">📅 학과 행사 (Event)</option>
+                    <option value="announcement">📢 공지사항 (Notice)</option>
+                  </select>
+                </div>
+
+                <div className="ac-field">
+                  <label className="ac-label" htmlFor="dept-title">
+                    {contentType === 'knowledge' ? '질문 (Question)' : contentType === 'event' ? '행사명 (Title)' : '제목 (Title)'}
+                  </label>
+                  <input
+                    id="dept-title"
+                    type="text"
+                    className="ac-input"
+                    placeholder={contentType === 'knowledge' ? '예: 졸업논문 제출 기한' : '제목을 입력하세요'}
+                    value={form.title}
+                    onChange={(event) => setForm((previous) => ({ ...previous, title: event.target.value }))}
+                    disabled={submitting}
+                  />
+                </div>
+
+                {(contentType === 'event' || contentType === 'announcement') && (
+                  <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                    <div className="ac-field" style={{ flex: 1, minWidth: '140px' }}>
+                      <label className="ac-label" htmlFor="dept-start-date">
+                        {contentType === 'event' ? '시작일' : '게시일'}
+                      </label>
+                      <input
+                        id="dept-start-date"
+                        type="date"
+                        className="ac-input"
+                        value={form.startDate}
+                        onChange={(event) => setForm((previous) => ({ ...previous, startDate: event.target.value }))}
+                        disabled={submitting}
+                      />
+                    </div>
+                    {contentType === 'event' && (
+                      <div className="ac-field" style={{ flex: 1, minWidth: '140px' }}>
+                        <label className="ac-label" htmlFor="dept-end-date">종료일 (선택)</label>
+                        <input
+                          id="dept-end-date"
+                          type="date"
+                          className="ac-input"
+                          value={form.endDate}
+                          onChange={(event) => setForm((previous) => ({ ...previous, endDate: event.target.value }))}
+                          disabled={submitting}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {contentType === 'event' && (
+                  <div className="ac-field">
+                    <label className="ac-label" htmlFor="dept-location">장소</label>
+                    <input
+                      id="dept-location"
+                      type="text"
+                      className="ac-input"
+                      placeholder="예: 공학관 101호"
+                      value={form.location}
+                      onChange={(event) => setForm((previous) => ({ ...previous, location: event.target.value }))}
+                      disabled={submitting}
+                    />
+                  </div>
+                )}
+
+                {contentType === 'announcement' && (
+                  <div className="ac-field">
+                    <label className="ac-label" htmlFor="dept-category">카테고리</label>
+                    <input
+                      id="dept-category"
+                      type="text"
+                      className="ac-input"
+                      placeholder="예: 학사, 장학, 채용"
+                      value={form.category}
+                      onChange={(event) => setForm((previous) => ({ ...previous, category: event.target.value }))}
+                      disabled={submitting}
+                    />
+                  </div>
+                )}
+
+                <div className="ac-field">
+                  <label className="ac-label" htmlFor="dept-content">
+                    {contentType === 'knowledge' ? '답변 (Answer)' : '상세 내용'}
+                  </label>
+                  <textarea
+                    id="dept-content"
+                    className="ac-textarea"
+                    rows={9}
+                    placeholder="상세 내용을 입력하세요."
+                    value={form.content}
+                    onChange={(event) => setForm((previous) => ({ ...previous, content: event.target.value }))}
+                    disabled={submitting}
+                  />
+                </div>
+
+                {formError && <ErrorNote>{formError}</ErrorNote>}
+
+                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                  <button
+                    type="button"
+                    className="ac-btn ac-btn--sm"
+                    onClick={() => setShowPreview((open) => !open)}
+                    aria-expanded={showPreview}
+                  >
+                    {showPreview ? '미리보기 닫기' : '챗봇 미리보기'}
+                  </button>
+                </div>
+
+                {showPreview && (
+                  <div className="ac-preview">
+                    <span className="ac-preview__label">승인되면 챗봇이 이렇게 답합니다</span>
+                    <div className="ac-preview__bubble">
+                      {buildChatPreview(SOURCE_TYPE_BY_CONTENT[contentType], previewPayload) || '내용을 입력하면 미리보기가 표시됩니다.'}
+                    </div>
+                  </div>
+                )}
+
+                <div className="ac-detail__actions">
+                  <button type="button" className="ac-btn" onClick={() => setMode('view')} disabled={submitting}>
+                    취소
+                  </button>
+                  <button type="submit" className="ac-btn ac-btn--primary" disabled={submitting}>
+                    {submitting ? '제출 중...' : '제출하기'}
+                  </button>
+                </div>
+              </form>
+            ) : !selected ? (
+              <EmptyState>왼쪽 목록에서 정보를 선택하거나, '새 정보 등록'을 눌러주세요.</EmptyState>
+            ) : (
+              <>
+                <p className="ac-detail__eyebrow">{getSourceTypeLabel(selected.sourceType)}</p>
+                <h2 className="ac-detail__title">{selected.title}</h2>
+
+                <dl className="ac-detail__meta">
+                  <div>
+                    <dt>상태</dt>
+                    <dd><StatusPill tone={statusTone(selected.status)}>{statusLabel(selected.status)}</StatusPill></dd>
+                  </div>
+                  <div>
+                    <dt>등록일</dt>
+                    <dd>{formatFullDateTime(selected.createdAt)}</dd>
+                  </div>
+                </dl>
+
+                {selected.status === 'REJECTED' && (
+                  <div className="ac-detail__content" style={{ borderColor: '#fecaca', background: '#fef2f2', marginBottom: '12px' }}>
+                    <b>반려 사유:</b> {selected.rejectionReason?.trim() || '사유가 기록되지 않았습니다. 검수 담당자에게 문의해주세요.'}
+                  </div>
+                )}
+
+                <div className="ac-detail__content">{selected.content || '내용이 없습니다.'}</div>
+
+                <div className="ac-detail__actions">
+                  {selected.status === 'REJECTED' && (
+                    <button type="button" className="ac-btn ac-btn--primary" onClick={() => startCreate(selected)}>
+                      수정 후 재제출
+                    </button>
                   )}
-                </ul>
-              )}
-            </div>
-          </section>
-
-          {/* Right Panel: Detail or Create Form */}
-          <section className="admin-panel glass-panel full-height" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '500px' }}>
-            <div className="admin-panel__column full-height admin-panel__column--detail" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                <div className="admin-panel-content-scroll admin-review-detail-scroll" style={{ flex: 1, overflowY: 'auto' }}>
-                  {isCreating ? (
-                    <div className="admin-review-detail" style={{ border: 'none', background: 'transparent', padding: 0 }}>
-                      <p className="admin-review-detail__eyebrow">새 정보 등록</p>
-                      <h3 className="admin-review-detail__title">정보 입력</h3>
-                      
-                      <form onSubmit={handleSubmit}>
-                        <div className="admin-form-field">
-                          <label className="admin-form-label" htmlFor="dept-content-type">등록 유형</label>
-                          <select
-                            id="dept-content-type"
-                            className="admin-input"
-                            value={contentType}
-                            onChange={(e) => setContentType(e.target.value as 'knowledge' | 'event' | 'announcement')}
-                            disabled={isLoading}
-                          >
-                            <option value="knowledge">❓ 자주 묻는 질문 (FAQ)</option>
-                            <option value="event">📅 학과 행사 (Event)</option>
-                            <option value="announcement">📢 공지사항 (Notice)</option>
-                          </select>
-                        </div>
-
-                        <div className="admin-form-field">
-                          <label className="admin-form-label" htmlFor="dept-title">
-                            {contentType === 'knowledge' ? '질문 (Question)' : contentType === 'event' ? '행사명 (Title)' : '제목 (Title)'}
-                          </label>
-                          <input
-                            id="dept-title"
-                            type="text"
-                            className="admin-input"
-                            placeholder={contentType === 'knowledge' ? "예: 졸업논문 제출 기한" : "제목을 입력하세요"}
-                            value={newTitle}
-                            onChange={(e) => setNewTitle(e.target.value)}
-                            disabled={isLoading}
-                          />
-                        </div>
-
-                        {/* Date Fields for Event/Announcement */}
-                        {(contentType === 'event' || contentType === 'announcement') && (
-                          <div className="admin-form-field" style={{ display: 'flex', gap: '10px' }}>
-                            <div style={{ flex: 1 }}>
-                              <label className="admin-form-label" htmlFor="dept-start-date">{contentType === 'event' ? '시작일' : '게시일'}</label>
-                              <input
-                                id="dept-start-date"
-                                type="date"
-                                className="admin-input"
-                                value={startDate}
-                                onChange={(e) => setStartDate(e.target.value)}
-                                disabled={isLoading}
-                              />
-                            </div>
-                            {contentType === 'event' && (
-                              <div style={{ flex: 1 }}>
-                                <label className="admin-form-label" htmlFor="dept-end-date">종료일 (선택)</label>
-                                <input
-                                  id="dept-end-date"
-                                  type="date"
-                                  className="admin-input"
-                                  value={endDate}
-                                  onChange={(e) => setEndDate(e.target.value)}
-                                  disabled={isLoading}
-                                />
-                              </div>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Location for Event */}
-                        {contentType === 'event' && (
-                          <div className="admin-form-field">
-                            <label className="admin-form-label" htmlFor="dept-location">장소</label>
-                            <input
-                              id="dept-location"
-                              type="text"
-                              className="admin-input"
-                              placeholder="예: 공학관 101호"
-                              value={location}
-                              onChange={(e) => setLocation(e.target.value)}
-                              disabled={isLoading}
-                            />
-                          </div>
-                        )}
-
-                        {/* Category for Announcement */}
-                        {contentType === 'announcement' && (
-                          <div className="admin-form-field">
-                            <label className="admin-form-label" htmlFor="dept-category">카테고리</label>
-                            <input
-                              id="dept-category"
-                              type="text"
-                              className="admin-input"
-                              placeholder="예: 학사, 장학, 채용"
-                              value={category}
-                              onChange={(e) => setCategory(e.target.value)}
-                              disabled={isLoading}
-                            />
-                          </div>
-                        )}
-
-                        <div className="admin-form-field">
-                          <label className="admin-form-label" htmlFor="dept-content">
-                            {contentType === 'knowledge' ? '답변 (Answer)' : '상세 내용'}
-                          </label>
-                          <textarea
-                            id="dept-content"
-                            className="admin-textarea"
-                            rows={10}
-                            placeholder="상세 내용을 입력하세요."
-                            value={newContent}
-                            onChange={(e) => setNewContent(e.target.value)}
-                            disabled={isLoading}
-                          />
-                        </div>
-
-                        {notice && (
-                          <div style={{ marginTop: '12px', color: '#15803d', background: '#f0fdf4', padding: '10px 14px', borderRadius: '8px' }}>
-                            {notice}
-                          </div>
-                        )}
-                        {errorNotice && (
-                          <div className="admin-alert admin-alert--danger" style={{ marginTop: '12px' }}>
-                            {errorNotice}
-                          </div>
-                        )}
-
-                        <div className="admin-review-detail__actions">
-                          <button className="hero-btn hero-btn--primary" type="submit" disabled={isLoading}>
-                            {isLoading ? '제출 중...' : '제출하기'}
-                          </button>
-                        </div>
-                      </form>
-                    </div>
-                  ) : selectedItem ? (
-                    <div className="admin-review-detail" style={{ border: 'none', background: 'transparent', padding: 0 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <span className={`status-pill status-pill--${getStatusClass(selectedItem.status)}`}>
-                          {getStatusLabel(selectedItem.status)}
-                        </span>
-                        {/* 승인/반려 완료 항목에는 취소 버튼을 노출하지 않는다 — 승인된 항목을 실수로 반려 처리하는 사고 방지 */}
-                        {selectedItem.status === 'PENDING' && (
-                          <button type="button" className="ghost-btn small ghost-btn--danger" onClick={() => handleDelete(selectedItem.id)} disabled={isLoading}>
-                            {isLoading ? '처리 중...' : '요청 취소'}
-                          </button>
-                        )}
-                      </div>
-
-                      {notice && (
-                        <div style={{ marginTop: '12px', color: '#15803d', background: '#f0fdf4', padding: '10px 14px', borderRadius: '8px' }}>
-                          {notice}
-                        </div>
-                      )}
-                      {errorNotice && (
-                        <div className="admin-alert admin-alert--danger" style={{ marginTop: '12px' }}>
-                          {errorNotice}
-                        </div>
-                      )}
-                      
-                      <h3 className="admin-review-detail__title" style={{ marginTop: '1rem' }}>{selectedItem.title}</h3>
-                      <dl className="admin-review-detail__meta">
-                        <div>
-                          <dt>등록일</dt>
-                          <dd>{new Date(selectedItem.createdAt).toLocaleString()}</dd>
-                        </div>
-                      </dl>
-                      
-                      <div className="admin-review-detail__question">
-                        <p style={{ whiteSpace: 'pre-wrap' }}>{selectedItem.content}</p>
-                      </div>
-
-                      {selectedItem.status === 'REJECTED' && selectedItem.rejectionReason && (
-                        <div className="admin-alert admin-alert--danger">
-                          <strong>반려 사유:</strong> {selectedItem.rejectionReason}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="admin-review-detail admin-review-detail--empty" style={{ height: '100%' }}>
-                      <p>왼쪽 목록에서 정보를 선택하거나,<br/>'새 정보 등록하기' 버튼을 눌러주세요.</p>
-                    </div>
+                  {selected.status === 'PENDING' && (
+                    <button
+                      type="button"
+                      className="ac-btn ac-btn--danger-ghost"
+                      onClick={() => setCancelTarget(selected)}
+                    >
+                      요청 취소
+                    </button>
                   )}
                 </div>
-            </div>
-          </section>
+              </>
+            )}
+          </div>
         </div>
-      </div>
-    </div>
+      </Panel>
+
+      <Modal
+        open={cancelTarget !== null}
+        title="요청 취소"
+        description={<><b>{cancelTarget?.title}</b> 요청을 취소합니다. 취소한 요청은 반려 상태로 남으며, 필요하면 새로 등록할 수 있습니다.</>}
+        confirmLabel="요청 취소"
+        tone="danger"
+        busy={busy}
+        onCancel={() => setCancelTarget(null)}
+        onConfirm={applyCancel}
+      />
+    </>
   )
 }
 

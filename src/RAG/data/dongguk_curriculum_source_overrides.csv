@@ -1,0 +1,6 @@
+college_name,department_name,department_key,department_url,curriculum_title,curriculum_url,source_type
+이과대학,물리학과,물리학과,https://physics.dongguk.edu,전공과목 개설표,https://physics.dongguk.edu/page/3225,curriculum_table
+이과대학,화학과,화학과,https://chem.dongguk.edu,전공과목 개설 총괄표,https://chem.dongguk.edu/page/213,curriculum_table
+사회과학대학,사회학전공,사회학전공,https://sociology.dongguk.edu,전공과목,https://sociology.dongguk.edu/page/294,curriculum_table
+공과대학,기계로봇에너지공학과,기계로봇에너지공학과,https://mecha.dongguk.edu,전공교과 개설표,https://mecha.dongguk.edu/page/574,curriculum_table
+공과대학,산업시스템공학과,산업시스템공학과,https://ise.dongguk.edu,학부 개설과목,https://ise.dongguk.edu/page/593,curriculum_table

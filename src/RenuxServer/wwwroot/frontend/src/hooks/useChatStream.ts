@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { resolveApiUrl, withNgrokHeader } from '../api/client'
+import { withGuestTokenHeader } from '../chat/guestToken'
 import type { ChatSource } from '../components/chat/SourceCards'
 
 export interface ChatStreamPayload {
@@ -7,6 +8,7 @@ export interface ChatStreamPayload {
   chatId: string
   content: string
   createdTime: string | number
+  guestToken?: string
 }
 
 export interface ChatStreamMetadata {
@@ -35,6 +37,8 @@ export interface ChatStreamHandlers {
 export interface ChatStreamResult {
   answer: string
   receivedAny: boolean
+  requestId?: string
+  grounded?: boolean
 }
 
 /**
@@ -70,10 +74,13 @@ export const useChatStream = () => {
       const openStream = async () => {
         const response = await fetch(url, {
           method: 'POST',
-          headers: withNgrokHeader(url, {
-            'Content-Type': 'application/json',
-            Accept: 'text/event-stream',
-          }),
+          headers: withNgrokHeader(
+            url,
+            withGuestTokenHeader({
+              'Content-Type': 'application/json',
+              Accept: 'text/event-stream',
+            }, payload.guestToken),
+          ),
           body: JSON.stringify({
             id: payload.id,
             chatId: payload.chatId,
@@ -98,6 +105,8 @@ export const useChatStream = () => {
         let accumulatedAnswer = ''
         let receivedCompletion = false
         let receivedDone = false
+        let completedRequestId: string | undefined
+        let completedGrounded: boolean | undefined
 
         const processLine = (rawLine: string) => {
           const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
@@ -124,6 +133,7 @@ export const useChatStream = () => {
           }
 
           if (data.type === 'metadata') {
+            completedRequestId = data.request_id ?? completedRequestId
             handlers.onMetadata?.({
               sources: data.sources,
               requestId: data.request_id,
@@ -142,6 +152,10 @@ export const useChatStream = () => {
             })
           } else if (data.type === 'completion') {
             receivedCompletion = true
+            completedRequestId = data.request_id ?? completedRequestId
+            completedGrounded = typeof data.grounded === 'boolean'
+              ? data.grounded
+              : completedGrounded
             handlers.onMetadata?.({
               sources: data.sources,
               requestId: data.request_id,
@@ -189,7 +203,12 @@ export const useChatStream = () => {
           readerRef.current = null
         }
 
-        return { answer: accumulatedAnswer, receivedAny: accumulatedAnswer.trim().length > 0 }
+        return {
+          answer: accumulatedAnswer,
+          receivedAny: accumulatedAnswer.trim().length > 0,
+          requestId: completedRequestId,
+          grounded: completedGrounded,
+        }
       }
 
       try {

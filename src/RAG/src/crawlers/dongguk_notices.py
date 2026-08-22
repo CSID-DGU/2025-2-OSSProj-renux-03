@@ -12,6 +12,11 @@ import requests
 from bs4 import BeautifulSoup, FeatureNotFound
 from bs4.builder import ParserRejectedMarkup
 
+from src.services.notice_image_text import (
+    append_notice_image_text,
+    collect_notice_image_text,
+)
+
 BASE_URL = "https://www.dongguk.edu"
 BOARD_CODES = {
     "일반공지": "GENERALNOTICES",
@@ -57,6 +62,8 @@ COLUMN_LABELS = {
 TARGET_BOARDS = list(BOARD_CODES.keys())
 DEFAULT_MAX_PAGES = 10 # 5 -> 30으로 증가 (더 많은 과거 공지 수집)
 DEFAULT_REQUEST_DELAY = 0.5
+DEFAULT_REQUEST_TIMEOUT = 40.0
+DEFAULT_REQUEST_RETRIES = 3
 
 PARSER_CANDIDATES: Iterable[str] = ("lxml", "html5lib", "html.parser")
 
@@ -127,7 +134,13 @@ def make_soup(markup: str) -> BeautifulSoup:
 
 
 # ===== 크롤링 기본 함수 =====
-def _get_with_retry(url: str, *, params: dict | None = None, timeout: float = 40, retries: int = 3):
+def _get_with_retry(
+    url: str,
+    *,
+    params: dict | None = None,
+    timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    retries: int = DEFAULT_REQUEST_RETRIES,
+):
     """일시적 네트워크 오류(503/타임아웃 등)에 지수 백오프로 재시도한다.
 
     한 번의 일시 장애로 게시판 수집이 통째로 중단/누락되는 것을 막는다.
@@ -145,10 +158,21 @@ def _get_with_retry(url: str, *, params: dict | None = None, timeout: float = 40
     raise last_exc  # type: ignore[misc]
 
 
-def fetch_notice_list(board_code: str, page: int = 1) -> List[Dict[str, Any]]:
+def fetch_notice_list(
+    board_code: str,
+    page: int = 1,
+    *,
+    timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    retries: int = DEFAULT_REQUEST_RETRIES,
+) -> List[Dict[str, Any]]:
     """게시판 목록 페이지에서 공지 요약 목록을 가져옵니다."""
     url = f"{BASE_URL}/article/{board_code}/list"
-    response = _get_with_retry(url, params={"pageIndex": page})
+    response = _get_with_retry(
+        url,
+        params={"pageIndex": page},
+        timeout=timeout,
+        retries=retries,
+    )
 
     soup = make_soup(response.text)
     notices: List[Dict[str, Any]] = []
@@ -200,10 +224,16 @@ def fetch_notice_list(board_code: str, page: int = 1) -> List[Dict[str, Any]]:
     return notices
 
 
-def fetch_notice_detail(board_code: str, article_id: int) -> Dict[str, Any]:
+def fetch_notice_detail(
+    board_code: str,
+    article_id: int,
+    *,
+    timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    retries: int = DEFAULT_REQUEST_RETRIES,
+) -> Dict[str, Any]:
     """단일 공지의 HTML·텍스트·첨부 정보를 가져옵니다."""
     url = f"{BASE_URL}/article/{board_code}/detail/{article_id}"
-    response = _get_with_retry(url)
+    response = _get_with_retry(url, timeout=timeout, retries=retries)
 
     soup = make_soup(response.text)
     container = soup.select_one("div.board_view")
@@ -253,6 +283,30 @@ def fetch_notice_detail(board_code: str, article_id: int) -> Dict[str, Any]:
         )
         attachments.append({"name": name, "url": download_url})
 
+    # 표·일정이 본문 이미지에만 있는 공지는 get_text()만으로 핵심 사실이 사라진다.
+    # 이미지 하나의 실패는 본문 수집을 막지 않으며, 검증된 SHA 캐시를 우선하고
+    # 캐시 미스만 설정된 vision 모델로 전사한다.
+    image_texts = collect_notice_image_text(
+        content_html,
+        detail_url=url,
+        http_get=lambda image_url, timeout: _get_with_retry(
+            image_url,
+            timeout=timeout,
+            retries=retries,
+        ),
+        timeout=timeout,
+    )
+    content_text = append_notice_image_text(content_text, image_texts)
+    attachments.extend(
+        {
+            "name": "본문 이미지 전사",
+            "url": image.image_url,
+            "sha256": image.sha256,
+            "extraction_method": image.method,
+        }
+        for image in image_texts
+    )
+
     return {
         "title": title_text,
         "posted_at": posted_at,
@@ -272,6 +326,8 @@ def collect_board(
     delay: float = DEFAULT_REQUEST_DELAY,
     earliest_year: Optional[int] = 2023,
     known_ids: set[int] | None = None,
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    request_retries: int = DEFAULT_REQUEST_RETRIES,
 ) -> pd.DataFrame:
     records: List[Dict[str, Any]] = []
     seen_ids: set[int] = set()
@@ -288,7 +344,12 @@ def collect_board(
             break
 
         try:
-            notice_list = fetch_notice_list(board_code, page=page)
+            notice_list = fetch_notice_list(
+                board_code,
+                page=page,
+                timeout=request_timeout,
+                retries=request_retries,
+            )
         except Exception as exc:  # noqa: BLE001 — 목록 한 페이지 실패가 게시판 전체를 중단시키지 않도록
             print(f"⚠️ [{board_name}] 목록 페이지 {page} 수집 실패: {exc}")
             break
@@ -306,7 +367,12 @@ def collect_board(
 
             # 상세 파싱/네트워크 오류가 게시판 전체 수집을 중단시키지 않도록 격리
             try:
-                detail = fetch_notice_detail(board_code, article_id)
+                detail = fetch_notice_detail(
+                    board_code,
+                    article_id,
+                    timeout=request_timeout,
+                    retries=request_retries,
+                )
             except Exception as exc:  # noqa: BLE001
                 failed_articles += 1
                 print(f"⚠️ [{board_name}] 상세 수집 실패 (article_id={article_id}) — 목록 정보로 색인합니다: {exc}")
@@ -380,6 +446,8 @@ def crawl_notices(
     delay: float = DEFAULT_REQUEST_DELAY,
     earliest_year: Optional[int] = 2023,
     known_ids_by_board: dict[str, set[int]] | None = None,
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    request_retries: int = DEFAULT_REQUEST_RETRIES,
 ) -> pd.DataFrame:
     boards = list(boards) if boards is not None else TARGET_BOARDS
     dataframes: List[pd.DataFrame] = []
@@ -397,6 +465,8 @@ def crawl_notices(
             delay=delay,
             earliest_year=earliest_year,
             known_ids=known_ids,
+            request_timeout=request_timeout,
+            request_retries=request_retries,
         )
         dataframes.append(df)
 
@@ -411,9 +481,20 @@ def crawl_notices(
     return combined
 
 
-def crawl_recent_notices(max_pages: int = 3, delay: float = DEFAULT_REQUEST_DELAY) -> pd.DataFrame:
+def crawl_recent_notices(
+    max_pages: int = 3,
+    delay: float = DEFAULT_REQUEST_DELAY,
+    *,
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    request_retries: int = DEFAULT_REQUEST_RETRIES,
+) -> pd.DataFrame:
     """정기 실행을 염두에 두고 앞쪽 몇 페이지만 수집하는 편의 래퍼입니다."""
-    return crawl_notices(max_pages=max_pages, delay=delay)
+    return crawl_notices(
+        max_pages=max_pages,
+        delay=delay,
+        request_timeout=request_timeout,
+        request_retries=request_retries,
+    )
 
 
 __all__ = [

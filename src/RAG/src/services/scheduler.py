@@ -1,4 +1,4 @@
-"""공지/학식 데이터의 주기적 자동 갱신 스케줄러 (rag-service 프로세스 내부).
+"""공지/학식/교과과정 데이터의 주기적 자동 갱신 스케줄러 (rag-service 프로세스 내부).
 
 별도 워커 컨테이너 대신 서빙 프로세스 안에서 APScheduler로 돌린다:
 - 이미 로드된 임베딩 모델을 재사용 → 추가 메모리 없음.
@@ -15,20 +15,142 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
-from src.config import RAG_NOTICES_REFRESH_MAX_PAGES, RAG_SCHEDULER_ENABLED
+import pandas as pd
+
+from src.config import (
+    RAG_NOTICES_REFRESH_MAX_PAGES,
+    RAG_SCHEDULER_ENABLED,
+    RAG_SCHEDULER_REQUEST_RETRIES,
+    RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS,
+)
+from src.database import IngestionRun, SessionLocal, kst_now
 
 logger = logging.getLogger(__name__)
 KST = timezone(timedelta(hours=9))
 
 _scheduler = None  # 단일 인스턴스 보관(중복 시작 방지)
 
+# 작업별 마지막 실행 기록. 관리자 화면에서 "돌긴 돌았나"를 로그를 뒤지지 않고 확인하기 위한 것.
+# 프로세스 메모리에만 두므로 재시작하면 비어 있고, 그 경우 화면은 '기록 없음'으로 표시한다.
+_LAST_RUNS: dict[str, dict[str, str | None]] = {}
+
+JOB_LABELS = {
+    "refresh_notices": "공지 수집",
+    "refresh_rules": "현행 규정 수집",
+    "refresh_schedule": "학사일정 수집",
+    "refresh_meals": "학식 수집",
+    "refresh_courses": "교과과정 수집",
+}
+
+
+def _record_run(job_id: str, status: str, message: str | None = None) -> None:
+    _LAST_RUNS[job_id] = {
+        "last_run_at": datetime.now(KST).isoformat(),
+        "last_status": status,
+        "last_message": message,
+    }
+
+
+def _start_ingestion_run(dataset: str) -> int | None:
+    """실행 기록을 열고 id를 돌려준다. 기록에 실패하면 None.
+
+    기록은 관측 수단이므로 갱신 작업 자체를 막아서는 안 된다. 테이블이 아직 없거나
+    DB가 잠긴 상황에서 예외가 새어 나가면, 공지·학식 수집이 기록 때문에 중단된다.
+    """
+    session = SessionLocal()
+    try:
+        run = IngestionRun(dataset=dataset, status="running")
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+        return int(run.id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[scheduler] 실행 기록 시작 실패(%s): %s", dataset, exc)
+        session.rollback()
+        return None
+    finally:
+        session.close()
+
+
+def _finish_ingestion_run(
+    run_id: int | None,
+    *,
+    status: str,
+    seen: int = 0,
+    failed: int = 0,
+    error: str | None = None,
+) -> None:
+    """실행 기록을 닫는다. 시작 기록이 없었으면(None) 조용히 넘어간다."""
+    if run_id is None:
+        return
+    session = SessionLocal()
+    try:
+        run = session.query(IngestionRun).filter(IngestionRun.id == run_id).first()
+        if run is None:
+            return
+        run.status = status
+        run.finished_at = kst_now()
+        run.documents_seen = seen
+        run.documents_failed = failed
+        run.error_summary = error
+        session.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[scheduler] 실행 기록 종료 실패(run_id=%s): %s", run_id, exc)
+        session.rollback()
+    finally:
+        session.close()
+
+
+def get_scheduler_status() -> dict:
+    """등록된 자동 작업의 다음 실행 시각과 마지막 결과를 돌려준다."""
+    jobs = []
+    scheduler = _scheduler
+    if scheduler is not None:
+        for job in scheduler.get_jobs():
+            history = _LAST_RUNS.get(job.id, {})
+            next_run = getattr(job, "next_run_time", None)
+            jobs.append({
+                "id": job.id,
+                "name": JOB_LABELS.get(job.id, job.id),
+                "next_run_at": next_run.isoformat() if next_run else None,
+                "trigger": str(job.trigger),
+                "last_run_at": history.get("last_run_at"),
+                "last_status": history.get("last_status"),
+                "last_message": history.get("last_message"),
+            })
+    else:
+        # 스케줄러가 꺼져 있어도 수동 실행 기록은 보여 준다.
+        for job_id, history in _LAST_RUNS.items():
+            jobs.append({
+                "id": job_id,
+                "name": JOB_LABELS.get(job_id, job_id),
+                "next_run_at": None,
+                "trigger": None,
+                "last_run_at": history.get("last_run_at"),
+                "last_status": history.get("last_status"),
+                "last_message": history.get("last_message"),
+            })
+
+    return {"enabled": bool(RAG_SCHEDULER_ENABLED and scheduler is not None), "jobs": jobs}
+
 
 def _refresh_runtime_dataset_state(dataset: str) -> None:
     """Make scheduler-written artifacts visible to the serving process at once."""
     try:
-        from api.rag_service import refresh_runtime_dataset_state
+        import importlib
 
-        snapshot = refresh_runtime_dataset_state([dataset])
+        rag_service = importlib.import_module("api.rag_service")
+
+        snapshot = rag_service.refresh_runtime_dataset_state([dataset])
+        if dataset == "schedule":
+            context_builder = getattr(
+                rag_service,
+                "_build_temporal_context_for_date",
+                None,
+            )
+            cache_clear = getattr(context_builder, "cache_clear", None)
+            if callable(cache_clear):
+                cache_clear()
         logger.info(
             "[scheduler] 런타임 캐시 갱신 dataset=%s chunks=%s dense=%s",
             dataset,
@@ -45,7 +167,12 @@ def refresh_notices_job() -> None:
     from src.pipelines.notices_sync import load_known_article_ids_by_board, sync_notices
 
     start = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-    logger.info("[scheduler] 공지 갱신 시작 (%s)", start)
+    logger.info(
+        "[scheduler] 공지 갱신 시작 (%s) request_timeout=%ss request_retries=%s",
+        start,
+        RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS,
+        RAG_SCHEDULER_REQUEST_RETRIES,
+    )
     try:
         try:
             known_ids_by_board = load_known_article_ids_by_board()
@@ -55,7 +182,26 @@ def refresh_notices_job() -> None:
             known_ids_by_board=known_ids_by_board,
             max_pages=RAG_NOTICES_REFRESH_MAX_PAGES,
             delay=0.2,
+            request_timeout=RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS,
+            request_retries=RAG_SCHEDULER_REQUEST_RETRIES,
         )
+        try:
+            from src.crawlers.dongguk_library_hours import fetch_library_operation_times
+            from src.services.library_hours import (
+                normalize_library_operation_times,
+                to_notice_shaped_records,
+            )
+
+            library_fetch = fetch_library_operation_times(
+                timeout=RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS,
+            )
+            library_rows = to_notice_shaped_records(
+                normalize_library_operation_times(library_fetch)
+            )
+            if library_rows:
+                df = pd.concat([df, pd.DataFrame(library_rows)], ignore_index=True, sort=False)
+        except Exception as exc:  # noqa: BLE001 - 공지 전체 갱신은 도서관 API와 독립적이다.
+            logger.warning("[scheduler] 도서관 운영시간 병합 실패 — 공지만 갱신: %s", exc)
         summary = sync_notices(df, allow_missing_detection=False, mode="full-sync")
         _refresh_runtime_dataset_state("notices")
         logger.info(
@@ -63,8 +209,84 @@ def refresh_notices_job() -> None:
             summary.get("seen"), summary.get("new"), summary.get("updated"),
             summary.get("deleted"), summary.get("failed"),
         )
+        _record_run(
+            "refresh_notices",
+            "ok",
+            f"신규 {summary.get('new', 0)} · 수정 {summary.get('updated', 0)} · 실패 {summary.get('failed', 0)}",
+        )
     except Exception as exc:  # noqa: BLE001 — 한 번의 실패가 스케줄러를 죽이지 않도록
         logger.error("[scheduler] 공지 갱신 실패: %s", exc, exc_info=True)
+        # ── 공지사항 수집 완료 시 자동 FAQ 초안 생성 (별도 스레드에서 비동기 실행) ──
+        import asyncio
+        import threading
+
+        async def _async_faq() -> None:
+            from src.services.auto_faq import generate_faq_drafts
+            try:
+                res = await generate_faq_drafts()
+                logger.info(
+                    "[auto_faq] 수집 후 자동 생성 완료 → 신규 %d건 · 건너뜀 %d건",
+                    res["created"], res["skipped_existing"],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("[auto_faq] 자동 FAQ 생성 실패: %s", exc, exc_info=True)
+
+        def _faq_worker():
+            asyncio.run(_async_faq())
+
+        t = threading.Thread(target=_faq_worker, daemon=True, name="auto_faq")
+        t.start()
+        _record_run("refresh_notices", "failed", str(exc))
+
+
+def refresh_rules_job() -> None:
+    """공식 학사 규정 현행판을 보존적으로 병합하고 인덱스를 교체한다."""
+    from scripts.sync_official_rules import sync_rule_source
+    from src.pipelines.ingest import ingest_rules
+
+    start = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+    logger.info("[scheduler] 현행 규정 갱신 시작 (%s)", start)
+    run_id = _start_ingestion_run("rules")
+    try:
+        official = sync_rule_source()
+        if official.empty:
+            raise RuntimeError("공식 현행 규정 수집 결과가 비었습니다.")
+        expected_versions = set(official["source_version"].astype(str))
+        session = SessionLocal()
+        try:
+            from src.database import Rule
+
+            indexed_versions = {
+                str(value)
+                for (value,) in session.query(Rule.source_version)
+                .filter(Rule.source_version.isnot(None))
+                .all()
+                if str(value or "")
+            }
+        finally:
+            session.close()
+        if not official.attrs.get("source_changed") and expected_versions <= indexed_versions:
+            message = f"변경 없음 · 공식 {len(official)}건"
+            _record_run("refresh_rules", "ok", message)
+            _finish_ingestion_run(run_id, status="success", seen=len(official))
+            logger.info("[scheduler] 현행 규정 변경 없음 — 재임베딩 건너뜀")
+            return
+        chunks, _, _ = ingest_rules(force_source_reload=True)
+        _refresh_runtime_dataset_state("rules")
+        _record_run(
+            "refresh_rules",
+            "ok",
+            f"공식 {len(official)}건 · {len(chunks)} chunks",
+        )
+        _finish_ingestion_run(
+            run_id,
+            status="success",
+            seen=len(official),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[scheduler] 현행 규정 갱신 실패: %s", exc, exc_info=True)
+        _record_run("refresh_rules", "failed", str(exc))
+        _finish_ingestion_run(run_id, status="failed", failed=1, error=str(exc))
 
 
 def refresh_meals_job() -> None:
@@ -73,17 +295,150 @@ def refresh_meals_job() -> None:
     from src.pipelines.ingest import ingest_meals
 
     start = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-    logger.info("[scheduler] 학식 갱신 시작 (%s)", start)
+    logger.info(
+        "[scheduler] 학식 갱신 시작 (%s) request_timeout=%ss request_retries=%s",
+        start,
+        RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS,
+        RAG_SCHEDULER_REQUEST_RETRIES,
+    )
+    run_id = _start_ingestion_run("meals")
     try:
-        df = crawl_meals(days_ahead=13)
+        df = crawl_meals(
+            days_ahead=13,
+            request_timeout=RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS,
+            request_retries=RAG_SCHEDULER_REQUEST_RETRIES,
+        )
         if df.empty:
             logger.warning("[scheduler] 학식 수집 0건 — 기존 인덱스 보존(갱신 건너뜀)")
+            _record_run("refresh_meals", "skipped", "수집 0건 — 기존 인덱스 보존")
+            _finish_ingestion_run(
+                run_id,
+                status="partial",
+                error="수집 0건 — 기존 인덱스 보존",
+            )
             return
         chunks_df, _, _ = ingest_meals(df)
         _refresh_runtime_dataset_state("meals")
         logger.info("[scheduler] 학식 갱신 완료: %s행 → %s chunks", len(df), len(chunks_df))
+        _record_run("refresh_meals", "ok", f"{len(df)}행 → {len(chunks_df)} chunks")
+        _finish_ingestion_run(run_id, status="success", seen=len(chunks_df))
     except Exception as exc:  # noqa: BLE001
         logger.error("[scheduler] 학식 갱신 실패: %s", exc, exc_info=True)
+        _record_run("refresh_meals", "failed", str(exc))
+        _finish_ingestion_run(run_id, status="failed", error=str(exc))
+
+
+def _merge_schedule_snapshots(existing: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame:
+    """수집된 학년도만 교체하고 다른 연도의 과거 일정은 보존한다."""
+    if existing.empty or "학년도" not in existing.columns or "학년도" not in incoming.columns:
+        return incoming.copy()
+    incoming_years = {
+        str(value).strip()
+        for value in incoming["학년도"].tolist()
+        if str(value).strip()
+    }
+    preserved = existing[
+        ~existing["학년도"].astype(str).str.strip().isin(incoming_years)
+    ]
+    merged = pd.concat([preserved, incoming], ignore_index=True)
+    identity = [
+        name
+        for name in ("학년도", "내용", "start", "end", "주관부서")
+        if name in merged.columns
+    ]
+    return merged.drop_duplicates(subset=identity or None, keep="last")
+
+
+def refresh_schedule_job() -> None:
+    """공식 학사일정 표를 다시 수집하고 schedule 인덱스를 재구축한다."""
+    from src.config import DATA_SOURCES
+    from src.crawlers.dongguk_schedule import (
+        SCHEDULE_URL,
+        fetch_schedule_html,
+        parse_schedule,
+    )
+    from src.pipelines.ingest import ingest_schedule
+
+    start = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+    logger.info("[scheduler] 학사일정 갱신 시작 (%s)", start)
+    run_id = _start_ingestion_run("schedule")
+    try:
+        html = fetch_schedule_html(
+            SCHEDULE_URL,
+            timeout=RAG_SCHEDULER_REQUEST_TIMEOUT_SECONDS,
+        )
+        frame = parse_schedule(html)
+        if frame.empty:
+            logger.warning("[scheduler] 학사일정 수집 0건 — 기존 인덱스 보존")
+            _record_run("refresh_schedule", "skipped", "수집 0건 — 기존 인덱스 보존")
+            _finish_ingestion_run(
+                run_id,
+                status="partial",
+                error="수집 0건 — 기존 인덱스 보존",
+            )
+            return
+        output = frame[["학년도", "구분", "내용", "주관부서", "start", "end"]].copy()
+        schedule_path = DATA_SOURCES["schedule"]
+        if schedule_path.exists():
+            try:
+                existing = pd.read_csv(schedule_path, dtype=str).fillna("")
+                output = _merge_schedule_snapshots(existing, output)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[scheduler] 기존 학사일정 병합 실패 — 수집본만 사용: %s",
+                    exc,
+                )
+        output.to_csv(schedule_path, index=False, encoding="utf-8-sig")
+        chunks_df, _, _ = ingest_schedule(refresh_from_csv=True)
+        _refresh_runtime_dataset_state("schedule")
+        logger.info(
+            "[scheduler] 학사일정 갱신 완료: %s행 → %s chunks",
+            len(output),
+            len(chunks_df),
+        )
+        _record_run(
+            "refresh_schedule",
+            "ok",
+            f"{len(output)}행 → {len(chunks_df)} chunks",
+        )
+        _finish_ingestion_run(
+            run_id,
+            status="success",
+            seen=len(output),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[scheduler] 학사일정 갱신 실패: %s", exc, exc_info=True)
+        _record_run("refresh_schedule", "failed", str(exc))
+        _finish_ingestion_run(
+            run_id,
+            status="partial",
+            failed=1,
+            error=str(exc),
+        )
+
+
+def refresh_courses_job() -> None:
+    """학과별 교과과정을 다시 수집하고 courses 인덱스를 갱신합니다."""
+    from src.crawlers.dongguk_department_curriculum_content import main as crawl_courses
+    from src.pipelines.ingest import ingest_courses
+
+    start = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+    logger.info("[scheduler] 교과과정 갱신 시작 (%s)", start)
+    # `_record_run`은 메모리 딕셔너리라 재시작하면 사라진다. 이 잡이 실패해도 흔적이
+    # 남지 않아, 색인이 45개 학과에 멈춰 있는 동안 아무도 알아채지 못했다(수집 CSV에는
+    # 71개 학과가 있었다). rules·schedule처럼 ingestion_runs에도 남긴다.
+    run_id = _start_ingestion_run("courses")
+    try:
+        crawl_courses()
+        chunks_df, _, _ = ingest_courses(refresh_from_csv=True)
+        _refresh_runtime_dataset_state("courses")
+        logger.info("[scheduler] 교과과정 갱신 완료: %s chunks", len(chunks_df))
+        _record_run("refresh_courses", "ok", f"{len(chunks_df)} chunks")
+        _finish_ingestion_run(run_id, status="success", seen=len(chunks_df))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[scheduler] 교과과정 갱신 실패: %s", exc, exc_info=True)
+        _record_run("refresh_courses", "failed", str(exc))
+        _finish_ingestion_run(run_id, status="failed", error=str(exc))
 
 
 def start_scheduler():
@@ -108,24 +463,43 @@ def start_scheduler():
     job_defaults = dict(max_instances=1, coalesce=True, misfire_grace_time=120)
 
     # 고정 시각(cron)에만 실행 — docker up 때마다 수집하지 않는다.
-    # 기본: 공지 매일 0/6/12/18시 정각(4회), 학식 매일 04:30. env(cron 식)로 재정의 가능.
+    # 기본: 공지 매일 0/6/12/18시, 규정 매주 일요일 02:00, 학사일정 매일 05:00,
+    # 학식 매일 04:30, 교과과정 매주 일요일 03:00.
     notices_cron = os.getenv("RAG_NOTICES_REFRESH_CRON", "0 0,6,12,18 * * *")
+    rules_cron = os.getenv("RAG_RULES_REFRESH_CRON", "0 2 * * 0")
+    schedule_cron = os.getenv("RAG_SCHEDULE_REFRESH_CRON", "0 5 * * *")
     meals_cron = os.getenv("RAG_MEALS_REFRESH_CRON", "30 4 * * *")
+    courses_cron = os.getenv("RAG_COURSES_REFRESH_CRON", "0 3 * * 0")
     scheduler.add_job(
         refresh_notices_job,
         CronTrigger.from_crontab(notices_cron, timezone="Asia/Seoul"),
         id="refresh_notices", **job_defaults,
     )
     scheduler.add_job(
+        refresh_rules_job,
+        CronTrigger.from_crontab(rules_cron, timezone="Asia/Seoul"),
+        id="refresh_rules", **job_defaults,
+    )
+    scheduler.add_job(
+        refresh_schedule_job,
+        CronTrigger.from_crontab(schedule_cron, timezone="Asia/Seoul"),
+        id="refresh_schedule", **job_defaults,
+    )
+    scheduler.add_job(
         refresh_meals_job,
         CronTrigger.from_crontab(meals_cron, timezone="Asia/Seoul"),
         id="refresh_meals", **job_defaults,
     )
+    scheduler.add_job(
+        refresh_courses_job,
+        CronTrigger.from_crontab(courses_cron, timezone="Asia/Seoul"),
+        id="refresh_courses", **job_defaults,
+    )
     scheduler.start()
     _scheduler = scheduler
     logger.info(
-        "[scheduler] 시작됨 — 공지 cron='%s', 학식 cron='%s' (부팅 시 즉시 실행 안 함)",
-        notices_cron, meals_cron,
+        "[scheduler] 시작됨 — 공지 cron='%s', 규정 cron='%s', 학사일정 cron='%s', 학식 cron='%s', 교과과정 cron='%s' (부팅 시 즉시 실행 안 함)",
+        notices_cron, rules_cron, schedule_cron, meals_cron, courses_cron,
     )
     return scheduler
 
@@ -140,4 +514,13 @@ def shutdown_scheduler() -> None:
         _scheduler = None
 
 
-__all__ = ["start_scheduler", "shutdown_scheduler", "refresh_notices_job", "refresh_meals_job"]
+__all__ = [
+    "start_scheduler",
+    "shutdown_scheduler",
+    "get_scheduler_status",
+    "refresh_notices_job",
+    "refresh_rules_job",
+    "refresh_schedule_job",
+    "refresh_meals_job",
+    "refresh_courses_job",
+]

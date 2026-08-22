@@ -1,6 +1,6 @@
 services:
     
-    db: # docker run -d --name renux_db_test --env-file .\.env -v postgres_data_test:/var/lib/postgresql -p 5678:5432 postgres:latest
+    db: # docker run -d --name renux_db_test --env-file .\.env -v postgres_data_test:/var/lib/postgresql postgres:latest
         container_name: renux_db_test
         image: postgres:latest
         env_file: .env
@@ -10,8 +10,6 @@ services:
             POSTGRES_DB: ${POSTGRES_DB}
         volumes:
             - postgres_data_test:/var/lib/postgresql
-        ports:
-            - "5678:5432"
         healthcheck:
             test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
             interval: 5s 
@@ -85,6 +83,10 @@ services:
             - RAG_SCHEDULER_ENABLED=${RAG_SCHEDULER_ENABLED:-1}
             - RAG_NOTICES_REFRESH_HOURS=${RAG_NOTICES_REFRESH_HOURS:-6}
             - RAG_MEALS_REFRESH_HOURS=${RAG_MEALS_REFRESH_HOURS:-24}
+            # 로컬 릴리스 골든 러너가 모든 시점 의존 질문에 같은 기준일을 주입한다.
+            - RAG_ALLOW_AS_OF_OVERRIDE=${RAG_ALLOW_AS_OF_OVERRIDE:-1}
+            # 키가 없으면 기동 시점에 실패시킨다. 없이 뜨면 첫 질문에서야 드러난다.
+            - RAG_REQUIRE_OPENAI_API_KEY=${RAG_REQUIRE_OPENAI_API_KEY:-1}
             # appuser 홈 기준으로 HF 캐시 경로를 명시(오프라인 캐시 로드 보장).
             - HOME=/home/appuser
             - HF_HOME=/home/appuser/.cache/huggingface
@@ -93,7 +95,7 @@ services:
             - TRANSFORMERS_OFFLINE=1
         restart: on-failure
         healthcheck:
-            test: ["CMD-SHELL", "curl -fsS http://localhost:8000/ready || python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/ready\")'"]
+            test: ["CMD-SHELL", "curl --connect-timeout 2 --max-time 4 -fsS http://localhost:8000/ready || python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/ready\", timeout=4)'"]
             interval: 15s
             timeout: 10s
             retries: 5

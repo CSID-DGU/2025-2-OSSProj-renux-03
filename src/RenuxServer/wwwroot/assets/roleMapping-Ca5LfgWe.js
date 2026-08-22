@@ -1,0 +1,1 @@
+const t=r=>{if(!r)return"STUDENT";const e=r.trim().toLowerCase(),n=e.replace(/\s+/g,"");return e==="university_council"||n.includes("총학생회")||n.includes("관리자")?"UNIVERSITY_COUNCIL":e==="department_council"||n.includes("학생회")?"DEPARTMENT_COUNCIL":"STUDENT"};export{t as m};
